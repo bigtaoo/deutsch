@@ -112,8 +112,10 @@
 
 | 设备 | 访问地址 | 可用功能 |
 |---|---|---|
-| 桌面 | `https://<静态托管>/`（开发时 `http://localhost:5173`） | 全部 |
+| 桌面 | `https://d.gamestao.com/`（开发时 `http://localhost:5173`） | 全部 |
 | 手机 | 同上，安装到主屏幕 | 全部，**含自动导入** |
+
+**已确定的静态托管**：Cloudflare Workers static assets（`wrangler.jsonc`），GitHub Actions 在 main 分支 CI 通过后自动发布（`.github/workflows/deploy.yml`），部署方式参考同账号 funny 项目按本项目单一部署目标的体量做了精简。
 
 这带来两个原本没预期的好处：
 
@@ -416,7 +418,7 @@ ShareablePackage = f(Lesson)   // 纯函数，白名单式构造
 
 | 编号 | 需求 | 验收 |
 |---|---|---|
-| FR-11.1 | 引导页说明如何创建 **fine-grained PAT**，权限精确到 `Contents: Read and write` + 仅选定仓库，并提供直达 GitHub 创建页的链接 | 说明要具体到点哪几个下拉框。**不要用 classic PAT 的 `repo` scope** —— 那等于交出你全部仓库的读写权 |
+| FR-11.1 | 引导页说明如何创建 **fine-grained PAT**，权限精确到 `Contents: Read and write`，Repository access 选 **"All repositories"**，并提供直达 GitHub 创建页的链接 | 说明要具体到点哪几个下拉框。**不要用 classic PAT 的 `repo` scope** —— 那等于交出你全部仓库的读写权。**不能选 "Only select repositories"**：FR-11.3 的一键建仓发生时目标仓库还不存在，选不了一个不存在的仓库；建仓成功后可以回来把 token 收紧到只选那一个，token 字符串不变 |
 | FR-11.2 | 粘贴 token 后自动 `GET /user`，显示「已连接：@用户名」+ 头像 | token 存 IndexedDB，界面此后只显示后四位 |
 | FR-11.3 | **一键创建**备份仓库（`POST /user/repos`，`private: true`, `auto_init: true`），或列出已有私有仓库供选择 | **用户不需要手填 owner/repo，也不需要离开应用去 GitHub 建仓库** |
 | FR-11.4 | 连接校验：仓库存在、为 **private**、token 确实可写（试写一个 `.keep` 验证） | 是 public 则拒绝并说明原因（§2.6.7）；只读 token 要在配置时就报错，不能等到第一次备份才发现 |
@@ -453,6 +455,7 @@ ShareablePackage = f(Lesson)   // 纯函数，白名单式构造
 |---|---|---|
 | FR-11.16 | 启动时 `navigator.storage.persist()`；设置页显示持久化状态与 `estimate()` 用量 | — |
 | FR-11.17 | 实现 `toShareablePackage(lesson)` 纯函数 + 单元测试（见 §3.1），V1 不暴露 UI 入口 | 测试必须断言导出结果不含任何正文片段 |
+| FR-11.18 | **设备配对二维码**：已连接的设备可生成二维码（编码 token，若已选仓库则一并带上），新设备用摄像头扫码后自动完成 FR-11.2 连接 + FR-11.3/11.4 选仓库 | 不改变安全模型 —— 二维码内容就是明文 token，效力等同于原始 token，需在生成处提示"谁扫到这张图谁就有读写权"；生成后限时（90s）自动隐藏；摄像头不可用/被拒时优雅降级回 FR-11.1/11.2 的手动粘贴，两条路径互不依赖 |
 
 ### FR-12 设置
 
@@ -790,9 +793,9 @@ DW 只给文本和音频，不给对应关系，映射必须自己造。V1 用�
 
 V1 一次做完，但按下面顺序写，每步都能跑：
 
-1. 数据层：IndexedDB 两层 schema + `persist()` + 导出/导入合并（先把命根子做稳）
-1b. **GitHub 自动备份 + 恢复（FR-11）** —— 紧跟数据层，在积累任何真实数据之前就跑通。等攒了半年再补备份，那半年是裸奔的
-2. 导入 + 切句 + 手工修正（②）
+1. ✅ 数据层：IndexedDB 两层 schema + `persist()` + 导出/导入合并（先把命根子做稳）——**已完成**（2026-08-31），含 QR 配对二维码（FR-11.18，实现中加的，原规格没有）
+1b. ✅ **GitHub 自动备份 + 恢复（FR-11）** —— 紧跟数据层，在积累任何真实数据之前就跑通。等攒了半年再补备份，那半年是裸奔的——**逻辑已完成、mock 测试通过，但一键建仓/写权限校验/token 过期头等仍需真实 PAT 联调**，见 `src/github/auth.ts` 注释；已部署上线 https://d.gamestao.com（CI/CD，见 §2.5）
+2. ⬜ **下一步**：导入 + 切句 + 手工修正（②）
 3. 音频存取 + 全局播放器单例（③）
 4. 时间戳标注（④）
 5. **跟读模式**（⑥）← 到这里工具已经比打印文稿好用了，可以先用起来
