@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+/* 手机端适配（§2.1：手机是复习工位）。
+   - safe-area：iPhone 装到主屏幕后，底部 home indicator 会压住评分按钮（FR-10.7）
+   - overscroll-behavior：跟读时误触下拉刷新会打断循环，代价比「刷新不了」大得多
+   - text-size-adjust：iOS 横屏时会自作主张放大正文，把挖空输入框挤成两行 */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  padding-bottom: env(safe-area-inset-bottom);
+  overscroll-behavior-y: contain;
+}
+
+/* 触屏上的点击目标不小于 44px（iOS HIG）。桌面上按钮更紧凑，所以只在粗指针下放大。 */
+@media (pointer: coarse) {
+  button,
+  input[type='checkbox'],
+  select {
+    min-height: 44px;
+  }
+}

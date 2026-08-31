@@ -37,7 +37,7 @@ export function VocabPage() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="mr-auto text-xl font-semibold">生词本（{entries.length}）</h1>
         <select
-          className="rounded border border-neutral-300 px-2 py-1 text-sm"
+          className="min-w-0 max-w-full flex-1 rounded border border-neutral-300 px-2 py-1 text-sm sm:flex-none"
           value={lessonFilter}
           onChange={(e) => setLessonFilter(e.target.value)}
         >
@@ -47,7 +47,7 @@ export function VocabPage() {
           ))}
         </select>
         <select
-          className="rounded border border-neutral-300 px-2 py-1 text-sm"
+          className="min-w-0 max-w-full flex-1 rounded border border-neutral-300 px-2 py-1 text-sm sm:flex-none"
           value={stateFilter}
           onChange={(e) => setStateFilter(e.target.value)}
         >
@@ -110,8 +110,9 @@ function Row({
   onToggleSuspend: () => void;
   onDelete: () => void;
 }) {
+  // 手机上竖排：横排时按钮会压在词条上面（§2.1 手机是复习工位，生词本也得能用）
   return (
-    <div className="flex flex-wrap items-start gap-3">
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
       <div className="min-w-0 flex-1 space-y-1">
         <p className="font-medium">
           {entry.gender && <span className="mr-1 text-neutral-500">{{ m: 'der', f: 'die', n: 'das' }[entry.gender]}</span>}
@@ -138,7 +139,7 @@ function Row({
           {STATE_LABELS[entry.fsrs.state]} · 下次 {new Date(entry.fsrs.due).toLocaleDateString('zh-CN')}
         </p>
       </div>
-      <div className="flex shrink-0 gap-2">
+      <div className="flex shrink-0 flex-wrap gap-2">
         <Button onClick={onEdit}>编辑</Button>
         <Button onClick={onToggleSuspend}>{entry.suspended ? '恢复复习' : '暂停复习'}</Button>
         <Button variant="danger" onClick={onDelete}>删除</Button>

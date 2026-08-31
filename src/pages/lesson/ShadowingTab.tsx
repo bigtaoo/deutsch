@@ -17,7 +17,7 @@ import type { Lesson, LessonCache } from '@/types/models';
 
 export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
   const audio = useLessonAudio(lesson.id);
-  const saveLesson = useLessonStore((s) => s.saveLesson);
+  const patchLesson = useLessonStore((s) => s.patchLesson);
   const { settings, update } = useSettingsStore();
   const [difficultOnly, setDifficultOnly] = useState(false);
   const [state, setState] = useState<ShadowingState>({
@@ -61,12 +61,12 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
 
   const toggleDifficult = (index: number | null) => {
     if (index === null) return;
-    void saveLesson({
-      ...lesson,
-      sentences: lesson.sentences.map((s) =>
+    void patchLesson(lesson.id, (current) => ({
+      ...current,
+      sentences: current.sentences.map((s) =>
         s.index === index ? { ...s, markedDifficult: !s.markedDifficult } : s,
       ),
-    });
+    }));
   };
 
   const changeRate = (delta: number) => {

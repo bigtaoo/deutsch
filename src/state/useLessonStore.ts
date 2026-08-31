@@ -41,6 +41,16 @@ interface LessonState {
   load: () => Promise<void>;
   createLesson: (input: NewLessonInput) => Promise<string>;
   saveLesson: (lesson: Lesson) => Promise<void>;
+
+  /**
+   * 读-改-写的唯一安全形式：updater 拿到的一定是 store 里最新的那一份。
+   *
+   * 组件闭包里的 lesson 是上一次渲染的快照。连按 Enter 快速打点时，
+   * 两次回调可能都拿到同一个旧对象，后一次把前一次的时间戳整个抹掉 ——
+   * 而且抹得悄无声息，只表现为「刚才那句好像没标上」。
+   */
+  patchLesson: (lessonId: string, updater: (lesson: Lesson) => Lesson) => Promise<void>;
+
   removeLesson: (id: string) => Promise<void>;
 
   /** 句子结构编辑的统一出口；给了 indexMap 就顺带迁移 VocabEntry.sentenceIndex。 */
@@ -127,9 +137,18 @@ export const useLessonStore = create<LessonState>((set, get) => ({
 
   saveLesson: async (lesson) => {
     const next = touch(lesson);
-    await putLesson(next);
+    // 先同步更新内存，再落库。顺序反过来的话，`await putLesson` 之前 store 还是旧值，
+    // 同一帧内连来的第二次修改会读到旧快照并把第一次覆盖掉 ——
+    // 表现就是「连按 Enter 打点，只有最后一下留下来了」。
     set({ lessons: get().lessons.map((l) => (l.id === next.id ? next : l)) });
+    await putLesson(next);
     scheduleLessonBackup(next.id);
+  },
+
+  patchLesson: async (lessonId, updater) => {
+    const lesson = get().lessons.find((l) => l.id === lessonId);
+    if (!lesson) return;
+    await get().saveLesson(updater(lesson));
   },
 
   removeLesson: async (id) => {

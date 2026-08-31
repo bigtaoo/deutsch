@@ -55,15 +55,22 @@ function overlapsExistingBlank(sentence: Sentence, ranges: Range[]): boolean {
   );
 }
 
+/**
+ * 挖空写在 Lesson 记录上，所以必须用 patchLesson 读最新的那一份：
+ * 「全部接受」候选词是个串行循环，用调用方传进来的 lesson 连写 20 次，
+ * 结果是只留下最后一条。
+ */
 async function addBlankToLesson(
-  lesson: Lesson,
+  lessonId: string,
   sentenceIndex: number,
   blank: Blank,
 ): Promise<void> {
-  const sentences = lesson.sentences.map((s) =>
-    s.index === sentenceIndex ? { ...s, blanks: [...s.blanks, blank] } : s,
-  );
-  await useLessonStore.getState().saveLesson({ ...lesson, sentences });
+  await useLessonStore.getState().patchLesson(lessonId, (current) => ({
+    ...current,
+    sentences: current.sentences.map((s) =>
+      s.index === sentenceIndex ? { ...s, blanks: [...s.blanks, blank] } : s,
+    ),
+  }));
 }
 
 export const useVocabStore = create<VocabState>((set, get) => ({
@@ -101,7 +108,7 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     };
 
     await putVocabEntry(entry);
-    await addBlankToLesson(lesson, sentence.index, {
+    await addBlankToLesson(lesson.id, sentence.index, {
       id: generateId(),
       ranges,
       surface: entry.surface,
@@ -115,7 +122,7 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     if (overlapsExistingBlank(sentence, ranges)) {
       throw new Error('选中的词已经在另一个挖空里了');
     }
-    await addBlankToLesson(lesson, sentence.index, {
+    await addBlankToLesson(lesson.id, sentence.index, {
       id: generateId(),
       ranges,
       surface: surfaceOf(sentence.text, ranges),
@@ -137,10 +144,12 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     if (!lesson) return;
 
     const blank = lesson.sentences[sentenceIndex]?.blanks.find((b) => b.id === blankId);
-    const sentences = lesson.sentences.map((s) =>
-      s.index === sentenceIndex ? { ...s, blanks: s.blanks.filter((b) => b.id !== blankId) } : s,
-    );
-    await lessonStore.saveLesson({ ...lesson, sentences });
+    await lessonStore.patchLesson(lessonId, (current) => ({
+      ...current,
+      sentences: current.sentences.map((s) =>
+        s.index === sentenceIndex ? { ...s, blanks: s.blanks.filter((b) => b.id !== blankId) } : s,
+      ),
+    }));
 
     if (deleteEntry && blank) await get().removeEntry(blank.vocabEntryId);
   },

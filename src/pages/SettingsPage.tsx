@@ -8,6 +8,8 @@ import { generatePairingQrDataUrl, decodePairingPayload, type PairingPayload } f
 import { QrScanner } from '@/components/QrScanner';
 import type { BackupFile, MergeResult, MergeSummary } from '@/backup/types';
 import type { RepoRef } from '@/github/repo';
+import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
+import { useSettingsStore } from '@/state/useSettingsStore';
 
 const PAT_CREATE_URL = 'https://github.com/settings/personal-access-tokens/new';
 
@@ -365,6 +367,8 @@ function ManualBackupSection() {
   const handleExport = async () => {
     const backup = await buildBackupJson();
     downloadJson(backupFileName(), backup);
+    // FR-11.12 的 90 天提醒读的就是这个时间戳；不记的话首页横幅会一直挂着。
+    await useSettingsStore.getState().update({ lastBackupAt: Date.now() });
     setExportMessage(`已导出 ${backup.lessons.length} 课 / ${backup.vocab.length} 个生词。`);
   };
 
@@ -449,7 +453,7 @@ export function SettingsPage() {
   }, [hydrate]);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 p-4">
+    <div className="mx-auto max-w-2xl space-y-4">
       <h1 className="text-xl font-bold">设置</h1>
       <StorageSection />
       <ConnectSection />
@@ -457,6 +461,8 @@ export function SettingsPage() {
       <PairingSection />
       <BackupStatusBanner />
       <ManualBackupSection />
+      <RestoreSection />
+      <StudySettingsSection />
     </div>
   );
 }

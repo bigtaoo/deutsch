@@ -20,19 +20,28 @@ const NUDGE_STEPS = [-0.5, -0.1, 0.1, 0.5];
 export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
   const audio = useLessonAudio(lesson.id);
   const time = useAudioTime();
-  const saveLesson = useLessonStore((s) => s.saveLesson);
+  const patchLesson = useLessonStore((s) => s.patchLesson);
   const { settings, update } = useSettingsStore();
 
   const selectable = useMemo(() => lesson.sentences.filter((s) => !s.excluded), [lesson.sentences]);
-  const [selected, setSelected] = useState<number>(selectable[0]?.index ?? 0);
+  const [selected, setSelectedState] = useState<number>(selectable[0]?.index ?? 0);
+  // 连按 Enter 时两次回调可能落在同一帧里，React state 还没重新渲染 ——
+  // 那样第二次会重复标注同一句。ref 是同步的，用它做"当前是哪一句"的唯一真相。
+  const selectedRef = useRef(selected);
+  const setSelected = (index: number) => {
+    selectedRef.current = index;
+    setSelectedState(index);
+  };
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
   const listRef = useRef<HTMLOListElement>(null);
 
+  // 走 patchLesson 而不是 saveLesson：连按 Enter 打点时，两次回调可能拿到同一个旧快照，
+  // 后一次会把前一次的时间戳静默抹掉。
   const patch = (index: number, changes: Partial<Sentence>) =>
-    saveLesson({
-      ...lesson,
-      sentences: lesson.sentences.map((s) => (s.index === index ? { ...s, ...changes } : s)),
-    });
+    patchLesson(lesson.id, (current) => ({
+      ...current,
+      sentences: current.sentences.map((s) => (s.index === index ? { ...s, ...changes } : s)),
+    }));
 
   const selectNext = (from: number) => {
     const pos = selectable.findIndex((s) => s.index === from);
@@ -42,12 +51,13 @@ export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache |
 
   /** FR-4.2：记录当前 currentTime 为选中句的 startTime，并自动选中下一句。 */
   const mark = () => {
-    void patch(selected, { startTime: audioPlayer.currentTime });
-    selectNext(selected);
+    const index = selectedRef.current;
+    void patch(index, { startTime: audioPlayer.currentTime });
+    selectNext(index);
   };
 
   const markEnd = () => {
-    void patch(selected, { endTime: audioPlayer.currentTime, endTimeExplicit: true });
+    void patch(selectedRef.current, { endTime: audioPlayer.currentTime, endTimeExplicit: true });
   };
 
   const clear = (index: number) =>

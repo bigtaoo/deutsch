@@ -71,5 +71,7 @@ export function formatTime(seconds: number | undefined, decimals = 1): string {
   if (seconds === undefined || !Number.isFinite(seconds)) return '—';
   const m = Math.floor(seconds / 60);
   const s = seconds - m * 60;
-  return `${m}:${s.toFixed(decimals).padStart(decimals > 0 ? 4 + decimals : 2, '0')}`;
+  // 秒数补到两位整数：`0:18.4`，不是 `0:018.4`。小数点和小数位各自额外占位。
+  const width = decimals > 0 ? 3 + decimals : 2;
+  return `${m}:${s.toFixed(decimals).padStart(width, '0')}`;
 }
