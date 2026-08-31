@@ -1,0 +1,39 @@
+name: CI
+
+# 个人小项目，单一 workspace，没有 funny 那种 monorepo 的 docs-check/e2e/docker 分层——
+# 一个 job 把 typecheck + 单测 + 生产构建都跑完就够了。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支/PR 的旧 run 自动取消，省 runner 分钟数。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: typecheck + test + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: test
+        run: npm run test:run
+
+      - name: build
+        run: npm run build

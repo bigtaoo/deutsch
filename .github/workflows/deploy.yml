@@ -1,0 +1,61 @@
+name: deploy
+
+# 发布到 Cloudflare Workers 静态资源，对外域名 d.gamestao.com。
+# 部署方式参考同账号下 funny 项目的 animator-deploy.yml（纯静态资源、无 Worker 脚本的最简形态）。
+#
+# 触发：CI 在 main 上跑成功之后（workflow_run），或手动 Run。
+# 用 workflow_run 而不是直接 push 触发，是为了等 CI 先给出结论——否则一个还在跑/会跑红的
+# commit 有可能在 CI 报错之前就先发布出去了。
+#
+# 这是单一 workspace 的小项目，不像 funny 那样要按 client/server/animator 分别判断"这次改动
+# 影不影响这个部署目标"——仓库里的东西全都属于这一个部署目标，所以没有 funny 那套
+# paths-changed-since 的路径过滤，CI 一过就直接部署。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   Secrets  CLOUDFLARE_API_TOKEN   —— 至少需要 Workers Scripts:Edit（账号级）
+#            CLOUDFLARE_ACCOUNT_ID  —— Cloudflare 账号 ID
+#   Variables DEPLOY_ENABLED = true —— 开关；不设置时这个 job 直接跳过，
+#             避免密钥配置好之前每次 CI 后都跑一次必然失败的部署
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# 同一时间只跑一次部署，新的 run 取消旧的，避免并发部署互相覆盖。
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      - name: build
+        run: npm run build
+
+      # 用 npx 直接调 wrangler（不用 wrangler-action），报错原样可见。版本与 funny 项目锁一致，
+      # 减少"两个项目各用各的 wrangler 版本、行为不一致"的意外。
+      - name: deploy to Cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx -y wrangler@4.104.0 deploy

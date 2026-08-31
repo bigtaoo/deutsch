@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-ssr/
 *.local
+*.tsbuildinfo
 .env
 .env.*
 !.env.example
@@ -15,6 +16,9 @@ Thumbs.db
 coverage/
 *.log
 npm-debug.log*
+
+# Cloudflare Workers 本地状态/缓存（wrangler deploy 会在本机生成，不用入库）
+.wrangler/
 
 # 学习素材：音频与文稿只存本地，永不入库（见 SPEC.md §3.1.1 R-5）
 *.mp3

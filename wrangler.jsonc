@@ -1,0 +1,19 @@
+{
+  // 纯静态托管（Cloudflare Workers static assets），无 Worker 脚本、无后端——
+  // 这就是本项目 SPEC.md §3.1.1 R-1 的字面落地："没有后端可写，就没有红线可越"。
+  // 对外域名 d.gamestao.com。
+  //
+  // 配置形态参考同账号下 funny 项目的 wrangler/animator.jsonc（同样是纯静态资源部署）。
+  //
+  // routes.custom_domain=true 会在 Cloudflare 自动建 DNS 记录 + 边缘证书（橙云代理），
+  // 不需要手动去 DNS 面板配 CNAME。
+  //
+  // 部署：npm run build && npx wrangler deploy（读仓库根这份配置，把 dist/ 发布为静态资源）。
+  "name": "deutsch-listening-trainer",
+  "compatibility_date": "2026-08-31",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  },
+  "routes": [{ "pattern": "d.gamestao.com", "custom_domain": true }]
+}
