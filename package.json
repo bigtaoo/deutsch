@@ -6,14 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:native": "tsc -b && vite build --mode native",
     "stage:align": "node scripts/stage-align-assets.mjs",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
     "typecheck": "tsc -b --noEmit",
-    "deploy": "npm run build && npx -y wrangler@4.104.0 deploy"
+    "deploy": "npm run build && npx -y wrangler@4.104.0 deploy",
+    "cap:sync:ios": "npm run build:native && npx cap sync ios",
+    "cap:sync:android": "npm run build:native && npx cap sync android",
+    "cap:open:ios": "npx cap open ios",
+    "cap:open:android": "npx cap open android",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.3",
+    "@capacitor/ios": "^8.5.0",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.2",
+    "@capacitor/status-bar": "^8.0.3",
     "@huggingface/transformers": "^4.2.0",
     "idb": "^8.0.3",
     "jsqr": "^1.4.0",
@@ -24,6 +38,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",

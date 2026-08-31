@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  共享 scheme。Capacitor 的模板不带这个文件 —— Xcode 会在第一次打开工程时自动生成一份，
+  但它落在 xcuserdata/ 里（.gitignore 掉了），所以**CI 上不存在**。
+  没有它，`xcodebuild -scheme App` 只能指望 xcodebuild 自动补一个 scheme；
+  那行为随 Xcode 版本变，且失败信息是「scheme App 不存在」，跟真正的原因对不上号。
+  BlueprintIdentifier 是 project.pbxproj 里 PBXNativeTarget "App" 的 id。
+  见 .github/workflows/release-ios.yml。
+-->
+<Scheme
+   LastUpgradeVersion="1600"
+   version="1.7">
+   <BuildAction
+      parallelizeBuildables="YES"
+      buildImplicitDependencies="YES">
+      <BuildActionEntries>
+         <BuildActionEntry
+            buildForTesting="YES"
+            buildForRunning="YES"
+            buildForProfiling="YES"
+            buildForArchiving="YES"
+            buildForAnalyzing="YES">
+            <BuildableReference
+               BuildableIdentifier="primary"
+               BlueprintIdentifier="504EC3031FED79650016851F"
+               BuildableName="App.app"
+               BlueprintName="App"
+               ReferencedContainer="container:App.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction
+      buildConfiguration="Debug"
+      selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB"
+      shouldUseLaunchSchemeArgsEnv="YES">
+      <Testables>
+      </Testables>
+   </TestAction>
+   <LaunchAction
+      buildConfiguration="Debug"
+      selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB"
+      launchStyle="0"
+      useCustomWorkingDirectory="NO"
+      ignoresPersistentStateOnLaunch="NO"
+      debugDocumentVersioning="YES"
+      debugServiceExtension="internal"
+      allowLocationSimulation="YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode="0">
+         <BuildableReference
+            BuildableIdentifier="primary"
+            BlueprintIdentifier="504EC3031FED79650016851F"
+            BuildableName="App.app"
+            BlueprintName="App"
+            ReferencedContainer="container:App.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction
+      buildConfiguration="Release"
+      shouldUseLaunchSchemeArgsEnv="YES"
+      savedToolIdentifier=""
+      useCustomWorkingDirectory="NO"
+      debugDocumentVersioning="YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode="0">
+         <BuildableReference
+            BuildableIdentifier="primary"
+            BlueprintIdentifier="504EC3031FED79650016851F"
+            BuildableName="App.app"
+            BlueprintName="App"
+            ReferencedContainer="container:App.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction
+      buildConfiguration="Debug">
+   </AnalyzeAction>
+   <ArchiveAction
+      buildConfiguration="Release"
+      revealArchiveInOrganizer="YES">
+   </ArchiveAction>
+</Scheme>

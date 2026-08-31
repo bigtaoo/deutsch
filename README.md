@@ -3,6 +3,7 @@
 个人自用的德语精听工具：把一期 DW Alltagsdeutsch 切成句子、给想练的句子打时间戳，然后跟读、挖空听写，错词进 FSRS 复习队列。
 
 纯前端 PWA，没有后端。线上地址 **https://d.gamestao.com**。
+手机上也可以装原生壳（Capacitor，iOS + Android）—— 同一份代码，权重随包带、装完就离线，见 §五。
 完整需求与技术决策见 [SPEC.md](SPEC.md)；下面只写用之前必须知道的事。
 
 ---
@@ -13,6 +14,8 @@
 
 - **iOS 必须「添加到主屏幕」后再用。** Safari 对普通网站有「7 天无交互即清除 storage」的策略，已安装的 PWA 豁免。
   **不装到主屏幕 = 数据一定会丢**，只是早晚问题。
+  ——**装 TestFlight / App Store 那个原生版的话这条不适用**：App 的数据只在卸载时消失，
+  而且模型权重随包带、装完第一次用就离线。出包方式见 §五「原生打包」。
 - 首次启动会自动调 `navigator.storage.persist()` 申请持久化配额，结果显示在设置页。没拿到就去设置页手动点一次。
 - 设置页同时显示 `navigator.storage.estimate()` 的用量/配额。音频占大头，一年约 700 MB；
   嫌多就去「素材」页清缓存，**清缓存不会动任何标注**（见下）。
@@ -149,20 +152,57 @@ npm run build
 
 推到 `main` 且 CI 通过后由 GitHub Actions 自动发布到 Cloudflare Workers。
 
-打包成原生应用发布前，先把对齐模型的权重放进 `public/models/`，
-这样用户第一次用就不需要联网：
+图标与启动图（PWA 的 + 两套原生工程的）都是脚本画的，改了配色重新跑一次，产物入库：
+
+```bash
+npm run icons
+```
+
+### 原生打包（Capacitor）
+
+iOS 和 Android 两套原生工程都在库里（`ios/` `android/`），壳里跑的是同一份 web 产物。
+设计与六条实现约束见 [SPEC.md](SPEC.md) §7.10。
+
+**出包不需要本机有 Mac 或 Android Studio，走 CI。**
+
+iOS —— 推一个 `ios-v*` tag，`release-ios.yml` 会出 IPA 并自动上传 App Store Connect：
+
+```bash
+git tag ios-v0.1.0; git push origin ios-v0.1.0
+```
+
+上传成功不等于能装：ASC 那边要处理十几分钟，之后**内部测试员自动可见**，
+外部测试组第一次需要过一次 TestFlight 审核。
+第一次跑之前要在仓库 Settings → Secrets 里配好九个签名相关的 secret，
+清单和说明在 `.github/workflows/release-ios.yml` 头部。
+
+Android —— 推一个 `android-v*` tag，`release-android.yml` 出一个签名 APK 放在 run 的 Artifacts 里，
+下载直接侧载。**不上 Play Store**（单 APK 100MB 的限制带着 200MB 权重必然超，而这是自用工具）。
+需要四个 keystore 相关的 secret，生成命令在那个 workflow 头部。
+**那份 keystore 自己也要备份** —— 换 keystore 等于换应用身份，已装的版本只能卸了重装，数据会没。
+
+两条流水线都会先跑 `npm run stage:align`（带缓存）把 200MB 权重放进 `public/models/`，
+所以装完第一次用就完全离线。手动 Run 时可以关掉那个开关，出一个只验壳的小包。
+
+本机想看看原生工程（需要 Xcode / Android Studio）：
+
+```bash
+npm run cap:sync:ios
+```
+
+```bash
+npm run cap:open:ios
+```
+
+`cap:sync:*` 里已经含了 `npm run build:native`（= `vite build --mode native`，
+与线上版只差一件事：**不装 Service Worker**，理由见 SPEC §7.10 约束 2）。
+只想单独把权重放进 `public/models/`：
 
 ```bash
 npm run stage:align
 ```
 
-（ORT 的 wasm 不用管 —— 它走 Vite 的 `?url`，`npm run build` 时自动进 `dist/assets/`。）
-
-PWA 图标是脚本画的，改了配色重新跑：
-
-```bash
-node scripts/generate-icons.mjs
-```
+（ORT 的 wasm 不用管 —— 它走 Vite 的 `?url`，构建时自动进 `dist/assets/`。）
 
 ### 已知的坑（都在代码注释里，这里只列个索引）
 
@@ -172,6 +212,7 @@ node scripts/generate-icons.mjs
 - 改 Lesson 一律走 `useLessonStore.patchLesson`，不要拿组件闭包里的 lesson 直接 save ——
   连按 Enter 打点时后一次会把前一次静默抹掉。
 - iOS 的静音开关会让 `<audio>` 没声音。如果「点了没反应」，先看看侧边那个拨杆。
+  **原生版没有这个问题** —— `AppDelegate` 把音频会话设成了 `.playback`。
 - **Web Audio API 在 Web Worker 里不存在。** 对齐必须在 Worker 里跑（否则界面冻住几分钟），
   所以解码只能留在主线程，波形再 transfer 进去。见 `src/align/decode.ts`。
 - **主线程不要 import `src/align/runtime.ts` 或 `emissions.ts`。** 它们连着 transformers.js +
@@ -179,4 +220,10 @@ node scripts/generate-icons.mjs
 - transformers.js **默认从 jsdelivr CDN 拉 ORT 的 wasm**，不覆盖 `wasmPaths` 断网就起不来。
   见 `src/align/runtime.ts`。
 - Cloudflare 的 SPA fallback 会给缺失路径返回 **200 + index.html**，所以探测「本地有没有模型」
-  不能只看 `res.ok`，要验 content-type。
+  不能只看 `res.ok` —— 要 GET 那份 `config.json` 并真的 parse 一遍（原生壳里 HEAD 和响应头都不保证）。
+- **`a[download]` 在 WKWebView 里不存在**，点下去什么都不会发生、也不报错。所有「存个文件给用户」
+  都必须走 `src/lib/download.ts`，不要在组件里自己 `a.click()`。
+- **原生壳里判平台只从 `src/platform/native.ts` 拿**，那里的函数是 async 的 ——
+  `@capacitor/core` 静态 import 会进首屏包（498KB → 509KB）。
+- **手机上自动打点会比桌面慢一个量级**：WKWebView 没有 WebGPU，且拿不到 `SharedArrayBuffer`
+  （没有 COOP/COEP 头），所以一定是单线程 WASM + int8。一课按十分钟量级估，这不是 bug。

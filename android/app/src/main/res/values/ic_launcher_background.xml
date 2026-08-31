@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 由 scripts/generate-icons.mjs 生成。前景（ic_launcher_foreground）是浅色波形，
+     所以底色必须是深的，否则自适应图标在启动器里是一片空白。 -->
+<resources>
+    <color name="ic_launcher_background">#171717</color>
+</resources>

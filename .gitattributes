@@ -1,0 +1,9 @@
+# Gradle wrapper 脚本必须是 LF：release-android.yml 在 ubuntu runner 上跑 `./gradlew`，
+# CRLF 会让它以「bad interpreter: /bin/sh^M」失败 —— 那条报错跟真正的原因完全对不上号。
+# 这台开发机的 core.autocrlf 是 true，所以显式钉住。
+# 可执行位另外用 `git update-index --chmod=+x android/gradlew` 设，.gitattributes 管不了它。
+android/gradlew text eol=lf
+
+# 二进制资源（图标、启动图、wrapper jar）不做任何行尾转换。
+*.png binary
+*.jar binary

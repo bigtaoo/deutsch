@@ -1,0 +1,188 @@
+name: release-ios
+
+# 出 iOS 包并上传 App Store Connect（→ TestFlight）。
+#
+# 形状抄的是同账号下 funny 项目的 release-ios.yml，但有三处**必须不一样**：
+#
+#  1. **`-project` 而不是 `-workspace`。** Capacitor 8 的 iOS 模板走 SPM
+#     （ios/App/CapApp-SPM/Package.swift），不再有 CocoaPods，所以既没有
+#     `App.xcworkspace`，也不需要 `pod install`。funny 停在 Capacitor 6，那边是 Pods。
+#  2. **不用 `agvtool`。** 这份 pbxproj 没有 `VERSIONING_SYSTEM = apple-generic`，
+#     agvtool 会以「找不到版本号」失败。改成在 xcodebuild 命令行上覆盖
+#     `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION` —— Info.plist 里本来就是
+#     `$(CURRENT_PROJECT_VERSION)`，覆盖会一路传下去。
+#  3. **多一步 `npm run stage:align`。** 200MB 的对齐权重随包带（SPEC Q9 决定做原生壳
+#     的理由之一就是这个），所以构建前必须把权重放进 public/。这一步走 actions/cache，
+#     否则每次 run 都要从 HF 拉 200MB。
+#
+# 触发：推 tag `ios-v*`（如 ios-v0.1.0），或手动 Run。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   BUILD_CERTIFICATE_BASE64        Apple Distribution 证书（.p12）的 base64
+#   P12_PASSWORD                    该 .p12 的密码
+#   KEYCHAIN_PASSWORD               任意字符串；runner 上临时钥匙串的密码
+#   BUILD_PROVISION_PROFILE_BASE64  App Store 类型的描述文件（.mobileprovision）base64
+#   PROVISIONING_PROFILE_NAME       该描述文件在开发者后台显示的名字
+#   APPLE_TEAM_ID                   10 位 Team ID
+#   ASC_API_KEY_ID                  App Store Connect API key id
+#   ASC_API_ISSUER_ID               App Store Connect API issuer id
+#   ASC_API_KEY_CONTENT_BASE64      那份 .p8 私钥的 base64
+#
+# 上传成功不等于能装：ASC 那边要处理十几分钟，之后内部测试员自动可见，
+# 外部测试组第一次需要过一次 TestFlight 审核。
+
+on:
+  push:
+    tags:
+      - 'ios-v*'
+  workflow_dispatch:
+    inputs:
+      bundle_model:
+        description: '把 200MB 对齐权重打进包里（关掉可以快速出一个只验壳的小包）'
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-ios
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    # 与 funny 的 release-ios.yml 用同一个 runner 镜像。
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      # tag 推上来时版本号取自 tag（ios-v0.1.0 → 0.1.0）；手动 Run 时取 package.json。
+      # 构建号一律用 run_number：单调递增，不需要有人记得改，而 ASC 只要求它在同一个
+      # 版本号下唯一。
+      - name: resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == ios-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#ios-v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          echo "marketing=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "版本 ${VERSION} 构建号 ${GITHUB_RUN_NUMBER}"
+
+      # 权重的来源是 HF 上的固定 tag，内容不会变；缓存键跟着下载脚本走 ——
+      # 换模型一定要改 scripts/stage-align-assets.mjs 里的 MODEL_ID/文件表，
+      # 所以哈希那个文件就等于哈希「要哪些权重」。
+      - name: cache align weights
+        # 不能写 `inputs.bundle_model != false`：tag 触发时这个值是空字符串，
+        # GitHub 比较不同类型时一律转成数字，'' 和 false 都变 0 —— 判为相等，
+        # 于是整条 tag 发布都会静默跳过权重那一步，出一个「以为带了其实没带」的包。
+        if: github.event_name != 'workflow_dispatch' || inputs.bundle_model
+        uses: actions/cache@v4
+        with:
+          path: public/models
+          key: align-weights-${{ hashFiles('scripts/stage-align-assets.mjs') }}
+
+      - name: stage align weights
+        if: github.event_name != 'workflow_dispatch' || inputs.bundle_model
+        run: npm run stage:align
+
+      - name: build web bundle (native mode)
+        run: npm run build:native
+
+      # 把 dist/ 刷进 ios/App/App/public，并按 package.json 里的插件重写 Package.swift。
+      # Capacitor 8 是 SPM，这一步不跑 pod install。
+      - name: cap sync ios
+        run: npx cap sync ios
+
+      - uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          p12-password: ${{ secrets.P12_PASSWORD }}
+          keychain-password: ${{ secrets.KEYCHAIN_PASSWORD }}
+
+      - name: install provisioning profile
+        run: |
+          PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          echo -n "${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}" | base64 --decode -o "$PP_PATH"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/
+
+      # 不入库：里面有 Team ID 和描述文件名，而且它完全由 secrets 决定。
+      - name: write ExportOptions.plist
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.gamestao.deutsch</key>
+                  <string>${{ secrets.PROVISIONING_PROFILE_NAME }}</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+      # CODE_SIGN_IDENTITY 用 "Apple Distribution" —— 2019 年之后签发的分发证书都叫这个名。
+      # 如果这一步报「No signing certificate found」而钥匙串里那张是老证书，
+      # 把它改成 "iPhone Distribution"（funny 那份 workflow 就是这么写的，它的证书更老）。
+      - name: archive
+        run: |
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            archive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROVISIONING_PROFILE_NAME }}" \
+            MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+
+      - name: export ipa
+        run: |
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/ipa"
+          ls -lh "$RUNNER_TEMP/ipa"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-${{ steps.version.outputs.marketing }}-${{ github.run_number }}
+          path: ${{ runner.temp }}/ipa/*.ipa
+          # 带权重的包约 250MB，留一份能装的产物就够，不用占着仓库配额三个月。
+          retention-days: 14
+
+      - name: upload to App Store Connect
+        run: |
+          mkdir -p ~/private_keys
+          echo -n "${{ secrets.ASC_API_KEY_CONTENT_BASE64 }}" | base64 --decode \
+            > ~/private_keys/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8
+          xcrun altool \
+            --upload-app \
+            --type ios \
+            --file "$(ls "$RUNNER_TEMP"/ipa/*.ipa | head -1)" \
+            --apiKey "${{ secrets.ASC_API_KEY_ID }}" \
+            --apiIssuer "${{ secrets.ASC_API_ISSUER_ID }}"

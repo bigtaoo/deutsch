@@ -13,6 +13,17 @@ body {
   overscroll-behavior-y: contain;
 }
 
+/* 顶部安全区（原生壳 §7.10，以及 iOS 上的主屏幕 PWA）：WebView 铺满整屏，
+   刘海/状态栏会压在吸顶导航上。安全区必须加在**导航自己**身上 ——
+   sticky 是相对视口定位的，加在 body 的 padding 上导航照样会滑到状态栏底下。
+   加完之后导航自己的白底把状态栏那条也铺上了，正好。
+   浏览器里（含 Android 壳，状态栏不覆盖 WebView）env() 是 0，这条规则等于不存在。
+   写成普通 CSS 而不是 Tailwind 的 pt-[…]：它要盖掉同一个元素上的 py-2，
+   而 Tailwind v4 的工具类在 @layer utilities 里，未分层的规则才稳赢。 */
+.app-nav {
+  padding-top: calc(0.5rem + env(safe-area-inset-top));
+}
+
 /* 触屏上的点击目标不小于 44px（iOS HIG）。桌面上按钮更紧凑，所以只在粗指针下放大。 */
 @media (pointer: coarse) {
   button,

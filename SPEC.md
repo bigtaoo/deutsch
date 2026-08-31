@@ -26,6 +26,7 @@
 | 14 | **§2.6 重写为「备份与同步」，主次对调**：备份是首要需求，同步是副产品。方案为 GitHub 私有仓库自动备份（**不建服务器**），FR-11 相应重写并升为 V1 最高优先级的非学习功能 | 初稿把两者当同一件事（「手动搬一次顺带备份」）。**这对同步成立，对备份不成立** —— 备份的失效模式正是「你忘了」。且威胁模型里「写坏数据后覆盖备份」和「几年后工具跑不起来」两条，要求方案必须有**版本历史**且**格式能脱离工具被读懂** |
 | 16 | **实现期回写（2026-08-31，§9 第 2–11 步完成后）**：`Sentence.index` 一律等于数组下标，**排除不重排号**（FR-1.4 修订）；听写「转写等价」放宽到「去变音符」写法（§7.4 修订）；`FSRSCard` 增补 `learning_steps`（§6 修订）；候选词接受同样受 §3.3 R1 约束（FR-14.2 修订） | 四条都是实现时才暴露的：第一条若按原文重排会让生词出处静默错位；第二条是 §7.4 的规则与 §10 的验收例子（`Hauser` → 转写等价）本身对不上；第三条丢了会让同日二次复习退化；第四条是两条规则的交叉点，原文没写 |
 | 17 | **新增 FR-15 自动打点**：浏览器内跑 CTC 强制对齐（MMS-FA），从「已切好的句子 + 音频」直接算出句级与词级时间戳，结果一律标为**待校对** | 打点是整条能力依赖链（§3.3）的入口，也是唯一必须逐句手工做的一步 —— 一期 40+ 句，这是实际使用中最大的摩擦。强制对齐（文本已知）而不是 ASR（文本待猜）让这件事从「猜」变成「算」，且**音频不出设备**，§3.1.1 R-1 不受影响。刻意不叫「完成」：实测低置信句正好命中英语借词、被丢的数字这几类，必须留人工校对这一步 |
+| 18 | **新增 §7.10 原生壳（Capacitor）**：iOS + Android 两套原生工程入库，CI 出包（iOS 自动上传 App Store Connect）。200MB 对齐权重随包带 | Q9 的手机那一半。FR-15 之后套壳有了三个纯 web 版给不了的东西：权重随包带（装完第一次用就离线）、iOS 上的数据寿命不再依赖「用户记得添加到主屏幕」、以及 `AVAudioSession` 一行修掉静音开关静音 `<audio>`。壳里跑的是同一份产物，业务代码只多了一个 `src/platform/native.ts` |
 | 15 | **不做 OAuth 登录**，改为「粘贴一次 PAT，其余全自动」：应用自动识别账号、**一键创建私有备份仓库**、校验权限、监控 token 过期 | 实测 GitHub 的 OAuth 端点不支持 CORS 且不支持 PKCE，纯前端拿不到 token（附录 B.1）。但 `api.github.com` 完全开放，所以「填 owner/repo」这一步可以彻底消灭，手工操作只剩「建 token + 粘贴」 |
 
 ---
@@ -827,7 +828,39 @@ DW 只给文本和音频，不给对应关系，映射必须自己造。V1 用�
 
 **§7.6「不配任何 runtimeCaching」不必为此破例**：transformers.js 自己就把模型权重和 ORT wasm 都存进 Cache API（`env.useBrowserCache` / `useWasmCache` 默认 true），离线由它保证。
 
-**一个部署陷阱**：`wrangler.jsonc` 的 `not_found_handling` 是 `single-page-application`，缺失路径会返回 **200 + index.html**。所以「本地有没有权重」不能只看 `res.ok`，必须验 content-type 真的是 JSON；打开 `allowLocalModels` 却没有权重时，transformers.js 会拿 HTML 去 `JSON.parse` 然后报「配置解析失败」，和真正的原因完全对不上号。
+**一个部署陷阱**：`wrangler.jsonc` 的 `not_found_handling` 是 `single-page-application`，缺失路径会返回 **200 + index.html**。所以「本地有没有权重」不能只看 `res.ok`；打开 `allowLocalModels` 却没有权重时，transformers.js 会拿 HTML 去 `JSON.parse` 然后报「配置解析失败」，和真正的原因完全对不上号。判据曾经是 `HEAD` + 验 content-type，接原生壳（§7.10）时改成了 **GET 那份 1KB 的 `config.json` 并真的 parse 一遍** —— 原生壳里 dist 不是被 HTTP 服务器托管的，而是 iOS 的 `capacitor://` scheme handler / Android 的 `WebViewAssetLoader` 在读本地文件，它们对 HEAD 和响应头的支持都不保证。而这里一旦误判成「没有本地权重」，随包带的 200MB 就白带了。parse 这个判据不依赖任何响应头，三种托管方式下都成立。
+
+### 7.10 原生壳（Capacitor，iOS + Android）
+
+Q9 的手机那一半的落地。**壳里跑的是同一份 web 产物，业务代码没有为它分叉**：全项目只有一个文件知道「自己可能不在浏览器里」（`src/platform/native.ts`），加一处原生代码（`AppDelegate.swift` 的音频会话）。
+
+**为什么值得套壳**（纯 web 版给不了的三件事）：
+
+| | 纯 web / 主屏幕 PWA | 原生壳 |
+|---|---|---|
+| 200MB 对齐权重 | 首次使用联网下一次，之后靠 Cache API | **随包带**，装完第一次用就离线。这是 Q9 决定做原生壳的原始理由 |
+| iOS 上的数据寿命 | Safari 的「7 天无交互清 storage」策略，靠「必须添加到主屏幕」豁免（README §一那条警告） | App 的 WebView 数据只在卸载时消失，**不依赖用户记得装主屏幕** |
+| 静音开关 | `<audio>` 跟着侧边拨杆走，一拨等于整个应用坏掉，症状还是「点了没反应」（§3.2 当时留的方案是「必要时换 Web Audio API」） | `AVAudioSession` 设 `.playback` 一行解决，不用重写全局单例 `<audio>` 那套 |
+
+**为什么是 Capacitor 而不是 Tauri v2**：Tauri 的优势是「一套覆盖桌面 + 手机」，但桌面这一半这里根本不急（桌面就是浏览器，工位上开着就行），而手机这一半 Capacitor 的成熟度和文档量明显更高，同账号下的 funny 项目也已经在用、CI 的形状可以直接抄。真要做桌面壳时再单独上 Electron 或 Tauri，与这里不冲突 —— 三条路里跑的都是同一份 `dist/`。
+
+**六条必须知道的实现约束**（每条都写进了对应文件的注释）：
+
+| # | 约束 | 为什么 |
+|---|---|---|
+| 1 | **`base` 保持 `'/'`，不要改成 `'./'`** | KICKOFF 里那句「打包要配 `base: './'`」是针对 **Electron 的 `file://`** 的。Capacitor 不走 `file://`：iOS 从 `capacitor://localhost/` 提供 webDir、Android 从 `https://localhost/`，两边都有真正的 URL 根，`?url` 产出的 `/assets/…` 原样就对 |
+| 2 | **原生构建必须去掉 Service Worker**（`vite build --mode native`） | 它在原生壳里没用途（dist 已经在包里，本来 100% 离线），且有害：`registerType: 'autoUpdate'` 是为「刷新页面拿新版」设计的，而原生壳没有「刷新」—— 一旦某次装出来的 SW 缓存了旧壳的 index.html，下次 `cap sync` 换掉 dist 也照样吃旧的，而用户没有任何界面能清它 |
+| 3 | **不启用 `CapacitorHttp`** | 它 patch `window.fetch` 走原生栈以绕过 CORS。一是不需要（附录 A.1 实测 DW 的 RSS/页面/mp3 三者全部 `Access-Control-Allow-Origin: *`），二是有害：mp3 是几 MB 二进制，原生桥要 base64 过一遍 JSON，内存与耗时都翻番且拿不到流式响应 |
+| 4 | **`a[download]` 在 WKWebView 里不存在** | 点下去什么都不会发生 —— 不报错、不下载，最难查的那种静默失败。手动导出改走 Filesystem 写进 App 的 Documents 目录 + 系统分享面板（`src/lib/download.ts`），Info.plist 的 `UIFileSharingEnabled` 让「文件」App 直接看到那个文件夹 |
+| 5 | **顶部安全区要加在吸顶导航自己身上**，不是 body | `sticky` 是相对视口定位的，加在 body 的 padding 上导航照样滑到状态栏底下。写成普通 CSS（`.app-nav`）而不是 Tailwind 的 `pt-[…]`：它要盖掉同一个元素上的 `py-2`，而 Tailwind v4 的工具类在 `@layer utilities` 里，未分层的规则才稳赢。Android 走另一条路 —— 让状态栏**不覆盖** WebView，因为 Capacitor 的 Android 壳不把系统 inset 喂给 `env(safe-area-inset-top)` |
+| 6 | **Android 硬件返回键必须接管** | 默认行为是**任何一次按下都直接退出应用**，在跟读页误触一下等于把整个循环关掉。hash 路由的每次跳转都进了 history，所以 `canGoBack` 时 `history.back()`、到根了再按才 `exitApp()` |
+
+**速度仍然是手机端的硬约束，体积不再是。** 套壳不改变运行时：手机里仍然是 WebView 里的 WASM/WebGPU。iOS 的 WKWebView 没有 WebGPU，所以 `pickDevice()` 一定退到 `wasm` + `int8`；再加上原生壳的本地服务器不发 COOP/COEP 头（线上静态托管也没发），ORT 拿不到 `SharedArrayBuffer`、跑不了多线程。**结论：手机上自动打点会比桌面慢一个量级，一课按十分钟量级估**，这是 FR-15 在手机上的真实形状，不是 bug。
+
+**图标与启动图自己画**（`scripts/generate-icons.mjs`，`npm run icons`）。官方的 `@capacitor/assets` 依赖 sharp，而 sharp 要跑安装脚本编原生模块 —— 为画几十个 PNG 引入一条需要编译的依赖链，比自己多写一百行糟得多；这与 §7.6「不为一次性构建产物装依赖」是同一条判断。一个只在上传时才炸的坑：**iOS 的 AppIcon 不能带 alpha 通道**，App Store 校验看的是通道在不在而不是有没有透明像素，所以那一张必须写成 PNG color type 2，Xcode 本地构建完全不报错。
+
+**发布走 CI，本机不需要 Mac**（`.github/workflows/release-ios.yml`，推 tag `ios-v*`）。形状抄 funny 的同名 workflow，但三处必须不一样：Capacitor 8 的 iOS 模板走 **SPM 而非 CocoaPods**，所以是 `-project` 不是 `-workspace`、也不跑 `pod install`；这份 pbxproj 没有 `VERSIONING_SYSTEM = apple-generic`，所以**不能用 `agvtool`**，版本号改在 xcodebuild 命令行上覆盖；多一步 `npm run stage:align`（带 `actions/cache`，否则每次 run 都要从 HF 拉 200MB）。Capacitor 模板不带共享 scheme（Xcode 自动生成的那份在 `xcuserdata/` 里、被 gitignore 了），所以 `App.xcscheme` 手工写了一份入库。Android 那条（`release-android.yml`，tag `android-v*`）只出一个签名 APK 作为构建产物，**不上 Play Store**：单 APK 100MB 的限制带着 200MB 权重必然超，而这是个人自用工具，侧载就行。
+
 
 ---
 
@@ -835,7 +868,7 @@ DW 只给文本和音频，不给对应关系，映射必须自己造。V1 用�
 
 | 风险 | 影响 | 对策 |
 |---|---|---|
-| 浏览器驱逐 IndexedDB | **缓存层：无所谓**（重新下载即可）<br>**标注层：致命** | 分层（§2.3）把风险面从 700 MB 缩小到几百 KB。`persist()` + iOS 必须装主屏幕 + GitHub 自动备份（FR-11.2/11.3）—— 现在保护的只是那个小文件 |
+| 浏览器驱逐 IndexedDB | **缓存层：无所谓**（重新下载即可）<br>**标注层：致命** | 分层（§2.3）把风险面从 700 MB 缩小到几百 KB。`persist()` + iOS 必须装主屏幕 + GitHub 自动备份（FR-11.2/11.3）—— 现在保护的只是那个小文件。**原生壳（§7.10）里「必须装主屏幕」这条自动满足**：App 的 WebView 数据只在卸载时消失 |
 | 换手机 / 设备丢失，几年的 FSRS 状态蒸发 | **致命，且不可重建** | 自动备份异地存放（§2.6.3）；`vocab.json` 每次复习结束就推，不可重建的数据不过夜 |
 | 备份静默失败，用完全无察觉 | **致命** —— 比没有备份更糟，因为它给虚假的安全感 | 备份状态常驻可见（FR-11.5）；失败显式报警；离线排队重试（FR-11.6） |
 | 数据被写坏后，坏数据覆盖掉好备份 | 高 | git 版本历史可回滚到任意一天；手动导出按日期命名不覆盖（FR-11.7） |
@@ -849,7 +882,8 @@ DW 只给文本和音频，不给对应关系，映射必须自己造。V1 用�
 | 两端同时复习，FSRS 状态分叉 | 中 | 约定单向搬运（§2.3）+ last-write-wins 合并 + 合并摘要 |
 | V1 无 lemma，同词跨课重复建卡 | 中 | surface 匹配提示合并（FR-9.3），接受局限，V2 补批量归并 |
 | 标注全部句子太累导致弃用 | 中 | 稀疏打点是**设计**不是妥协；UI 明示「已标注 6 / 112」不制造焦虑 |
-| iOS 静音开关导致「没声音」被误判为 bug | 低 | README 提示；必要时换 Web Audio API |
+| iOS 静音开关导致「没声音」被误判为 bug | 低 | **原生壳里已消除**：`AppDelegate` 把 `AVAudioSession` 设成 `.playback`（§7.10）。纯 web / 主屏幕 PWA 上仍然存在，靠 README 提示 |
+| 原生壳的版本更新走 App Store，坏版本回滚慢 | 中 | 线上 web 版（d.gamestao.com）始终是同一份代码的可用退路，且数据在 GitHub 备份里而不在包里。iOS 出包用 `ios-v*` tag 触发，重发一个新 tag 就是一次修复；不做 OTA 热更（funny 那套 Capgo 是为游戏内容更新配的，这里没有同等收益） |
 | DW 改版打掉自动抓取 | 中 | 三层降级（FR-13）+ `__APOLLO_STATE__` 快照回归测试让改版先让测试红；**L3 手动路径永不删除** |
 | DW 收紧 CORS 头，纯前端方案失效 | 中 | 这是整个 FR-13 的单点依赖。真发生了就退回本地 helper 方案（§7.8 已记录其设计），或退 L3。**因此 adapter 层必须与 UI 解耦**：换成 helper 时只改数据来源，不动导入流程 |
 | GLOSSARY span 的 offset 映射静默错位 | 中 | HTML→文本转换单独写测试（§7.8）；候选词在 UI 上高亮显示，错位肉眼即可见 |
@@ -876,8 +910,11 @@ V1 一次做完，但按下面顺序写，每步都能跑：
 10. ✅ DW adapter + 自动导入（FR-13 / §7.8）—— 已用真实页面跑通，见附录 A.6
 11. ✅ Glossar 候选词（FR-14）—— 14 条候选全部落位正确，见附录 A.6
 
-**全部 11 步于 2026-08-31 完成。** 尚未做的是真实 PAT 的 GitHub 联调（附录 B.2 仍未定），
-以及 §10 里依赖它的那几条验收项。
+**全部 11 步于 2026-08-31 完成。** 之后又加了两块 §9 原本没有的：
+**FR-15 自动打点**（§7.9）与 **§7.10 原生壳（Capacitor，iOS + Android）**。
+尚未做的是真实 PAT 的 GitHub 联调（附录 B.2 仍未定）、§10 里依赖它的那几条验收项，
+以及原生壳的**真机验证** —— 两套工程与 CI 都写完了，但没有 Mac 的机器上跑不了 xcodebuild，
+所以 iOS 那条流水线要等第一次推 `ios-v*` tag 才算走通（§7.10）。
 
 理由（同原规格 §8）：界面优先级 **跟读 > 听写 > 复习**。跟读每次都会用，复习要攒够词才有意义。
 
@@ -944,7 +981,7 @@ V1 一次做完，但按下面顺序写，每步都能跑：
 | ~~Q6~~ | ~~DW 是否返回宽松 CORS 头~~ | **已验证：RSS、页面、mp3 三者全部 `Access-Control-Allow-Origin: *`。** 本地 helper 整个方案作废。见附录 A.1 |
 | Q7 | 存档期次（400+ 期）RSS 只给 100 条窗口，老期次怎么进来 | **L2 已实现**（来源页粘 URL 或裸 lesson id，见 `parseLessonId`）。存档列表页 `/de/alltagsdeutsch/s-9214` 是否在 `__APOLLO_STATE__` 里给出完整列表**仍未验证** —— 若给了，L1 就能覆盖全部存档，是个 10 分钟的增量 |
 | Q8 | DW 的 Glossar 释义是德语的，对 C1 是优点还是负担 | 先按德德释义用（FR-14.3）。真觉得吃力，V2 的 Claude API 可以在此基础上补中文，而不是从头查词 |
-| Q9 | **打包成原生应用**（用户已决定要做）。FR-15 之后这件事有了新理由：随包带 200MB 权重、从第一次使用起完全离线。但 **Electron 不支持手机** —— 它只有 Windows/macOS/Linux。而「手机上也要能自动打点」是明确要求 | 桌面用 **Electron**，手机用 **Capacitor**（WebView 壳，现有代码基本不动）或 **Tauri v2**（唯一同时覆盖桌面与 iOS/Android）。两条路里面跑的都是同一套 web 代码，所以 FR-15 的实现不受影响。要注意的是：套壳不改变运行时 —— 手机里仍然是 WebView 里的 WASM/WebGPU，所以**速度**仍然是手机端的硬约束（体积不再是）。另外 `?url` 产出的是绝对路径 `/assets/…`，用 `file://` 装起来要给 vite 配 `base: './'` |
+| Q9 | **打包成原生应用**（用户已决定要做） | **手机这一半已做，见 §7.10**：Capacitor，iOS + Android 两套工程入库、CI 出包、iOS 自动上传 App Store Connect，200MB 权重随包带。选 Capacitor 而不是 Tauri v2 的理由、以及六条实现约束都在 §7.10。**桌面那一半仍未做也不急** —— 桌面就是浏览器，工位上开着 https://d.gamestao.com 就行，真要做再上 Electron，与 §7.10 不冲突（三条路跑的都是同一份 `dist/`）。原文里「要给 vite 配 `base: './'`」这条**只对 Electron 的 `file://` 成立，对 Capacitor 是错的**，见 §7.10 约束 1 |
 | Q10 | MMS-FA 是 **CC-BY-NC-4.0（非商用）**。自用与免费分发没问题，商用不行 | 已把模型做成可插拔（§7.9），换成宽松许可的德语 CTC 模型是改配置 + 一次性 ONNX 转换。真要商用再换，不必现在做 |
 
 ---

@@ -23,7 +23,16 @@
 句级与词级时间戳。已在同一期真实素材上验过：45 秒写入 38 句 + 744 个词级时间戳，
 标出 5 句待校对，词级边界抽查合理。代码在 `src/align/`。
 
-**唯一的大窟窿：GitHub 备份从来没用真实 PAT 联调过。** 逻辑完成、mock 测试通过，
+**§7.10 原生壳已接入**（Capacitor 8，iOS + Android 两套工程入库）：
+壳里跑同一份 `npm run build:native` 产物，业务代码只多了一个 `src/platform/native.ts`
+加一处原生代码（`AppDelegate.swift` 把 `AVAudioSession` 设成 `.playback`，顺手修掉了
+「iOS 静音开关让 `<audio>` 没声音」那条老坑）。200MB 权重随包带。
+出包走 CI：推 `ios-v*` tag → 出 IPA 并自动上传 App Store Connect；推 `android-v*` tag → 出签名 APK。
+**本机（Windows，无 JDK / 无 Xcode）能验的都验了** —— 两个平台脚手架生成、`cap sync`、
+两种构建模式（web 有 SW / native 无 SW）、图标与启动图、typecheck、254 个测试、浏览器里跑一遍。
+**真机与 xcodebuild 一次都没跑过**，iOS 那条流水线要等第一次推 tag 才算走通。
+
+**大窟窿一：GitHub 备份从来没用真实 PAT 联调过。** 逻辑完成、mock 测试通过，
 但一键建仓、写权限校验、token 过期响应头（附录 B.2 未定）、一键恢复（FR-11.13）都还没碰过真实 API。
 §10 验收清单里标 ❌ 的全部卡在这一件事上。
 
@@ -34,10 +43,11 @@
    （过期响应头名称、最长有效期、`POST /user/repos` 的默认分支名）。
 2. **实际用两周**，然后再回来改。§10 里标 🧪 的几条（跟读循环、多区间挖空）代码路径有测试，
    但没有人真的连着跟读过十分钟，手感问题只有用出来。
-3. **打包成原生应用**（用户已决定要做，见 SPEC Q9）。桌面用 Electron；但**Electron 不支持手机**，
-   而「手机上也要能自动打点」是明确要求，所以手机要用 Capacitor 或 Tauri v2。
-   打包前先跑 `npm run stage:align` 把 200MB 权重放进 `public/models/`，
-   并给 vite 配 `base: './'`（`?url` 产出的是绝对路径，`file://` 下会断）。
+3. **推第一个 `ios-v0.1.0` tag，把 iOS 流水线真的跑一遍。** 需要先在仓库 Secrets 里配九个
+   签名相关的值（清单在 `.github/workflows/release-ios.yml` 头部）。装到自己 iPhone 上之后
+   要亲手确认的三件事：① 自动打点在 WKWebView 里到底多慢（预计一课十分钟量级，单线程 WASM+int8）；
+   ② 导出备份能不能落到「文件」App；③ 顶部安全区在真机刘海下对不对。
+   **桌面壳（Electron）仍未做，也不急** —— 桌面就是浏览器。
 4. Q7：存档列表页 `/de/alltagsdeutsch/s-9214` 是否也在 `__APOLLO_STATE__` 里给出完整的 400+ 期列表。
    若给了，L1 就能覆盖全部存档，大约 10 分钟的增量。
 
@@ -76,9 +86,24 @@
   现在走 Vite `?url`（`onnxruntime-web/ort-wasm-simd-threaded[.asyncify].{wasm,mjs}`）。
   **不要**改回复制到 `public/ort/` —— dist 里会出现两份同样的 23MB wasm
 - Cloudflare 的 SPA fallback 给缺失路径返回 **200 + index.html**，所以探测本地模型
-  不能只看 `res.ok`，要验 content-type 是 JSON
+  不能只看 `res.ok` —— 要 GET 那份 `config.json` 并真的 parse 一遍。曾经是 HEAD + 验 content-type，
+  原生壳里 dist 不由 HTTP 服务器托管，HEAD 和响应头都不保证（§7.10）
 - 待校对阈值必须是**相对本课中位数**的。绝对阈值随模型漂：实测中位数 -1.11，
   按感觉写的 -0.6 会把 37/38 句全标黄
+
+接原生壳（§7.10）踩出来的五条：
+
+- **`base` 千万不要改成 `'./'`。** 上面那句「打包要配 base: './'」只对 **Electron 的 `file://`**
+  成立；Capacitor 有真正的 URL 根（iOS `capacitor://localhost/`、Android `https://localhost/`），
+  绝对路径原样就对。这条已经在 SPEC Q9 里改正
+- **原生构建必须去掉 Service Worker**（`vite build --mode native`）。`autoUpdate` 的 SW 一旦缓存了
+  旧壳的 index.html，`cap sync` 换掉 dist 也照样吃旧的，而原生壳里没有地址栏可以清它
+- **`a[download]` 在 WKWebView 里静默失效** —— 不报错、不下载。存文件一律走 `src/lib/download.ts`
+- **iOS 的 AppIcon 不能带 alpha 通道**（看的是通道在不在，不是有没有透明像素）。
+  Xcode 本地构建完全不报错，第一次上传 App Store 才炸
+- **Capacitor 8 的 iOS 走 SPM 不是 CocoaPods**，所以 xcodebuild 用 `-project` 而不是 `-workspace`、
+  不跑 `pod install`；模板也不带共享 scheme（自动生成的那份在 gitignore 掉的 `xcuserdata/` 里），
+  所以 `App.xcscheme` 手工写了一份入库。funny 停在 Capacitor 6，那边的 workflow 不能照抄
 
 环境：Windows 11 + PowerShell。给我可执行命令时请用 PowerShell 语法（`curl.exe` 而非 `curl`，
 `Select-String` 而非 `grep`，`Select-Object -First N` 而非 `head`）。

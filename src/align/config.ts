@@ -48,12 +48,22 @@ export const LOCAL_MODEL_PATH = '/models/';
  * 探一下自托管权重在不在。也用来在 UI 上区分「随包带」和「要下载 200MB」。
  *
  * 不能只看 res.ok：wrangler.jsonc 里 not_found_handling 是 single-page-application，
- * 缺失的路径会拿到 **200 + index.html**。所以必须验 content-type 真的是 JSON。
+ * 缺失的路径会拿到 **200 + index.html**。
+ *
+ * 曾经是 `HEAD` + 验 content-type，Capacitor 原生壳（SPEC §7.10）把这条路堵了：
+ * 壳里的 dist 不是被 HTTP 服务器托管的，而是 iOS 的 `capacitor://` scheme handler /
+ * Android 的 WebViewAssetLoader 在读本地文件 —— 它们对 HEAD 和响应头的支持都不保证，
+ * 而这里一旦误判成「没有本地权重」，随包带的 200MB 就白带了，用户第一次用还是要联网。
+ * 所以改成 GET 那份 1KB 的 config.json 并**真的 parse 一遍**：这个判据不依赖任何响应头，
+ * 在静态托管、原生壳、`vite preview` 三种情况下都成立（SPA fallback 回的 index.html
+ * parse 一定失败）。
  */
 export async function hasLocalWeights(config: AlignModelConfig): Promise<boolean> {
   try {
-    const res = await fetch(`${LOCAL_MODEL_PATH}${config.modelId}/config.json`, { method: 'HEAD' });
-    return res.ok && (res.headers.get('content-type') ?? '').includes('json');
+    const res = await fetch(`${LOCAL_MODEL_PATH}${config.modelId}/config.json`);
+    if (!res.ok) return false;
+    const body: unknown = await res.json();
+    return typeof body === 'object' && body !== null;
   } catch {
     return false;
   }

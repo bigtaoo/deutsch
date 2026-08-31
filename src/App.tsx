@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/state/useSettingsStore';
 import { useBackupStore } from '@/state/useBackupStore';
 import { drainBackupQueue, setBackupHooks, startBackupAutoRetry } from '@/github/backupTrigger';
 import { audioPlayer } from '@/audio/player';
+import { hideNativeSplash } from '@/platform/native';
 import { LessonsPage } from '@/pages/LessonsPage';
 import { ImportPage } from '@/pages/ImportPage';
 import { LessonPage } from '@/pages/LessonPage';
@@ -30,10 +31,16 @@ function App() {
 
   useEffect(() => {
     // 四个 store 各读一次 IndexedDB。都是几百 KB 的标注层，一次读完最省事。
-    void useSettingsStore.getState().load();
-    void useLessonStore.getState().load();
-    void useVocabStore.getState().load();
-    void useBackupStore.getState().hydrate();
+    const ready = Promise.allSettled([
+      useSettingsStore.getState().load(),
+      useLessonStore.getState().load(),
+      useVocabStore.getState().load(),
+      useBackupStore.getState().hydrate(),
+    ]);
+    // 原生壳的启动图等这四张表读完再关（capacitor.config.ts 里 launchAutoHide: false）。
+    // allSettled 而不是 all：某张表读挂了也得关，否则用户对着启动图干等。
+    // 浏览器里这是空操作。
+    void ready.then(() => hideNativeSplash());
 
     // FR-11.10：备份状态变化时刷新常驻状态条；网络恢复时自动重推排队项。
     setBackupHooks({ onChange: () => void useBackupStore.getState().refreshPendingCount() });
@@ -48,7 +55,7 @@ function App() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 pb-16">
-      <nav className="sticky top-0 z-20 -mx-4 mb-4 flex gap-1 overflow-x-auto border-b border-neutral-200 bg-white/95 px-4 py-2 backdrop-blur">
+      <nav className="app-nav sticky top-0 z-20 -mx-4 mb-4 flex gap-1 overflow-x-auto border-b border-neutral-200 bg-white/95 px-4 py-2 backdrop-blur">
         {NAV.map((item) => (
           <a
             key={item.label}

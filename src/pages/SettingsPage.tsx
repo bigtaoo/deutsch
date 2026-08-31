@@ -366,10 +366,15 @@ function ManualBackupSection() {
 
   const handleExport = async () => {
     const backup = await buildBackupJson();
-    downloadJson(backupFileName(), backup);
+    const target = await downloadJson(backupFileName(), backup);
     // FR-11.12 的 90 天提醒读的就是这个时间戳；不记的话首页横幅会一直挂着。
     await useSettingsStore.getState().update({ lastBackupAt: Date.now() });
-    setExportMessage(`已导出 ${backup.lessons.length} 课 / ${backup.vocab.length} 个生词。`);
+    setExportMessage(
+      `已导出 ${backup.lessons.length} 课 / ${backup.vocab.length} 个生词。` +
+        // 原生壳里文件落在 App 的 Documents 目录（「文件」App → 精听），分享面板只是顺手
+        // 给一次「存到别处」的机会。不说清楚的话，划掉面板的人会以为这次导出没成。
+        (target === 'native-file' ? '文件已存到「文件」App 的「精听」文件夹。' : ''),
+    );
   };
 
   const handleFileSelected = async (file: File) => {
@@ -380,8 +385,9 @@ function ManualBackupSection() {
       const text = await file.text();
       const incoming = JSON.parse(text) as BackupFile;
       const { safetySnapshot, result } = await prepareImport(incoming);
-      // FR-11.14：导入前自动先导出一份当前状态（防呆）
-      downloadJson(`before-import-${backupFileName()}`, safetySnapshot);
+      // FR-11.14：导入前自动先导出一份当前状态（防呆）。
+      // prompt: false —— 这一份不是用户点的「导出」，原生壳里不要在导入流程中间弹分享面板。
+      await downloadJson(`before-import-${backupFileName()}`, safetySnapshot, { prompt: false });
       pendingResultRef.current = result;
       setPendingSummary(result.summary);
     } catch (err) {

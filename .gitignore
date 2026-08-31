@@ -30,3 +30,14 @@ backup-*.json
 # 离线对齐的模型权重（FR-15）：约 200MB，可由 npm run stage:align 从 HF 重建，不入库。
 # ORT 的 wasm 不在这里 —— 它走 Vite ?url，构建时自动进 dist/assets/。
 public/models/
+
+# 原生签名材料。ios/ 与 android/ 两个工程本身入库（它们有手写的改动：Info.plist 的
+# 权限说明、AppDelegate 的音频会话、build.gradle 的签名配置），但**密钥一律不入库** ——
+# CI 从 secrets 里解出来用。生成方法见 .github/workflows/release-android.yml 头部。
+# 各平台的生成物（ios/App/App/public、android/app/src/main/assets/public、build/、
+# Pods/、DerivedData 等）由 ios/.gitignore 与 android/.gitignore 各自排除。
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+*.p8

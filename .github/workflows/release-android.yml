@@ -1,0 +1,144 @@
+name: release-android
+
+# 出一个已签名的 release APK 作为构建产物。**不上 Play Store** ——
+# 这是个人自用工具（README 开头那句），侧载装就行，而上架要过隐私政策、
+# 数据安全表、以及单 APK 100MB 的限制（带 200MB 权重必然超）。
+#
+# 触发：推 tag `android-v*`（如 android-v0.1.0），或手动 Run。
+# 产物在这次 run 的 Artifacts 里下载，手机上直接装。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   ANDROID_KEYSTORE_BASE64    签名用的 keystore（.jks）base64
+#   ANDROID_KEYSTORE_PASSWORD  keystore 密码
+#   ANDROID_KEY_ALIAS          key 别名
+#   ANDROID_KEY_PASSWORD       key 密码
+#
+# 自己生成一个（十年有效，密码自己记住，**不要入库**）：
+#   keytool -genkeypair -v -keystore deutsch.jks -alias deutsch \
+#           -keyalg RSA -keysize 4096 -validity 3650
+#   base64 -w0 deutsch.jks     # 粘进 ANDROID_KEYSTORE_BASE64
+# 换 keystore 等于换应用身份：已装的版本不能覆盖升级，只能卸了重装（数据会没）。
+# 所以这份 keystore 自己也要备份。
+
+on:
+  push:
+    tags:
+      - 'android-v*'
+  workflow_dispatch:
+    inputs:
+      bundle_model:
+        description: '把 200MB 对齐权重打进包里（关掉可以快速出一个只验壳的小包）'
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-android
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # 先炸在这里，而不是等 Gradle 跑二十分钟之后出一个「签名配置为空」的包 ——
+      # 未签名的 release APK 装不上，而 Gradle 不会因此报错。
+      - name: check signing secrets
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$KEYSTORE" ] || missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -n "$KEYSTORE_PASSWORD" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -n "$KEY_ALIAS" ] || missing="$missing ANDROID_KEY_ALIAS"
+          [ -n "$KEY_PASSWORD" ] || missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少签名 secrets:$missing —— 配好之后重跑（生成方法见本文件头部注释）"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: install
+        run: npm ci
+
+      - name: resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == android-v* ]]; then
+            VERSION="${GITHUB_REF_NAME#android-v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          echo "name=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # 与 release-ios.yml 用同一个缓存键，两条流水线共用一份权重缓存。
+      - name: cache align weights
+        # 不能写 `inputs.bundle_model != false`：tag 触发时这个值是空字符串，
+        # GitHub 比较不同类型时一律转成数字，'' 和 false 都变 0 —— 判为相等，
+        # 于是整条 tag 发布都会静默跳过权重那一步，出一个「以为带了其实没带」的包。
+        if: github.event_name != 'workflow_dispatch' || inputs.bundle_model
+        uses: actions/cache@v4
+        with:
+          path: public/models
+          key: align-weights-${{ hashFiles('scripts/stage-align-assets.mjs') }}
+
+      - name: stage align weights
+        if: github.event_name != 'workflow_dispatch' || inputs.bundle_model
+        run: npm run stage:align
+
+      - name: build web bundle (native mode)
+        run: npm run build:native
+
+      - name: cap sync android
+        run: npx cap sync android
+
+      - name: decode keystore
+        run: echo -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/release.jks"
+
+      # 签名参数走环境变量（android/app/build.gradle 的 signingConfigs.release 会读）。
+      # versionCode 用 run_number：单调递增，不需要有人记得改。
+      - name: assemble release
+        working-directory: android
+        env:
+          DEUTSCH_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          DEUTSCH_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DEUTSCH_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DEUTSCH_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease --no-daemon \
+            -PdeutschVersionCode=${{ github.run_number }} \
+            -PdeutschVersionName=${{ steps.version.outputs.name }}
+          ls -lh app/build/outputs/apk/release/
+
+      # 未签名的包会叫 *-release-unsigned.apk。名字里带 unsigned 就说明 gradle 那边
+      # 没读到 keystore（build.gradle 里那个 storeFile != null 的判断没过），
+      # 而它照样会构建成功 —— 所以在这里拦一下，别把一个装不上的包发出去。
+      - name: verify signed
+        working-directory: android/app/build/outputs/apk/release
+        run: |
+          if ls *-unsigned.apk >/dev/null 2>&1; then
+            echo "::error::产出的是未签名 APK —— 签名配置没生效，装不上。"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ steps.version.outputs.name }}-${{ github.run_number }}
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 14
