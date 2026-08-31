@@ -67,6 +67,9 @@ export interface FSRSCard {
   lapses: number;
   state: 0 | 1 | 2 | 3; // New / Learning / Review / Relearning
   last_review?: number; // epoch ms；§2.4 合并规则的比较键
+  // 实现期补充：ts-fsrs 的 Card 还带 learning_steps（短期学习阶段走到第几步）。
+  // 丢掉它会让「同一天内的二次复习」退化，故一并持久化。可选是为了兼容早于本次改动的备份文件。
+  learning_steps?: number;
 }
 
 export interface Settings {
