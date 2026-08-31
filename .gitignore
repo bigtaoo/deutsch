@@ -1,0 +1,24 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+coverage/
+*.log
+npm-debug.log*
+
+# 学习素材：音频与文稿只存本地，永不入库（见 SPEC.md §3.1.1 R-5）
+*.mp3
+*.m4a
+*.wav
+manuskript/
+backup-*.json
