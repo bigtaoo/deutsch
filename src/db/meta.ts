@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shadowingRepeat: 2,
   playbackRate: 1.0,
   dictationStrictCase: true,
+  autoAlignOnImport: true,
 };
 
 export async function getSettings(): Promise<Settings> {

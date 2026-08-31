@@ -139,6 +139,19 @@ export function StudySettingsSection() {
         />
         听写严格区分大小写（关掉后大小写错不计错）
       </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={settings.autoAlignOnImport}
+          onChange={(e) => void update({ autoAlignOnImport: e.target.checked })}
+        />
+        DW 导入后自动打点（FR-15）
+      </label>
+      <p className="text-xs text-neutral-500">
+        自动打点在本机跑 CTC 强制对齐，音频不出设备。首次使用要下载一次约 200MB 的模型，
+        之后离线可用。WASM 后端下一课约几分钟，有 WebGPU 时快得多。
+        结果一律标成「待校对」——它把要手改的句子从几十句降到几句，不是降到零。
+      </p>
     </Section>
   );
 }

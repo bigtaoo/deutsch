@@ -25,6 +25,14 @@ export interface Sentence {
   startTime?: number; // 秒，未标注为 undefined
   endTime?: number; // 显式标记；否则按 FR-4.4 推断
   endTimeExplicit: boolean; // 区分显式与推断
+  // FR-15：时间戳的来源。'auto' = CTC 强制对齐算出来的，还没人看过；'manual' = 人手打/校过。
+  // 只有这一个字段能区分「机器给的」和「我确认过的」——
+  // endTimeExplicit 区分的是「显式终点 vs 按 FR-4.4 推断」，那是另一个维度：
+  // 自动对齐产出的终点是显式的（就是最后一个音素的止帧），但一点也不等于确认过。
+  timingSource?: 'auto' | 'manual';
+  // 该句对齐路径的平均 log-prob（越接近 0 越可信）。只在 timingSource==='auto' 时有意义，
+  // 用来把「要人工校对的几句」排到前面。人工改过就清掉。
+  timingConfidence?: number;
   blanks: Blank[];
   markedDifficult: boolean; // 跟读时跟不上的句子
   excluded: boolean; // 非朗读内容，如 Glossar（FR-1.4）
@@ -79,6 +87,9 @@ export interface Settings {
   shadowingRepeat: number; // 2
   playbackRate: number; // 1.0
   dictationStrictCase: boolean; // true
+  // FR-15：DW 自动导入后立刻跑一遍自动打点。默认开 ——
+  // 「下载完就能直接练」是这个功能存在的理由，默认关掉等于没做。
+  autoAlignOnImport: boolean;
   lastBackupAt?: number; // 备份提醒（FR-11.4 / FR-11.12）
 }
 
@@ -89,9 +100,26 @@ export interface LessonCache {
   manuscriptHtml?: string; // DW 原始 HTML；手动导入时存粘贴的原文
   plainText?: string; // 转换后的纯文本，Sentence.charStart/charEnd 的基准
   glossary?: GlossaryCandidate[]; // FR-14 候选词
+  // FR-15：词级时间戳。放缓存层是因为它**可重建**（有音频+文稿就能再算一遍），
+  // 而且量不小（一课约 800 个词）。放标注层会让每次备份都胖一圈，
+  // 却换不来任何「丢了不能重建」的东西 —— 这正是 §6 划分两层的那条标准。
+  wordTimings?: WordTiming[];
   hasAudio: boolean;
   audioBytes: number; // 占用统计（FR-3.8），读它不必载入 Blob
   fetchedAt: number;
+}
+
+/**
+ * FR-15：一个词的时间戳。charStart/charEnd 是**句内** offset，
+ * 和 Blank.ranges 同一套坐标 —— 这样听写时「只播这个挖空对应的词」是一次直接查找。
+ */
+export interface WordTiming {
+  sentenceIndex: number; // 指向 Sentence.index
+  wordIndex: number; // 句内第几个词，从 0 开始
+  charStart: number;
+  charEnd: number;
+  start: number; // 秒
+  end: number;
 }
 
 export interface GlossaryCandidate {

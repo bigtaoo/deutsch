@@ -64,6 +64,10 @@ export function resegment(previous: Sentence[], segments: RawSegment[]): Resegme
       startTime: old.startTime,
       endTime: old.endTime,
       endTimeExplicit: old.endTimeExplicit,
+      // FR-15：来源和置信度必须跟着时间戳一起搬。漏了这两条，
+      // 重新切句会把「机器给的、还没校过」洗成「看起来人工确认过」—— 静默丢掉待办。
+      timingSource: old.timingSource,
+      timingConfidence: old.timingConfidence,
       blanks: old.blanks,
       markedDifficult: old.markedDifficult,
       excluded: old.excluded,

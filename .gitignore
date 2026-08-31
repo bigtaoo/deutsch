@@ -26,3 +26,7 @@ npm-debug.log*
 *.wav
 manuskript/
 backup-*.json
+
+# 离线对齐的模型权重（FR-15）：约 200MB，可由 npm run stage:align 从 HF 重建，不入库。
+# ORT 的 wasm 不在这里 —— 它走 Vite ?url，构建时自动进 dist/assets/。
+public/models/

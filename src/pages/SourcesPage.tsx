@@ -111,6 +111,39 @@ export function SourcesPage() {
   );
 }
 
+/**
+ * 导入进度的一行文案。align 阶段单独拎出来是因为它是这里唯一**长耗时**的一步：
+ * 抓页面和下音频都是秒级，自动打点在 WASM 后端可能要几分钟，
+ * 不给子进度的话看起来就像卡死了。
+ */
+function importProgressText(progress: ImportProgress): string {
+  switch (progress.step) {
+    case 'page':
+      return '抓取页面…';
+    case 'audio':
+      return `下载音频 ${
+        progress.total
+          ? `${Math.round(((progress.loaded ?? 0) / progress.total) * 100)}%`
+          : formatBytes(progress.loaded ?? 0)
+      }`;
+    case 'saving':
+      return '写入本地…';
+    case 'align': {
+      const a = progress.align;
+      if (!a) return '自动打点…';
+      if (a.stage === 'model') {
+        return a.total
+          ? `自动打点 · 下载模型 ${Math.round(((a.loaded ?? 0) / a.total) * 100)}%`
+          : '自动打点 · 加载模型…';
+      }
+      const label = a.stage === 'infer' ? '识别音频' : '对齐文本';
+      return `自动打点 · ${label} ${Math.round((a.fraction ?? 0) * 100)}%`;
+    }
+    default:
+      return '完成';
+  }
+}
+
 function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -122,9 +155,19 @@ function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
       const notes = [
         outcome.audioError ? `音频没抓到（${outcome.audioError}），文本已导入，可稍后补齐或手动选文件` : null,
         outcome.teaserNeedsReview ? '开头的 teaser 块与 teaser 对不上，没有自动排除，请在「切句」里确认' : null,
+        // FR-15：打点失败不算导入失败，但一定要说出来 —— 否则你会以为可以直接开始跟读。
+        outcome.alignError ? `自动打点失败（${outcome.alignError}），去「标注」里手动打点或重试` : null,
       ].filter(Boolean);
-      setResult(notes.length > 0 ? notes.join('；') : '导入成功');
-      if (notes.length === 0) navigate({ name: 'lesson', lessonId: outcome.lessonId, tab: 'sentences' });
+      const ok = outcome.aligned !== undefined ? `导入成功，自动打点 ${outcome.aligned} 句（待校对）` : '导入成功';
+      setResult(notes.length > 0 ? notes.join('；') : ok);
+      // 打点过就直接进「标注」页校对；没打点则照旧先去「切句」。
+      if (notes.length === 0) {
+        navigate({
+          name: 'lesson',
+          lessonId: outcome.lessonId,
+          tab: outcome.aligned !== undefined ? 'timestamps' : 'sentences',
+        });
+      }
     } catch (err) {
       setResult(`导入失败：${err instanceof Error ? err.message : err}`);
     } finally {
@@ -142,14 +185,7 @@ function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
           {' · id '}
           {item.lessonId}
         </p>
-        {progress && (
-          <p className="text-xs text-sky-700">
-            {progress.step === 'page' && '抓取页面…'}
-            {progress.step === 'audio' &&
-              `下载音频 ${progress.total ? `${Math.round(((progress.loaded ?? 0) / progress.total) * 100)}%` : `${formatBytes(progress.loaded ?? 0)}`}`}
-            {progress.step === 'saving' && '写入本地…'}
-          </p>
-        )}
+        {progress && <p className="text-xs text-sky-700">{importProgressText(progress)}</p>}
         {result && <p className="text-xs text-amber-700">{result}</p>}
       </div>
       {/* FR-13.8：按 lesson id 判断已导入，不用带 ?maca= 的 link */}
@@ -201,6 +237,7 @@ function ManualIdSection() {
           {progress ? '导入中…' : '导入'}
         </Button>
       </div>
+      {progress && <p className="text-xs text-sky-700">{importProgressText(progress)}</p>}
       {message && <Banner tone="warn">{message}</Banner>}
     </Section>
   );

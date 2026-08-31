@@ -12,6 +12,8 @@ import { displayNumbers } from '@/lesson/sentences';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { AudioBar } from '@/components/AudioBar';
+import { AutoAlignPanel } from './AutoAlignPanel';
+import { reviewQueue } from '@/align/apply';
 import { Button, Hint, formatTime } from '@/components/ui';
 import type { Lesson, LessonCache, Sentence } from '@/types/models';
 
@@ -37,10 +39,20 @@ export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache |
 
   // 走 patchLesson 而不是 saveLesson：连按 Enter 打点时，两次回调可能拿到同一个旧快照，
   // 后一次会把前一次的时间戳静默抹掉。
+  //
+  // FR-15：这个界面里的任何一次改动都意味着「人看过了」，所以一律把 timingSource 升成
+  // 'manual' 并清掉置信度。不这么做的话，自动对齐给的低置信句就算你亲手校准过，
+  // 也会永远留在待校对列表里，那个列表马上就不可信了。
   const patch = (index: number, changes: Partial<Sentence>) =>
     patchLesson(lesson.id, (current) => ({
       ...current,
-      sentences: current.sentences.map((s) => (s.index === index ? { ...s, ...changes } : s)),
+      sentences: current.sentences.map((s) =>
+        s.index === index
+          // changes 放在最后：让调用方能显式覆盖 timingSource —— 「清除时间戳」要的是
+          // 退回未标注，而不是「我人工确认这句没有时间戳」（后者会让自动打点永远跳过它）。
+          ? { ...s, timingSource: 'manual' as const, timingConfidence: undefined, ...changes }
+          : s,
+      ),
     }));
 
   const selectNext = (from: number) => {
@@ -61,7 +73,14 @@ export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache |
   };
 
   const clear = (index: number) =>
-    patch(index, { startTime: undefined, endTime: undefined, endTimeExplicit: false });
+    patch(index, {
+      startTime: undefined,
+      endTime: undefined,
+      endTimeExplicit: false,
+      // 退回「从未标注」，这样下次自动打点会重新填它。
+      timingSource: undefined,
+      timingConfidence: undefined,
+    });
 
   /** FR-4.5：微调后立即试听，否则要靠脑内换算 0.1 秒听起来是什么样。 */
   const nudge = async (field: 'startTime' | 'endTime', delta: number) => {
@@ -105,6 +124,11 @@ export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache |
     });
   }, [selected]);
 
+  const pendingIndexes = useMemo(
+    () => new Set(reviewQueue(lesson.sentences).map((s) => s.index)),
+    [lesson.sentences],
+  );
+
   const current = lesson.sentences.find((s) => s.index === selected);
   const currentRange = current ? resolveRange(lesson.sentences, current.index, lesson.audioDuration) : null;
 
@@ -116,16 +140,20 @@ export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache |
         也可以直接点任意一句跳着标 —— 打点不需要按顺序，也不需要标完。
       </Hint>
 
+      <AutoAlignPanel lesson={lesson} />
+
       <ol ref={listRef} className="max-h-[52vh] overflow-y-auto rounded-lg border border-neutral-200">
         {lesson.sentences.map((s) => {
           const range = resolveRange(lesson.sentences, s.index, lesson.audioDuration);
+          // FR-15：自动对齐给的低置信句标黄。选中态优先 —— 正在校对的那句得看得出来是哪句。
+          const needsReview = pendingIndexes.has(s.index);
           return (
             <li
               key={s.index}
               data-index={s.index}
               onClick={() => !s.excluded && setSelected(s.index)}
               className={`flex cursor-pointer gap-3 border-b border-neutral-100 p-2 text-sm ${
-                s.index === selected ? 'bg-sky-50' : ''
+                s.index === selected ? 'bg-sky-50' : needsReview ? 'bg-amber-50' : ''
               } ${s.excluded ? 'cursor-default text-neutral-300' : ''}`}
             >
               <span className="w-8 shrink-0 text-right text-xs text-neutral-400">
@@ -134,13 +162,27 @@ export function TimestampsTab({ lesson }: { lesson: Lesson; cache: LessonCache |
               <span className="min-w-0 flex-1 leading-relaxed">{s.text}</span>
               <span className="w-32 shrink-0 text-right font-mono text-xs">
                 {range ? (
-                  <span
-                    // FR-4.4：显式终点画实线，推断出来的画虚线 —— 一眼看出哪些是自己定的
-                    className={`border-b ${range.explicitEnd ? 'border-solid border-neutral-500' : 'border-dashed border-neutral-400'}`}
-                    title={range.explicitEnd ? '显式标记的终点' : '推断的终点（下一个已标注句的起点）'}
-                  >
-                    {formatTime(range.start)}–{formatTime(range.end)}
-                  </span>
+                  <>
+                    <span
+                      // FR-4.4：显式终点画实线，推断出来的画虚线 —— 一眼看出哪些是自己定的
+                      className={`border-b ${range.explicitEnd ? 'border-solid border-neutral-500' : 'border-dashed border-neutral-400'}`}
+                      title={range.explicitEnd ? '显式标记的终点' : '推断的终点（下一个已标注句的起点）'}
+                    >
+                      {formatTime(range.start)}–{formatTime(range.end)}
+                    </span>
+                    {/* FR-15：这个 ~ 表示「机器给的，还没人看过」。它和上面的实线/虚线是
+                        两个不同维度 —— 自动对齐的终点是显式的（实线），但一点也不等于确认过。 */}
+                    {s.timingSource === 'auto' && (
+                      <span
+                        className={`ml-1 ${needsReview ? 'text-amber-600' : 'text-neutral-400'}`}
+                        title={`自动对齐，置信度 ${s.timingConfidence?.toFixed(2) ?? '—'}${
+                          needsReview ? '（偏低，建议听一遍）' : ''
+                        }`}
+                      >
+                        ~
+                      </span>
+                    )}
+                  </>
                 ) : (
                   <span className="text-neutral-300">未标注</span>
                 )}

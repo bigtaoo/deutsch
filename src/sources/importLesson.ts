@@ -7,6 +7,9 @@
 // 因为不该有一个可以被误用成批量抓取的形状。
 
 import { putLesson } from '@/db/lessons';
+import { getSettings } from '@/db/meta';
+import { alignLesson } from '@/align/client';
+import type { AlignProgress } from '@/align/align';
 import { getLessonCache, putAudioBlob, putLessonCache } from '@/db/cache';
 import { segmentSentences } from '@/lesson/segment';
 import { createSentences, setExcluded } from '@/lesson/sentences';
@@ -30,9 +33,11 @@ export async function politely<T>(task: () => Promise<T>): Promise<T> {
 }
 
 export interface ImportProgress {
-  step: 'page' | 'audio' | 'saving' | 'done';
+  step: 'page' | 'audio' | 'saving' | 'align' | 'done';
   loaded?: number;
   total?: number;
+  /** step === 'align' 时的子阶段与进度，直接转发 AlignProgress */
+  align?: AlignProgress;
 }
 
 export interface ImportOutcome {
@@ -41,6 +46,13 @@ export interface ImportOutcome {
   audioError?: string;
   /** FR-13.7 判定失败：teaser 块与 teaser 对不上，需要人工确认 */
   teaserNeedsReview: boolean;
+  /**
+   * FR-15：自动打点写入了几句。undefined = 没跑（关掉了、或没音频）。
+   * 失败不算导入失败 —— 与 FR-13.9「抓到哪算哪」同一个道理：
+   * 课程已经建出来了，打点还能手动补，没有理由把整次导入回滚掉。
+   */
+  aligned?: number;
+  alignError?: string;
 }
 
 function buildCandidates(dw: DwLesson, sentences: Sentence[]): GlossaryCandidate[] {
@@ -126,8 +138,27 @@ export async function importFromDw(
   await useLessonStore.getState().load();
   scheduleLessonBackup(id);
 
+  // FR-15：自动打点。放在课程已经落库**之后**，所以它失败也只是「这一课还没打点」，
+  // 不会让好不容易抓下来的文稿和音频一起丢掉。
+  let aligned: number | undefined;
+  let alignError: string | undefined;
+  if (audioBlob && (await getSettings()).autoAlignOnImport) {
+    try {
+      const result = await alignLesson(lesson, (align) => onProgress?.({ step: 'align', align }));
+      aligned = result.applied;
+    } catch (err) {
+      alignError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   onProgress?.({ step: 'done' });
-  return { lessonId: id, audioError, teaserNeedsReview: Boolean(dw.teaserBlock && !dw.teaserBlock.matchesTeaser) };
+  return {
+    lessonId: id,
+    audioError,
+    teaserNeedsReview: Boolean(dw.teaserBlock && !dw.teaserBlock.matchesTeaser),
+    aligned,
+    alignError,
+  };
 }
 
 export interface RehydrateOutcome {
