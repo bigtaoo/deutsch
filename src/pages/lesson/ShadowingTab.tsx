@@ -99,10 +99,10 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
       <EmptyState>
         {difficultOnly
           ? '还没有标记为困难的句子。跟读时按 D 标记跟不上的那几句。'
-          : '这一课还没有任何时间戳。先去「标注」tab 给想练的句子打点 —— 五六句就够开始了。'}
+          : '这一课还没有任何时间戳 —— 自动对齐还没跑过或没跑成。去课程页头部点一次「自动对齐」。'}
         <div className="mt-3">
           <Button onClick={() => setDifficultOnly(false)} disabled={!difficultOnly}>
-            看全部已标注句
+            看全部已对齐句
           </Button>
         </div>
       </EmptyState>

@@ -10,7 +10,8 @@ import type { BackupFile, MergeResult, MergeSummary } from '@/backup/types';
 import type { RepoRef } from '@/github/repo';
 import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { MMS_FA, LOCAL_MODEL_PATH, hasLocalWeights, pickDevice } from '@/align/config';
+import { MMS_FA, LOCAL_MODEL_PATH, PLAN_LADDER, hasLocalWeights, pickDevice } from '@/align/config';
+import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
 import { nativePlatform } from '@/platform/native';
 
 const PAT_CREATE_URL = 'https://github.com/settings/personal-access-tokens/new';
@@ -73,17 +74,25 @@ function StorageSection() {
  */
 function AlignBackendSection() {
   const [lines, setLines] = useState<string[] | null>(null);
+  const [history, setHistory] = useState<AlignRunRecord[]>(() => readHistory());
 
   useEffect(() => {
     void (async () => {
       const out: string[] = [];
       const plan = await pickDevice();
-      out.push(`推理后端：${plan.device} / ${plan.dtype}`);
+      out.push(`这台设备能跑的最优后端：${plan.device} / ${plan.dtype}`);
+      // 崩过就降档（journal.ts）。下面那个「实际用的是这份」的箭头要跟着降档走，
+      // 不然它指的是一份下一次根本不会加载的权重 —— 而这一页存在的理由就是「砍掉没用的那份」。
+      const step = nextPlanStep(PLAN_LADDER.length);
+      const next = step === 0 ? plan : PLAN_LADDER[step];
+      if (step > 0) {
+        out.push(`⚠️ 第 1 档崩过，下一次会降到第 ${step + 1} 档：${next.device} / ${next.dtype}`);
+      }
       out.push(`平台：${await nativePlatform()}`);
       out.push(`权重来源：${(await hasLocalWeights(MMS_FA)) ? '随包（public/models/）' : 'HF CDN（首次用时下载）'}`);
       for (const dtype of ['q4f16', 'int8'] as const) {
         const url = `${LOCAL_MODEL_PATH}${MMS_FA.modelId}/onnx/model_${dtype}.onnx`;
-        const mark = dtype === plan.dtype ? ' ← 这台设备实际用的是这份' : '';
+        const mark = dtype === next.dtype ? ' ← 下一次实际会加载这份' : '';
         out.push(`　model_${dtype}.onnx：${await probeSize(url)}${mark}`);
       }
       setLines(out);
@@ -100,6 +109,56 @@ function AlignBackendSection() {
             </p>
           ))
         : <p className="text-sm text-neutral-500">探测中…</p>}
+
+      {/*
+        最近几次对齐的黑匣子。手机上唯一能拿到「上次为什么整个应用消失了」的地方 ——
+        进程被系统杀掉时 JS 跑不了任何收尾代码，只有边跑边落盘的记录留得下来。
+        细节见 src/align/journal.ts。
+      */}
+      <h3 className="pt-2 text-sm font-medium">最近几次运行</h3>
+      {history.length === 0 ? (
+        <p className="text-sm text-neutral-500">还没有记录。</p>
+      ) : (
+        <ul className="space-y-1 text-xs text-neutral-600">
+          {history.map((run) => (
+            <li key={run.startedAt} className="font-mono">
+              {new Date(run.startedAt).toLocaleString('zh-CN', { hour12: false })}{' · '}
+              <span className={run.status === 'crashed' ? 'text-rose-700' : ''}>
+                {run.status === 'done'
+                  ? '完成'
+                  : run.status === 'error'
+                    ? `失败（${run.error ?? '?'}）`
+                    : '被系统杀掉'}
+              </span>
+              {' · '}
+              {run.stage}
+              {run.total ? ` ${formatBytes(run.loaded ?? 0)}/${formatBytes(run.total)}` : ''}
+              {' · '}
+              {run.plan.device}/{run.plan.dtype}（第 {run.planStep + 1} 档）{' · '}
+              {run.platform}
+              {run.weights === 'local' ? (run.ranged ? ' · 分片取权重' : ' · 整份取权重') : ' · CDN 权重'}
+              {run.heapMB !== undefined ? ` · 堆 ${run.heapMB}MB` : ''}
+              {' · '}
+              {Math.round(((run.finishedAt ?? run.updatedAt) - run.startedAt) / 1000)}s
+              {' · '}
+              {run.title}
+            </li>
+          ))}
+        </ul>
+      )}
+      {history.length > 0 && (
+        <button
+          className="text-xs text-neutral-500 underline"
+          onClick={() => {
+            // 清掉记录同时也清掉「降档」——两者是同一份数据。换了设备或换了包之后
+            // 想让第 1 档重新有机会，就点这里。
+            clearJournal();
+            setHistory([]);
+          }}
+        >
+          清除记录（同时恢复用第 1 档后端）
+        </button>
+      )}
     </section>
   );
 }
@@ -108,18 +167,27 @@ function AlignBackendSection() {
  * 只要大小、不要正文 —— 权重有 300MB，真下下来会把这个页面卡死。
  * 先试 HEAD；`capacitor://localhost` 的内建服务器不保证支持 HEAD，
  * 所以退到「只要第一个字节」的 Range 请求，从 content-range 的总长读大小。
+ *
+ * 一个真实的误报：文件不在时，SPA fallback（Cloudflare 与 vite dev 都会）回的是
+ * **200 + index.html**，于是这里显示「1.1 KB」。而这一页的用途就是「确认哪份权重
+ * 真的在包里」——「1.1 KB」比「不在包里」更糟，因为它看起来像个答案。
+ * 所以任何 .onnx 小于 1MB 一律判成不在包里：真实的两份是 187MB 与 302MB，不存在中间地带。
  */
+const MIN_PLAUSIBLE_WEIGHTS_BYTES = 1024 * 1024;
+
 async function probeSize(url: string): Promise<string> {
+  const judge = (bytes: number) =>
+    bytes >= MIN_PLAUSIBLE_WEIGHTS_BYTES ? formatBytes(bytes) : '不在包里（回的是 index.html）';
   try {
     const head = await fetch(url, { method: 'HEAD' });
     if (head.ok) {
       const len = Number(head.headers.get('content-length') ?? 0);
-      if (len > 0) return formatBytes(len);
+      if (len > 0) return judge(len);
     }
     const ranged = await fetch(url, { headers: { Range: 'bytes=0-0' } });
     if (!ranged.ok && ranged.status !== 206) return '不在包里';
     const total = Number(ranged.headers.get('content-range')?.split('/')[1] ?? 0);
-    return total > 0 ? formatBytes(total) : '在包里（大小未知）';
+    return total > 0 ? judge(total) : '在包里（大小未知）';
   } catch {
     return '探测失败';
   }

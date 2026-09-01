@@ -21,7 +21,7 @@
 // 所以「先全部算完再对齐」是划算的，不需要流式。
 
 import { AutoModelForCTC, AutoProcessor, Tensor } from '@huggingface/transformers';
-import { pickDevice, type AlignModelConfig, type DevicePlan } from './config';
+import type { AlignModelConfig, DevicePlan } from './config';
 import { configureRuntime } from './runtime';
 
 export interface Chunk {
@@ -141,13 +141,17 @@ export async function disposeModel(): Promise<void> {
   cached = null;
 }
 
-/** @param audio 单声道、config.sampleRate 采样率的波形（由主线程的 decodeToMono16k 产出） */
+/**
+ * @param audio 单声道、config.sampleRate 采样率的波形（由主线程的 decodeToMono16k 产出）
+ * @param plan 用哪套后端。**由主线程决定**（client.ts）而不是这里自己探 ——
+ *   崩溃降档要靠 localStorage 里的黑匣子，而 Worker 里没有 localStorage。
+ */
 export async function computeEmissions(
   audio: Float32Array,
   config: AlignModelConfig,
+  plan: DevicePlan,
   onProgress?: (p: EmissionsProgress) => void,
 ): Promise<Emissions> {
-  const plan = await pickDevice();
   onProgress?.({ stage: 'model' });
   const { model, processor } = await loadModel(config, plan, onProgress);
 

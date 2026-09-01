@@ -7,9 +7,6 @@
 // 因为不该有一个可以被误用成批量抓取的形状。
 
 import { putLesson } from '@/db/lessons';
-import { getSettings } from '@/db/meta';
-import { alignLesson } from '@/align/client';
-import type { AlignProgress } from '@/align/align';
 import { getLessonCache, putAudioBlob, putLessonCache } from '@/db/cache';
 import { segmentSentences } from '@/lesson/segment';
 import { createSentences, setExcluded } from '@/lesson/sentences';
@@ -33,11 +30,9 @@ export async function politely<T>(task: () => Promise<T>): Promise<T> {
 }
 
 export interface ImportProgress {
-  step: 'page' | 'audio' | 'saving' | 'align' | 'done';
+  step: 'page' | 'audio' | 'saving' | 'done';
   loaded?: number;
   total?: number;
-  /** step === 'align' 时的子阶段与进度，直接转发 AlignProgress */
-  align?: AlignProgress;
 }
 
 export interface ImportOutcome {
@@ -47,12 +42,13 @@ export interface ImportOutcome {
   /** FR-13.7 判定失败：teaser 块与 teaser 对不上，需要人工确认 */
   teaserNeedsReview: boolean;
   /**
-   * FR-15：自动打点写入了几句。undefined = 没跑（关掉了、或没音频）。
-   * 失败不算导入失败 —— 与 FR-13.9「抓到哪算哪」同一个道理：
-   * 课程已经建出来了，打点还能手动补，没有理由把整次导入回滚掉。
+   * 音频到位了 —— 调用方据此把这一课排进自动对齐队列（FR-15）。
+   *
+   * 对齐**不在这个函数里跑**：它要几分钟到十几分钟，而导入本身是秒级的。
+   * 塞在一起会让「导入」按钮转十分钟，还会把进度绑死在来源页上（切走就看不见了）。
+   * 现在导入一落库就返回，对齐交给 useAlignStore 的队列，进度常驻在应用底部。
    */
-  aligned?: number;
-  alignError?: string;
+  hasAudio: boolean;
 }
 
 function buildCandidates(dw: DwLesson, sentences: Sentence[]): GlossaryCandidate[] {
@@ -138,26 +134,12 @@ export async function importFromDw(
   await useLessonStore.getState().load();
   scheduleLessonBackup(id);
 
-  // FR-15：自动打点。放在课程已经落库**之后**，所以它失败也只是「这一课还没打点」，
-  // 不会让好不容易抓下来的文稿和音频一起丢掉。
-  let aligned: number | undefined;
-  let alignError: string | undefined;
-  if (audioBlob && (await getSettings()).autoAlignOnImport) {
-    try {
-      const result = await alignLesson(lesson, (align) => onProgress?.({ step: 'align', align }));
-      aligned = result.applied;
-    } catch (err) {
-      alignError = err instanceof Error ? err.message : String(err);
-    }
-  }
-
   onProgress?.({ step: 'done' });
   return {
     lessonId: id,
     audioError,
     teaserNeedsReview: Boolean(dw.teaserBlock && !dw.teaserBlock.matchesTeaser),
-    aligned,
-    alignError,
+    hasAudio: Boolean(audioBlob),
   };
 }
 

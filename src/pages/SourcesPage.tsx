@@ -11,6 +11,7 @@ import { SOURCES, type SourceDefinition } from '@/sources/registry';
 import { fetchFeed, parseLessonId, type FeedItem } from '@/sources/dw/adapter';
 import { acceptNewManuscript, importFromDw, rehydrateLesson, type ImportProgress } from '@/sources/importLesson';
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
+import { useAlignStore } from '@/state/useAlignStore';
 import { Banner, Button, EmptyState, Hint, Section, formatBytes } from '@/components/ui';
 import type { Lesson } from '@/types/models';
 import type { DwLesson } from '@/sources/dw/adapter';
@@ -112,9 +113,8 @@ export function SourcesPage() {
 }
 
 /**
- * 导入进度的一行文案。align 阶段单独拎出来是因为它是这里唯一**长耗时**的一步：
- * 抓页面和下音频都是秒级，自动打点在 WASM 后端可能要几分钟，
- * 不给子进度的话看起来就像卡死了。
+ * 导入进度的一行文案。全是秒级的步骤 —— 自动对齐（几分钟）**不在这里**，
+ * 它排进 useAlignStore 的队列，进度常驻在应用底部，切页面也看得见。
  */
 function importProgressText(progress: ImportProgress): string {
   switch (progress.step) {
@@ -128,17 +128,6 @@ function importProgressText(progress: ImportProgress): string {
       }`;
     case 'saving':
       return '写入本地…';
-    case 'align': {
-      const a = progress.align;
-      if (!a) return '自动打点…';
-      if (a.stage === 'model') {
-        return a.total
-          ? `自动打点 · 下载模型 ${Math.round(((a.loaded ?? 0) / a.total) * 100)}%`
-          : '自动打点 · 加载模型…';
-      }
-      const label = a.stage === 'infer' ? '识别音频' : '对齐文本';
-      return `自动打点 · ${label} ${Math.round((a.fraction ?? 0) * 100)}%`;
-    }
     default:
       return '完成';
   }
@@ -147,26 +136,22 @@ function importProgressText(progress: ImportProgress): string {
 function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
 
   const run = async () => {
     setResult(null);
     try {
       const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined);
+      // FR-15：音频一到位就立刻排对齐 —— 「下载完就能直接练」是它存在的理由。
+      // 不等它跑完：几分钟的活儿不该把导入按钮和这一页钉在原地。
+      if (outcome.hasAudio) enqueueAlign(outcome.lessonId);
       const notes = [
         outcome.audioError ? `音频没抓到（${outcome.audioError}），文本已导入，可稍后补齐或手动选文件` : null,
         outcome.teaserNeedsReview ? '开头的 teaser 块与 teaser 对不上，没有自动排除，请在「切句」里确认' : null,
-        // FR-15：打点失败不算导入失败，但一定要说出来 —— 否则你会以为可以直接开始跟读。
-        outcome.alignError ? `自动打点失败（${outcome.alignError}），去「标注」里手动打点或重试` : null,
       ].filter(Boolean);
-      const ok = outcome.aligned !== undefined ? `导入成功，自动打点 ${outcome.aligned} 句（待校对）` : '导入成功';
-      setResult(notes.length > 0 ? notes.join('；') : ok);
-      // 打点过就直接进「标注」页校对；没打点则照旧先去「切句」。
+      setResult(notes.length > 0 ? notes.join('；') : '导入成功，正在自动对齐（进度在页面底部）');
       if (notes.length === 0) {
-        navigate({
-          name: 'lesson',
-          lessonId: outcome.lessonId,
-          tab: outcome.aligned !== undefined ? 'timestamps' : 'sentences',
-        });
+        navigate({ name: 'lesson', lessonId: outcome.lessonId, tab: 'sentences' });
       }
     } catch (err) {
       setResult(`导入失败：${err instanceof Error ? err.message : err}`);
@@ -205,6 +190,7 @@ function ManualIdSection() {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
 
   const run = async () => {
     const lessonId = parseLessonId(input);
@@ -215,6 +201,7 @@ function ManualIdSection() {
     setMessage(null);
     try {
       const outcome = await importFromDw(lessonId, setProgress);
+      if (outcome.hasAudio) enqueueAlign(outcome.lessonId);
       navigate({ name: 'lesson', lessonId: outcome.lessonId, tab: 'sentences' });
     } catch (err) {
       setMessage(`导入失败：${err instanceof Error ? err.message : err}`);
@@ -246,6 +233,7 @@ function ManualIdSection() {
 /** FR-3.5：本机缺素材的 DW 课程，在这里一键补齐。手机导入备份后走的就是这条路。 */
 function RehydratePanel() {
   const { lessons, caches } = useLessonStore();
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
   const missing = lessons.filter((l) => l.source.type === 'dw' && isMaterialMissing(caches[l.id]));
   const [busyId, setBusyId] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ lesson: Lesson; dw: DwLesson } | null>(null);
@@ -263,7 +251,9 @@ function RehydratePanel() {
       } else if (outcome.audioError) {
         setMessage(`《${lesson.title}》的音频没抓到：${outcome.audioError}`);
       } else {
-        setMessage(`《${lesson.title}》素材已补齐。`);
+        // 补齐等于「刚下载完」：时间戳可能因为换过音频而全部作废，重对一遍最省心。
+        enqueueAlign(lesson.id);
+        setMessage(`《${lesson.title}》素材已补齐，正在自动对齐（进度在页面底部）。`);
       }
     } catch (err) {
       setMessage(`补齐失败：${err instanceof Error ? err.message : err}`);

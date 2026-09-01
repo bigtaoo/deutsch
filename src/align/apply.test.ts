@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyTimings, isManual, LEAD_SECONDS, markManual, reviewQueue, TAIL_SECONDS } from './apply';
+import { applyTimings, isManual, LEAD_SECONDS, reviewQueue, TAIL_SECONDS } from './apply';
 import type { Sentence } from '@/types/models';
 import type { SentenceTiming } from './target';
 
@@ -111,21 +111,6 @@ describe('applyTimings', () => {
   });
 });
 
-describe('markManual', () => {
-  it('把 auto 升级成 manual 并清掉置信度', () => {
-    const auto = applyTimings([sentence(0)], [timing(0, 1, 2, -0.9)], {}).sentences;
-    const marked = markManual(auto, 0);
-    expect(marked[0].timingSource).toBe('manual');
-    expect(marked[0].timingConfidence).toBeUndefined();
-    expect(marked[0].startTime).toBe(auto[0].startTime);
-  });
-
-  it('不动别的句子', () => {
-    const input = [sentence(0), sentence(1)];
-    expect(markManual(input, 0)[1]).toBe(input[1]);
-  });
-});
-
 describe('reviewQueue', () => {
   /** 按一批置信度造出 auto 句子。 */
   const withConfidences = (values: number[]) =>
@@ -173,10 +158,13 @@ describe('reviewQueue', () => {
     expect(reviewQueue(good).map((s) => s.timingConfidence)).toContain(-1.6);
   });
 
-  it('人工确认过的不再出现在队列里', () => {
+  it('人工标注过的不再出现在队列里（老数据里还有这种句子）', () => {
     const auto = withConfidences([-3.5, -1, -1, -1, -1]);
     expect(reviewQueue(auto).map((s) => s.index)).toEqual([0]);
-    expect(reviewQueue(markManual(auto, 0))).toHaveLength(0);
+    const confirmed = auto.map((s) =>
+      s.index === 0 ? { ...s, timingSource: 'manual' as const, timingConfidence: undefined } : s,
+    );
+    expect(reviewQueue(confirmed)).toHaveLength(0);
   });
 
   it('排除句不进队列', () => {

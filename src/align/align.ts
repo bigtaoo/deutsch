@@ -10,7 +10,11 @@ import { alignWindowed } from './windowed';
 import type { Sentence } from '@/types/models';
 
 export interface AlignProgress {
-  stage: 'model' | 'infer' | 'align';
+  /**
+   * decode 与 apply 由主线程（client.ts）发，model/infer/align 由 Worker 发。
+   * 放在同一个联合里是因为界面只关心「现在在哪一步」，不关心它是谁发的。
+   */
+  stage: 'decode' | 'model' | 'infer' | 'align' | 'apply';
   /** 0..1 */
   fraction?: number;
   /** model 阶段的下载进度 */
@@ -28,10 +32,14 @@ export interface AlignOutcome extends Timings {
   covered: number;
 }
 
-/** @param audio 主线程 decodeToMono16k() 解出的单声道 16kHz 波形 */
+/**
+ * @param audio 主线程 decodeToMono16k() 解出的单声道 16kHz 波形
+ * @param plan 用哪套后端（主线程按黑匣子里的崩溃记录选，见 journal.ts）
+ */
 export async function alignAudio(
   audio: Float32Array,
   sentences: Sentence[],
+  plan: DevicePlan,
   onProgress?: (p: AlignProgress) => void,
   config: AlignModelConfig = MMS_FA,
 ): Promise<AlignOutcome> {
@@ -40,7 +48,7 @@ export async function alignAudio(
     throw new Error('没有可对齐的句子：要么全被标成了非朗读内容，要么正文里没有字母');
   }
 
-  const emissions = await computeEmissions(audio, config, (p: EmissionsProgress) =>
+  const emissions = await computeEmissions(audio, config, plan, (p: EmissionsProgress) =>
     onProgress?.({ stage: p.stage, fraction: p.fraction, loaded: p.loaded, total: p.total }),
   );
 

@@ -1,10 +1,9 @@
 // FR-7 生词标记与挖空 + FR-14 Glossar 候选词的落点。
 //
-// §3.3 R1：挖空只允许在**已标注时间戳**的句子上做 —— 挖了空却没有音频，
-// 听写和带音频的复习卡都无从谈起。未标注句上点词时提示去打点，并给一键跳转。
+// §3.3 R1：挖空只允许在**有时间戳**的句子上做 —— 挖了空却没有音频，
+// 听写和带音频的复习卡都无从谈起。没时间戳的句子上点词时给一键「自动对齐这一课」。
 
 import { useMemo, useState } from 'react';
-import { navigate } from '@/app/router';
 import { audioPlayer } from '@/audio/player';
 import { useLessonAudio } from '@/audio/useLessonAudio';
 import { resolveRange } from '@/lesson/timing';
@@ -12,6 +11,7 @@ import { displayNumbers } from '@/lesson/sentences';
 import { isSelected, shouldSuggestCollocation, surfaceOf, toRanges, tokenize, type Range, type Token } from '@/lesson/tokens';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
+import { useAlignStore } from '@/state/useAlignStore';
 import { GlossaryCandidates, acceptCandidate } from './GlossaryCandidates';
 import { Banner, Button, Hint } from '@/components/ui';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence, VocabEntry } from '@/types/models';
@@ -95,6 +95,7 @@ function SentenceRow({
   onSelectionChange: (tokens: Token[]) => void;
 }) {
   const tokens = useMemo(() => tokenize(sentence.text), [sentence.text]);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
   const blankRanges = sentence.blanks.flatMap((b) => b.ranges);
   const selectedRanges = toRanges(sentence.text, selection);
   const hasTimestamp = sentence.startTime !== undefined;
@@ -170,11 +171,9 @@ function SentenceRow({
         ) : (
           // §3.3 R1
           <Banner tone="warn">
-            <p>先标注这一句的时间点，再挖空。没有时间戳的挖空既不能听写、也生成不了带音频的卡。</p>
+            <p>这一句还没有时间戳，挖空既不能听写、也生成不了带音频的卡。先自动对齐一次。</p>
             <div className="mt-2 flex gap-2">
-              <Button onClick={() => navigate({ name: 'lesson', lessonId: lesson.id, tab: 'timestamps' })}>
-                去打点
-              </Button>
+              <Button onClick={() => enqueueAlign(lesson.id, { manual: true })}>自动对齐这一课</Button>
               <Button variant="ghost" onClick={() => onSelectionChange([])}>
                 取消选择
               </Button>

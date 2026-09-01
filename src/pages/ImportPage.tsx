@@ -9,10 +9,12 @@ import { useLessonStore } from '@/state/useLessonStore';
 import { readAudioDuration } from '@/audio/player';
 import { segmentSentences } from '@/lesson/segment';
 import { navigate } from '@/app/router';
+import { useAlignStore } from '@/state/useAlignStore';
 import { Banner, Button, Hint, Section, formatBytes, formatTime } from '@/components/ui';
 
 export function ImportPage() {
   const createLesson = useLessonStore((s) => s.createLesson);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
   const [title, setTitle] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
   const [text, setText] = useState('');
@@ -45,6 +47,8 @@ export function ImportPage() {
         plainText: text,
         audioFile: audio?.file,
       });
+      // 手动导入和 DW 导入一视同仁：选了音频就立刻自动对齐（FR-15）。
+      if (audio?.file) enqueueAlign(id);
       navigate({ name: 'lesson', lessonId: id, tab: 'sentences' });
     } finally {
       setBusy(false);

@@ -50,7 +50,7 @@ export function LessonsPage() {
                 >
                   <span className="block font-medium">{lesson.title}</span>
                   <span className="block text-xs text-neutral-500">
-                    {lesson.sentences.length} 句 · 已标注 {annotated} · 挖空 {blanks}
+                    {lesson.sentences.length} 句 · 已对齐 {annotated} · 挖空 {blanks}
                     {lesson.audioDuration ? ` · ${formatTime(lesson.audioDuration, 0)}` : ''}
                     {cache?.audioBytes ? ` · ${formatBytes(cache.audioBytes)}` : ''}
                   </span>

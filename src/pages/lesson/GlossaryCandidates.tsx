@@ -28,7 +28,7 @@ export async function acceptCandidate(lessonId: string, candidate: GlossaryCandi
   if (!lesson || !sentence) return { ok: false, reason: '这一句在重新切句后已不存在' };
 
   // §3.3 R1 对候选词一样成立：没有时间戳的挖空既不能听写、也生成不了带音频的卡。
-  if (sentence.startTime === undefined) return { ok: false, reason: '所在句还没有时间戳，先去「标注」打点' };
+  if (sentence.startTime === undefined) return { ok: false, reason: '所在句还没有时间戳 —— 先在课程页头部跑一次自动对齐' };
 
   try {
     // FR-14.3：surface / lemma / gender / plural / meaning 一次填满，省掉手工录入。

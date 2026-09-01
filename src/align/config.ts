@@ -78,17 +78,44 @@ export interface DevicePlan {
 }
 
 /**
- * WebGPU 能用就用，快一个数量级；q4f16 需要 fp16，只有 WebGPU 路径支持。
- * WASM 退到 int8 —— 317MB，但它是唯一在没有 WebGPU 的设备上能跑起来的组合。
+ * 后端阶梯。**顺序 = 从最省内存到最能兜底**，不是从快到慢（虽然这里恰好一致）。
+ *
+ * 之所以是「阶梯」而不是一个函数算出来的唯一答案：手机上加载权重会把应用整个搞死
+ * （见 journal.ts 顶部那次事故），而崩溃是 try/catch 抓不到的。能做的只有
+ * 「记住哪一档崩过，下次换一档」—— 阶梯就是给这件事用的。
+ *
+ * 两档的实际字节数（onnx-community/mms-300m-1130-forced-aligner-ONNX）：
+ *   - model_q4f16.onnx  187.6 MiB  —— 需要 fp16，只有 WebGPU 路径支持
+ *   - model_int8.onnx   302.6 MiB  —— WASM 唯一能跑的组合，单线程，慢一个量级
+ * 也只有这两份进了 public/models/（scripts/stage-align-assets.mjs），所以阶梯只有两档：
+ * 加第三档就意味着 IPA 再胖 200MB。
  */
-export async function pickDevice(): Promise<DevicePlan> {
-  const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
-  if (gpu) {
-    try {
-      if (await gpu.requestAdapter()) return { device: 'webgpu', dtype: 'q4f16' };
-    } catch {
-      // 有 navigator.gpu 但要不到 adapter（虚拟机、无 GPU 的容器）—— 退 WASM
+export const PLAN_LADDER: DevicePlan[] = [
+  { device: 'webgpu', dtype: 'q4f16' },
+  { device: 'wasm', dtype: 'int8' },
+];
+
+/**
+ * 选后端。step 是 PLAN_LADDER 的下标（由 journal.nextPlanStep() 给出）。
+ *
+ * 没有 WebGPU 时第 0 档自动落到第 1 档 —— 返回值里带回**实际用的** step，
+ * 因为黑匣子要记的是真实档位，不是请求的档位。
+ */
+export async function pickPlan(step = 0): Promise<{ plan: DevicePlan; step: number }> {
+  if (step === 0) {
+    const gpu = (navigator as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+    if (gpu) {
+      try {
+        if (await gpu.requestAdapter()) return { plan: PLAN_LADDER[0], step: 0 };
+      } catch {
+        // 有 navigator.gpu 但要不到 adapter（虚拟机、无 GPU 的容器）—— 退下一档
+      }
     }
   }
-  return { device: 'wasm', dtype: 'int8' };
+  return { plan: PLAN_LADDER[1], step: 1 };
+}
+
+/** 诊断页用：这台设备默认会走哪一档。 */
+export async function pickDevice(): Promise<DevicePlan> {
+  return (await pickPlan(0)).plan;
 }

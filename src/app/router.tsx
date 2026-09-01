@@ -14,13 +14,14 @@ export type Route =
   | { name: 'cache' }
   | { name: 'settings' };
 
-export const LESSON_TABS = ['sentences', 'listen', 'timestamps', 'shadowing', 'study', 'dictation'] as const;
+// 「标注」那一页在 FR-15 之后去掉了：时间戳一律由自动对齐给（导入后立刻跑），
+// 状态与重跑入口在课程页头部的 AlignStatus 里。
+export const LESSON_TABS = ['sentences', 'listen', 'shadowing', 'study', 'dictation'] as const;
 export type LessonTab = (typeof LESSON_TABS)[number];
 
 export const LESSON_TAB_LABELS: Record<LessonTab, string> = {
   sentences: '切句',
   listen: '通听',
-  timestamps: '标注',
   shadowing: '跟读',
   study: '学词',
   dictation: '听写',

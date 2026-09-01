@@ -7,6 +7,8 @@ import { useBackupStore } from '@/state/useBackupStore';
 import { drainBackupQueue, setBackupHooks, startBackupAutoRetry } from '@/github/backupTrigger';
 import { audioPlayer } from '@/audio/player';
 import { hideNativeSplash } from '@/platform/native';
+import { useAlignStore } from '@/state/useAlignStore';
+import { AlignBar, AlignCrashBanner } from '@/components/AlignBar';
 import { LessonsPage } from '@/pages/LessonsPage';
 import { ImportPage } from '@/pages/ImportPage';
 import { LessonPage } from '@/pages/LessonPage';
@@ -42,6 +44,10 @@ function App() {
     // 浏览器里这是空操作。
     void ready.then(() => hideNativeSplash());
 
+    // FR-15：启动时问一次黑匣子「上次自动对齐是不是被系统杀掉的」。
+    // 必须在这里、而且只做一次 —— detectCrash() 会把那条记录归档，第二次调用就看不到了。
+    useAlignStore.getState().init();
+
     // FR-11.10：备份状态变化时刷新常驻状态条；网络恢复时自动重推排队项。
     setBackupHooks({ onChange: () => void useBackupStore.getState().refreshPendingCount() });
     void drainBackupQueue();
@@ -54,7 +60,7 @@ function App() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-4xl px-4 pb-16">
+    <div className="mx-auto max-w-4xl px-4 pb-24">
       <nav className="app-nav sticky top-0 z-20 -mx-4 mb-4 flex gap-1 overflow-x-auto border-b border-neutral-200 bg-white/95 px-4 py-2 backdrop-blur">
         {NAV.map((item) => (
           <a
@@ -69,6 +75,8 @@ function App() {
         ))}
       </nav>
 
+      <AlignCrashBanner />
+
       {route.name === 'lessons' && <LessonsPage />}
       {route.name === 'import' && <ImportPage />}
       {route.name === 'sources' && <SourcesPage />}
@@ -77,6 +85,9 @@ function App() {
       {route.name === 'review' && <ReviewPage />}
       {route.name === 'cache' && <CachePage />}
       {route.name === 'settings' && <SettingsPage />}
+
+      {/* 自动对齐要跑几分钟，进度必须跟着人走，而不是待在某一页上。 */}
+      <AlignBar />
     </div>
   );
 }

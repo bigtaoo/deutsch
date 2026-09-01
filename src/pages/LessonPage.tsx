@@ -4,9 +4,10 @@
 import { useState } from 'react';
 import { LESSON_TABS, LESSON_TAB_LABELS, href, navigate, type LessonTab } from '@/app/router';
 import { useLessonStore, isMaterialMissing, isRehydratable } from '@/state/useLessonStore';
+import { useAlignStore } from '@/state/useAlignStore';
 import { SentencesTab } from './lesson/SentencesTab';
+import { AlignStatus } from './lesson/AlignStatus';
 import { ListenTab } from './lesson/ListenTab';
-import { TimestampsTab } from './lesson/TimestampsTab';
 import { ShadowingTab } from './lesson/ShadowingTab';
 import { StudyTab } from './lesson/StudyTab';
 import { DictationTab } from './lesson/DictationTab';
@@ -20,19 +21,17 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
   if (!loaded) return <EmptyState>加载中…</EmptyState>;
   if (!lesson) return <EmptyState>找不到这一课。它可能已被删除。</EmptyState>;
 
-  const annotated = lesson.sentences.filter((s) => s.startTime !== undefined && !s.excluded).length;
-  const usable = lesson.sentences.filter((s) => !s.excluded).length;
 
   return (
     <div className="space-y-4">
       <header className="space-y-1">
         <h1 className="text-xl font-semibold">{lesson.title}</h1>
         <p className="text-sm text-neutral-500">
-          {/* FR-6.4：把「已标注 N / M」摆在显眼处。稀疏打点是设计，不是欠债，别把它显示成待办清单。 */}
-          已标注 {annotated} / {usable} 句
-          {lesson.audioDuration ? ` · 音频 ${formatTime(lesson.audioDuration, 0)}` : ''}
+          {lesson.audioDuration ? `音频 ${formatTime(lesson.audioDuration, 0)}` : '没有音频'}
           {cache?.audioBytes ? ` · ${formatBytes(cache.audioBytes)}` : ''}
         </p>
+        {/* FR-6.4 的「已标注 N / M」搬到这里：它现在说的是自动对齐的覆盖率与可疑句数。 */}
+        <AlignStatus lesson={lesson} />
       </header>
 
       {isMaterialMissing(cache) && <MissingMaterialBanner lessonId={lessonId} />}
@@ -53,7 +52,6 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
 
       {tab === 'sentences' && <SentencesTab lesson={lesson} cache={cache} />}
       {tab === 'listen' && <ListenTab lesson={lesson} cache={cache} />}
-      {tab === 'timestamps' && <TimestampsTab lesson={lesson} cache={cache} />}
       {tab === 'shadowing' && <ShadowingTab lesson={lesson} cache={cache} />}
       {tab === 'study' && <StudyTab lesson={lesson} cache={cache} />}
       {tab === 'dictation' && <DictationTab lesson={lesson} cache={cache} />}
@@ -65,11 +63,14 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
 function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId))!;
   const attachAudio = useLessonStore((s) => s.attachAudio);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
   const [message, setMessage] = useState<string | null>(null);
 
   const pick = async (file: File | undefined) => {
     if (!file) return;
     const { duration, mismatch } = await attachAudio(lessonId, file);
+    // 换了音频文件 = 旧时间戳大概率作废，直接重对一遍（FR-15）。
+    enqueueAlign(lessonId);
     setMessage(
       mismatch
         ? `已绑定，但时长不匹配（原 ${formatTime(lesson.audioDuration, 0)} vs 新 ${formatTime(duration, 0)}），时间戳可能失效。`

@@ -145,12 +145,13 @@ export function StudySettingsSection() {
           checked={settings.autoAlignOnImport}
           onChange={(e) => void update({ autoAlignOnImport: e.target.checked })}
         />
-        DW 导入后自动打点（FR-15）
+        下载课程后自动对齐音频与文稿（FR-15）
       </label>
       <p className="text-xs text-neutral-500">
-        自动打点在本机跑 CTC 强制对齐，音频不出设备。首次使用要下载一次约 200MB 的模型，
-        之后离线可用。WASM 后端下一课约几分钟，有 WebGPU 时快得多。
-        结果一律标成「待校对」——它把要手改的句子从几十句降到几句，不是降到零。
+        自动对齐在本机跑 CTC 强制对齐，音频不出设备。随包版本权重已在安装包里；纯网页版首次要下载一次
+        约 187MB 的模型，之后离线可用。WASM 后端下一课约几分钟，有 WebGPU 时快得多。
+        关掉它只是不再自动跑 —— 课程页头部那个「自动对齐」按钮永远可用。
+        置信度偏低的句子会被标出来：它把要核对的句子从几十句降到几句，不是降到零。
       </p>
     </Section>
   );

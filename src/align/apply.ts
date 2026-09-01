@@ -97,16 +97,6 @@ export function applyTimings(
 }
 
 /**
- * 人工在打点页改了某句 —— 把它从「机器给的」升级成「我确认过的」。
- * 置信度一并清掉：留着会让 UI 继续把这句排进待校对列表。
- */
-export function markManual(sentences: Sentence[], index: number): Sentence[] {
-  return sentences.map((s) =>
-    s.index === index ? { ...s, timingSource: 'manual' as const, timingConfidence: undefined } : s,
-  );
-}
-
-/**
  * 「明显比本课典型水平差」的差距，单位是每 token 的平均 log-prob。
  *
  * 这个数是**实测标定**的，不是拍的：在一期真实 Alltagsdeutsch（6:16，38 句自动对齐）上，

@@ -35,7 +35,7 @@ export function DictationTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
     return (
       <EmptyState>
         这一课还没有可听写的句子。听写需要：句子有时间戳 + 句上有挖空。
-        先去「标注」打点，再去「学词」点几个生词。
+        时间戳由自动对齐给（课程页头部可以重跑），挖空去「学词」点几个词。
       </EmptyState>
     );
   }

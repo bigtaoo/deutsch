@@ -188,13 +188,13 @@ function CardFace({
         <Banner tone="warn">
           {audioStatus === 'no-timestamp' ? (
             <>
-              <p>这张卡没有音频：来源句还没有标注时间戳。</p>
+              <p>这张卡没有音频：来源句还没有时间戳（自动对齐没覆盖到它）。</p>
               {lesson && (
                 <Button
                   className="mt-2"
-                  onClick={() => navigate({ name: 'lesson', lessonId: lesson.id, tab: 'timestamps' })}
+                  onClick={() => navigate({ name: 'lesson', lessonId: lesson.id, tab: 'sentences' })}
                 >
-                  去补标注
+                  去这一课重新对齐
                 </Button>
               )}
             </>
