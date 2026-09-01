@@ -160,7 +160,9 @@ npm run build
 npm run icons
 ```
 
-图案（两点变音符 + 正弦波）的几何参数在 `scripts/generate-icons.mjs` 顶部的 `ART` 里，按 1024 设计稿坐标写；波的起伏数得保持奇数且 ≥ 5，理由见 [SPEC.md](SPEC.md) §7.10。
+图案是「半透明对话气泡 + 斜体 Ä + 从气泡背后穿过的渐强波」（气泡 = 语言，Ä = 德语，波 = 听）。几何参数全在 `scripts/generate-icons.mjs` 顶部，按 1024 设计稿坐标写 —— 改配色、倾角、振幅都只改那一处，然后重跑。改动前先读 [SPEC.md](SPEC.md) §7.10 里那三条踩过的坑（为什么必须有气泡、为什么两点不能挪到气泡外、iOS 那张为什么不能带 alpha）。
+
+图标是浅色的，所以这几处必须同色系：`index.html` 的 `theme-color`、`vite.config.ts` manifest 的 `theme_color`、`android/app/src/main/res/values/ic_launcher_background.xml`（由脚本生成，等于脚本里的 `TILE`）。
 
 **原生 App 的名字按系统语言取**：中文系统「精听」，其余「Hörtraining」。改名字改这几处，`capacitor.config.ts` 里的 `appName` 不是其中之一（它只在建工程时用过一次）：
 

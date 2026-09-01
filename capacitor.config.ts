@@ -35,7 +35,7 @@ const config: CapacitorConfig = {
     // 和 CSS 的 padding 叠起来，吸顶导航下面会空出一条。
     contentInset: 'never',
     // 应用主体是浅色（导航 bg-white），所以壳的底色也给白 —— 否则启动到首帧之间
-    // 会闪一下深色。启动图本身是白底深色图标，见 scripts/generate-icons.mjs。
+    // 会闪一下深色。启动图是白底 + 居中的浅蓝图案（不画图标的方框），见 scripts/generate-icons.mjs。
     backgroundColor: '#ffffff',
   },
   android: {
