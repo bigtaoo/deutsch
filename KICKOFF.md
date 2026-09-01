@@ -26,11 +26,19 @@
 **§7.10 原生壳已接入**（Capacitor 8，iOS + Android 两套工程入库）：
 壳里跑同一份 `npm run build:native` 产物，业务代码只多了一个 `src/platform/native.ts`
 加一处原生代码（`AppDelegate.swift` 把 `AVAudioSession` 设成 `.playback`，顺手修掉了
-「iOS 静音开关让 `<audio>` 没声音」那条老坑）。200MB 权重随包带。
+「iOS 静音开关让 `<audio>` 没声音」那条老坑）。对齐权重随包带（实测 490.2 MiB）。
 出包走 CI：推 `ios-v*` tag → 出 IPA 并自动上传 App Store Connect；推 `android-v*` tag → 出签名 APK。
-**本机（Windows，无 JDK / 无 Xcode）能验的都验了** —— 两个平台脚手架生成、`cap sync`、
-两种构建模式（web 有 SW / native 无 SW）、图标与启动图、typecheck、254 个测试、浏览器里跑一遍。
-**真机与 xcodebuild 一次都没跑过**，iOS 那条流水线要等第一次推 tag 才算走通。
+
+**iOS 流水线已跑通并装机（2026-09-01）**：`ios-v0.1.0` → run 33515038917，5m45s 一次通过，
+`UPLOAD SUCCEEDED`，build 1.0(1) 进 TestFlight 装到 iPhone。实测 IPA 381MB、装机 553.6MB。
+签名材料全套是这次重签的（旧的丢了，见下面的教训），台账在本机 `D:\cloud\ios\`
+（Google Drive 同步）：`apple-account.md` 是账号级值，`new-app-checklist.md` 是无 Mac 的完整流程，
+`apps/deutsch.md` 是这个 App 的专属值与状态。**要动 iOS 发布先读那个目录。**
+**Android 那条仍未跑过**（tag `android-v*` 一次都没推）。
+
+**一条教训**：GitHub Actions Secret 只写不可读，`funny` 那套签名数值就是这么丢的
+（流水线好使、TestFlight 上过线，但值找不回来，只能整套重签）。
+**流程有文档 ≠ 数值有存档**，两件事要分开保管。
 
 **大窟窿一：GitHub 备份从来没用真实 PAT 联调过。** 逻辑完成、mock 测试通过，
 但一键建仓、写权限校验、token 过期响应头（附录 B.2 未定）、一键恢复（FR-11.13）都还没碰过真实 API。
@@ -43,10 +51,14 @@
    （过期响应头名称、最长有效期、`POST /user/repos` 的默认分支名）。
 2. **实际用两周**，然后再回来改。§10 里标 🧪 的几条（跟读循环、多区间挖空）代码路径有测试，
    但没有人真的连着跟读过十分钟，手感问题只有用出来。
-3. **推第一个 `ios-v0.1.0` tag，把 iOS 流水线真的跑一遍。** 需要先在仓库 Secrets 里配九个
-   签名相关的值（清单在 `.github/workflows/release-ios.yml` 头部）。装到自己 iPhone 上之后
-   要亲手确认的三件事：① 自动打点在 WKWebView 里到底多慢（预计一课十分钟量级，单线程 WASM+int8）；
-   ② 导出备份能不能落到「文件」App；③ 顶部安全区在真机刘海下对不对。
+3. **读一下手机上「设置 → 对齐后端」，然后砍权重。** 装机 553.6MB 里 490MB 是对齐权重，
+   而 `pickDevice()` 两条路只会走一条（有 WebGPU → `q4f16` 187.6MiB；退 WASM → `int8` 302.6MiB），
+   原生壳里另一份是纯死重。SPEC §7.10 断言 WKWebView 没有 WebGPU（即该砍 `q4f16`，
+   装机降到约 366MB），但那条断言从没在真机上验过 —— 诊断页就是为了让设备自己回答。
+   读到之后改 `scripts/stage-align-assets.mjs`（支持只带一份）+ `release-ios.yml`，推 `ios-v0.1.1`，
+   新包的诊断页顺便自证砍对了。**砍错的后果是自动打点直接不可用，所以先读再砍。**
+   同一次装机还要确认另外两件：① 导出备份能不能落到「文件」App；
+   ② 顶部安全区在真机刘海下对不对；顺便记一下自动打点在真机上实际多慢。
    **桌面壳（Electron）仍未做，也不急** —— 桌面就是浏览器。
 4. Q7：存档列表页 `/de/alltagsdeutsch/s-9214` 是否也在 `__APOLLO_STATE__` 里给出完整的 400+ 期列表。
    若给了，L1 就能覆盖全部存档，大约 10 分钟的增量。

@@ -171,13 +171,22 @@ iOS —— 推一个 `ios-v*` tag，`release-ios.yml` 会出 IPA 并自动上传
 git tag ios-v0.1.0; git push origin ios-v0.1.0
 ```
 
-上传成功不等于能装：ASC 那边要处理十几分钟，之后**内部测试员自动可见**，
-外部测试组第一次需要过一次 TestFlight 审核。
+上传成功不等于能装，中间还有三道（2026-09-01 首次发布实测）：
+
+1. ASC 处理十几分钟，`processingState` 变 `VALID`。
+2. 出口合规 —— `ios/App/App/Info.plist` 里有 `ITSAppUsesNonExemptEncryption=false`，
+   自动过；没有这一项的话每个 build 都要手动答一遍加密问卷。
+3. **必须先建内部测试组**（ASC → TestFlight → Internal Testing）并把自己加进去。
+   **一个组都没有时 build 不会出现在任何人的 TestFlight App 里。**
+   外部测试组第一次还要过一次 TestFlight 审核。
+
 第一次跑之前要在仓库 Settings → Secrets 里配好九个签名相关的 secret，
 清单和说明在 `.github/workflows/release-ios.yml` 头部。
+**包不小**：IPA 381MB、iPhone 上装机 553.6MB（其中 490MB 是对齐权重），
+超过蜂窝下载门槛，装的时候要 Wi-Fi。
 
 Android —— 推一个 `android-v*` tag，`release-android.yml` 出一个签名 APK 放在 run 的 Artifacts 里，
-下载直接侧载。**不上 Play Store**（单 APK 100MB 的限制带着 200MB 权重必然超，而这是自用工具）。
+下载直接侧载。**不上 Play Store**（单 APK 100MB 的限制带着 490MiB 权重必然超，而这是自用工具）。
 需要四个 keystore 相关的 secret，生成命令在那个 workflow 头部。
 **那份 keystore 自己也要备份** —— 换 keystore 等于换应用身份，已装的版本只能卸了重装，数据会没。
 

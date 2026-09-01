@@ -3,7 +3,8 @@ import type { CapacitorConfig } from '@capacitor/cli';
 // 原生壳配置（SPEC Q9：桌面用 Electron，手机用 Capacitor）。
 //
 // ── 为什么要套壳 ──
-// FR-15 之后有了两个纯 web 版给不了的东西：**随包带 200MB 对齐权重**（装完第一次用就离线）
+// FR-15 之后有了两个纯 web 版给不了的东西：**随包带对齐权重**（装完第一次用就离线；
+// 实测 490.2 MiB，IPA 381MB，装机 553.6MB —— 见 SPEC §7.10 的首次发布实测）
 // 和 **iOS 上的 storage 不再被 7 天策略清除**（原生 App 的 WebView 数据只在卸载时消失，
 // 不需要用户记得「添加到主屏幕」—— README §一那条「不装主屏幕 = 数据一定会丢」在原生壳里失效）。
 // 壳里跑的是同一份 `npm run build:native` 产物，业务代码一行不变。

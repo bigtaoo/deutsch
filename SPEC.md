@@ -26,8 +26,9 @@
 | 14 | **§2.6 重写为「备份与同步」，主次对调**：备份是首要需求，同步是副产品。方案为 GitHub 私有仓库自动备份（**不建服务器**），FR-11 相应重写并升为 V1 最高优先级的非学习功能 | 初稿把两者当同一件事（「手动搬一次顺带备份」）。**这对同步成立，对备份不成立** —— 备份的失效模式正是「你忘了」。且威胁模型里「写坏数据后覆盖备份」和「几年后工具跑不起来」两条，要求方案必须有**版本历史**且**格式能脱离工具被读懂** |
 | 16 | **实现期回写（2026-08-31，§9 第 2–11 步完成后）**：`Sentence.index` 一律等于数组下标，**排除不重排号**（FR-1.4 修订）；听写「转写等价」放宽到「去变音符」写法（§7.4 修订）；`FSRSCard` 增补 `learning_steps`（§6 修订）；候选词接受同样受 §3.3 R1 约束（FR-14.2 修订） | 四条都是实现时才暴露的：第一条若按原文重排会让生词出处静默错位；第二条是 §7.4 的规则与 §10 的验收例子（`Hauser` → 转写等价）本身对不上；第三条丢了会让同日二次复习退化；第四条是两条规则的交叉点，原文没写 |
 | 17 | **新增 FR-15 自动打点**：浏览器内跑 CTC 强制对齐（MMS-FA），从「已切好的句子 + 音频」直接算出句级与词级时间戳，结果一律标为**待校对** | 打点是整条能力依赖链（§3.3）的入口，也是唯一必须逐句手工做的一步 —— 一期 40+ 句，这是实际使用中最大的摩擦。强制对齐（文本已知）而不是 ASR（文本待猜）让这件事从「猜」变成「算」，且**音频不出设备**，§3.1.1 R-1 不受影响。刻意不叫「完成」：实测低置信句正好命中英语借词、被丢的数字这几类，必须留人工校对这一步 |
-| 18 | **新增 §7.10 原生壳（Capacitor）**：iOS + Android 两套原生工程入库，CI 出包（iOS 自动上传 App Store Connect）。200MB 对齐权重随包带 | Q9 的手机那一半。FR-15 之后套壳有了三个纯 web 版给不了的东西：权重随包带（装完第一次用就离线）、iOS 上的数据寿命不再依赖「用户记得添加到主屏幕」、以及 `AVAudioSession` 一行修掉静音开关静音 `<audio>`。壳里跑的是同一份产物，业务代码只多了一个 `src/platform/native.ts` |
+| 18 | **新增 §7.10 原生壳（Capacitor）**：iOS + Android 两套原生工程入库，CI 出包（iOS 自动上传 App Store Connect）。对齐权重随包带（**实测 490.2 MiB**，不是最初估的 200MB，见变更 19） | Q9 的手机那一半。FR-15 之后套壳有了三个纯 web 版给不了的东西：权重随包带（装完第一次用就离线）、iOS 上的数据寿命不再依赖「用户记得添加到主屏幕」、以及 `AVAudioSession` 一行修掉静音开关静音 `<audio>`。壳里跑的是同一份产物，业务代码只多了一个 `src/platform/native.ts` |
 | 15 | **不做 OAuth 登录**，改为「粘贴一次 PAT，其余全自动」：应用自动识别账号、**一键创建私有备份仓库**、校验权限、监控 token 过期 | 实测 GitHub 的 OAuth 端点不支持 CORS 且不支持 PKCE，纯前端拿不到 token（附录 B.1）。但 `api.github.com` 完全开放，所以「填 owner/repo」这一步可以彻底消灭，手工操作只剩「建 token + 粘贴」 |
+| 19 | **iOS 发布回写（2026-09-01，流水线首次真跑之后）**：§7.10 的三处数字与两处判断按实测改正 —— 权重实际 **490.2 MiB**（`q4f16` 187.6 + `int8` 302.6 两份都带）、IPA **381MB**、装机 **553.6MB**；TestFlight 「处理完成」之后还有两道（出口合规、**必须有测试组**）；砍掉用不到的那份权重是唯一值得做的体积优化，为此在设置页加了对齐后端诊断 | 全部来自第一次真机链路：本机没有 Mac，此前所有数字都是估的。「200MB」这个数字在 SPEC / README / `capacitor.config.ts` 三处传抄了，实测差 2.45 倍。测试组那一道是原文完全没有的：文档原写「处理完之后内部测试员自动可见」，实测**一个测试组都没有时 build 不出现在任何人的 TestFlight 里**，处理完成 ≠ 可见 |
 
 ---
 
@@ -857,9 +858,33 @@ Q9 的手机那一半的落地。**壳里跑的是同一份 web 产物，业务�
 
 **速度仍然是手机端的硬约束，体积不再是。** 套壳不改变运行时：手机里仍然是 WebView 里的 WASM/WebGPU。iOS 的 WKWebView 没有 WebGPU，所以 `pickDevice()` 一定退到 `wasm` + `int8`；再加上原生壳的本地服务器不发 COOP/COEP 头（线上静态托管也没发），ORT 拿不到 `SharedArrayBuffer`、跑不了多线程。**结论：手机上自动打点会比桌面慢一个量级，一课按十分钟量级估**，这是 FR-15 在手机上的真实形状，不是 bug。
 
+**首次发布实测（2026-09-01，run 33515038917）**。一次通过，5m45s，`UPLOAD SUCCEEDED`。
+落地的数字与原估差得多，记在这里免得再传抄：**对齐权重共 490.2 MiB**
+（`onnx/model_q4f16.onnx` 187.6 + `onnx/model_int8.onnx` 302.6，`stage-align-assets.mjs`
+两份都带 —— web 版必须两份都有），**IPA 381MB**，**iPhone 上装机 553.6MB**。
+超过 App Store 蜂窝下载的 200MB 门槛，装的时候要 Wi-Fi。
+
+**「上传成功」到「手机上能装」之间还有两道**，原文只写了第一道：
+
+1. ASC 处理十几分钟 → `processingState` 变 `VALID`。
+2. **出口合规**：`ios/App/App/Info.plist` 里的 `ITSAppUsesNonExemptEncryption=false`
+   让这一道自动过；这一项没写的话，每个 build 都要去 ASC 手动答一遍加密问卷才能测。
+3. **必须有测试组**：ASC → TestFlight → Internal Testing 建组并把自己加进去。
+   **一个组都没有时 build 不出现在任何人的 TestFlight App 里** ——
+   `processingState=VALID` + `internalBuildState=READY_FOR_BETA_TESTING` 都满足了也一样。
+   原文写「处理完之后内部测试员自动可见」，是错的。
+
+**唯一值得做的体积优化：砍掉用不到的那份权重。** 553.6MB 里 490MB 是权重，而
+`pickDevice()` 两条路只会走一条 —— 有 WebGPU 走 `q4f16`，退 WASM 走 `int8`。
+web 版必须两份都带（用户设备什么都有），**原生壳只在一种 WebView 里跑，另一份是纯死重**：
+按本节上面那条判断（WKWebView 没有 WebGPU）应该砍 `q4f16`，装机降到约 366MB。
+但那条判断此前从未在真机上验过，砍错就是自动打点直接不可用，
+所以先在**设置页加了「对齐后端」诊断**（显示 `device / dtype` 与每份权重在不在包里，
+用 `Range: bytes=0-0` 探大小而不真的下载），让设备自己回答，再改 `release-ios.yml`。
+
 **图标与启动图自己画**（`scripts/generate-icons.mjs`，`npm run icons`）。官方的 `@capacitor/assets` 依赖 sharp，而 sharp 要跑安装脚本编原生模块 —— 为画几十个 PNG 引入一条需要编译的依赖链，比自己多写一百行糟得多；这与 §7.6「不为一次性构建产物装依赖」是同一条判断。一个只在上传时才炸的坑：**iOS 的 AppIcon 不能带 alpha 通道**，App Store 校验看的是通道在不在而不是有没有透明像素，所以那一张必须写成 PNG color type 2，Xcode 本地构建完全不报错。
 
-**发布走 CI，本机不需要 Mac**（`.github/workflows/release-ios.yml`，推 tag `ios-v*`）。形状抄 funny 的同名 workflow，但三处必须不一样：Capacitor 8 的 iOS 模板走 **SPM 而非 CocoaPods**，所以是 `-project` 不是 `-workspace`、也不跑 `pod install`；这份 pbxproj 没有 `VERSIONING_SYSTEM = apple-generic`，所以**不能用 `agvtool`**，版本号改在 xcodebuild 命令行上覆盖；多一步 `npm run stage:align`（带 `actions/cache`，否则每次 run 都要从 HF 拉 200MB）。Capacitor 模板不带共享 scheme（Xcode 自动生成的那份在 `xcuserdata/` 里、被 gitignore 了），所以 `App.xcscheme` 手工写了一份入库。Android 那条（`release-android.yml`，tag `android-v*`）只出一个签名 APK 作为构建产物，**不上 Play Store**：单 APK 100MB 的限制带着 200MB 权重必然超，而这是个人自用工具，侧载就行。
+**发布走 CI，本机不需要 Mac**（`.github/workflows/release-ios.yml`，推 tag `ios-v*`）。形状抄 funny 的同名 workflow，但三处必须不一样：Capacitor 8 的 iOS 模板走 **SPM 而非 CocoaPods**，所以是 `-project` 不是 `-workspace`、也不跑 `pod install`；这份 pbxproj 没有 `VERSIONING_SYSTEM = apple-generic`，所以**不能用 `agvtool`**，版本号改在 xcodebuild 命令行上覆盖；多一步 `npm run stage:align`（带 `actions/cache`，否则每次 run 都要从 HF 拉 490MiB）。Capacitor 模板不带共享 scheme（Xcode 自动生成的那份在 `xcuserdata/` 里、被 gitignore 了），所以 `App.xcscheme` 手工写了一份入库。Android 那条（`release-android.yml`，tag `android-v*`）只出一个签名 APK 作为构建产物，**不上 Play Store**：单 APK 100MB 的限制带着 490MiB 权重必然超，而这是个人自用工具，侧载就行。
 
 
 ---
@@ -914,7 +939,10 @@ V1 一次做完，但按下面顺序写，每步都能跑：
 **FR-15 自动打点**（§7.9）与 **§7.10 原生壳（Capacitor，iOS + Android）**。
 尚未做的是真实 PAT 的 GitHub 联调（附录 B.2 仍未定）、§10 里依赖它的那几条验收项，
 以及原生壳的**真机验证** —— 两套工程与 CI 都写完了，但没有 Mac 的机器上跑不了 xcodebuild，
-所以 iOS 那条流水线要等第一次推 `ios-v*` tag 才算走通（§7.10）。
+iOS 那条流水线**已于 2026-09-01 首次跑通**（`ios-v0.1.0`，run 33515038917，
+5m45s 一次通过，`UPLOAD SUCCEEDED`，build 1.0(1) 已进 TestFlight 并装到真机），
+实测数字与「上传成功之后还有两道」都回写进 §7.10。
+Android 那条仍未跑过。
 
 理由（同原规格 §8）：界面优先级 **跟读 > 听写 > 复习**。跟读每次都会用，复习要攒够词才有意义。
 
