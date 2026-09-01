@@ -6,6 +6,9 @@
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<!-- 这两处是**兜底**值：真正显示的名字按系统语言取 {zh-Hans,de,en}.lproj/InfoPlist.strings，
+	     只有那些文件都没匹配上时才用这里的。别忘了 capacitor.config.ts 里的 appName 跟这里无关
+	     （它只在 `npx cap add ios` 建工程时用一次，改它对已有工程没有任何作用）。 -->
 	<key>CFBundleDisplayName</key>
         <string>精听</string>
 	<key>CFBundleExecutable</key>
@@ -14,8 +17,12 @@
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<!-- 不能留 $(PRODUCT_NAME)：那是 target 名「App」，会原样显示在
+	     设置 → 通用 → iPhone 储存空间 / 电池用量 / 通知设置里。
+	     CFBundleExecutable 才是二进制名，跟这条无关，所以改这里不影响构建产物。
+	     ≤15 个字符，长了系统会截。 -->
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>精听</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

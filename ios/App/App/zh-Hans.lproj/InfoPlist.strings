@@ -1,0 +1,14 @@
+/* App 名字的本地化。系统按用户的系统语言先在这些 .lproj 里找，
+   找不到匹配的语言才回落到 Info.plist 里的值（兜底是 CFBundleDevelopmentRegion = en）。
+
+   两个 key 显示在不同地方，必须都给：
+   - CFBundleDisplayName：主屏幕图标下面
+   - CFBundleName：设置 → 通用 → iPhone 储存空间 / 电池用量 / 通知设置
+     （超过 15 个字符会被截，所以这里别写长名字）
+
+   注意：`npx cap sync` 不会覆盖这些文件（Capacitor 只在 `cap add` 时写过一次
+   Info.plist 的 CFBundleDisplayName），但重新 `cap add ios` 会把整个工程重建，
+   那种情况要把这三个 .lproj 和 pbxproj 里的 InfoPlist.strings 变体组一起补回来。 */
+
+"CFBundleDisplayName" = "精听";
+"CFBundleName" = "精听";

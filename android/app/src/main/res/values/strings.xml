@@ -1,7 +1,10 @@
 <?xml version='1.0' encoding='utf-8'?>
+<!-- 默认（兜底）语言：非中文系统都用这一份。中文系统见 values-zh/strings.xml。
+     app_name 显示在启动器和应用列表，title_activity_main 是 MainActivity 的 label。
+     package_name / custom_url_scheme 是 Capacitor 用的，不本地化。 -->
 <resources>
-    <string name="app_name">精听</string>
-    <string name="title_activity_main">精听</string>
+    <string name="app_name">Hörtraining</string>
+    <string name="title_activity_main">Hörtraining</string>
     <string name="package_name">com.gamestao.deutsch</string>
     <string name="custom_url_scheme">com.gamestao.deutsch</string>
 </resources>
