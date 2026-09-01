@@ -10,6 +10,8 @@ import type { BackupFile, MergeResult, MergeSummary } from '@/backup/types';
 import type { RepoRef } from '@/github/repo';
 import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
+import { MMS_FA, LOCAL_MODEL_PATH, hasLocalWeights, pickDevice } from '@/align/config';
+import { nativePlatform } from '@/platform/native';
 
 const PAT_CREATE_URL = 'https://github.com/settings/personal-access-tokens/new';
 
@@ -59,6 +61,68 @@ function StorageSection() {
       )}
     </section>
   );
+}
+
+/**
+ * 对齐后端诊断（FR-15）。存在的理由很具体：**IPA 里两份权重只会用到一份**
+ * （`pickDevice()` 有 WebGPU 走 q4f16，退 WASM 走 int8），但装机 553MB 里
+ * 490MB 是权重，砍掉没用的那份是最大的一笔。而「iOS 的 WKWebView 到底有没有
+ * WebGPU」只能在真机上问，猜不出来 —— 所以把答案显示出来。
+ *
+ * 顺便探每份权重在不在包里：砍完之后回来看这里就能确认砍对了。
+ */
+function AlignBackendSection() {
+  const [lines, setLines] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const out: string[] = [];
+      const plan = await pickDevice();
+      out.push(`推理后端：${plan.device} / ${plan.dtype}`);
+      out.push(`平台：${await nativePlatform()}`);
+      out.push(`权重来源：${(await hasLocalWeights(MMS_FA)) ? '随包（public/models/）' : 'HF CDN（首次用时下载）'}`);
+      for (const dtype of ['q4f16', 'int8'] as const) {
+        const url = `${LOCAL_MODEL_PATH}${MMS_FA.modelId}/onnx/model_${dtype}.onnx`;
+        const mark = dtype === plan.dtype ? ' ← 这台设备实际用的是这份' : '';
+        out.push(`　model_${dtype}.onnx：${await probeSize(url)}${mark}`);
+      }
+      setLines(out);
+    })();
+  }, []);
+
+  return (
+    <section className="space-y-2 rounded-lg border border-neutral-200 p-4">
+      <h2 className="font-semibold">对齐后端（FR-15 诊断）</h2>
+      {lines
+        ? lines.map((l) => (
+            <p key={l} className="text-sm text-neutral-600">
+              {l}
+            </p>
+          ))
+        : <p className="text-sm text-neutral-500">探测中…</p>}
+    </section>
+  );
+}
+
+/**
+ * 只要大小、不要正文 —— 权重有 300MB，真下下来会把这个页面卡死。
+ * 先试 HEAD；`capacitor://localhost` 的内建服务器不保证支持 HEAD，
+ * 所以退到「只要第一个字节」的 Range 请求，从 content-range 的总长读大小。
+ */
+async function probeSize(url: string): Promise<string> {
+  try {
+    const head = await fetch(url, { method: 'HEAD' });
+    if (head.ok) {
+      const len = Number(head.headers.get('content-length') ?? 0);
+      if (len > 0) return formatBytes(len);
+    }
+    const ranged = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+    if (!ranged.ok && ranged.status !== 206) return '不在包里';
+    const total = Number(ranged.headers.get('content-range')?.split('/')[1] ?? 0);
+    return total > 0 ? formatBytes(total) : '在包里（大小未知）';
+  } catch {
+    return '探测失败';
+  }
 }
 
 function ConnectSection() {
@@ -462,6 +526,7 @@ export function SettingsPage() {
     <div className="mx-auto max-w-2xl space-y-4">
       <h1 className="text-xl font-bold">设置</h1>
       <StorageSection />
+      <AlignBackendSection />
       <ConnectSection />
       <RepoSection />
       <PairingSection />
