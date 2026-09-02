@@ -16,6 +16,9 @@
 //     WikDict（wikdict.com），数据源自 Wiktionary 经 DBnary，**CC BY-SA**
 //   · de_50k.txt
 //     hermitdave/FrequencyWords，OpenSubtitles 语料的词频统计，**MIT**
+//   · 例句（FR-16.9）
+//     de.wiktionary.org 条目正文的 `{{Beispiele}}` 段，经 API 取，**CC BY-SA 4.0**
+//     —— 单列一条署名：这是维基词典**正文**，与 WikDict 那份结构化数据不是同一样东西
 //
 // 刻意没用 Goethe-Zertifikat 的 A1/A2/B1 Wortliste：那三份是 © Goethe-Institut，
 // 塞进上架的 App 属于再发布，且 EU 数据库权（§ 87a/b UrhG）保护的正是「选哪些词」
@@ -45,7 +48,9 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const CACHE = join(ROOT, '.cache', 'dict');
+// 源文件缓存。`DICT_CACHE` 可以指到别处 —— 在 git worktree 里跑时很要紧：
+// worktree 有自己的根目录，不指过去的话会为了同一份数据再下一次 1GB 的 de.sqlite3。
+const CACHE = process.env.DICT_CACHE ?? join(ROOT, '.cache', 'dict');
 const OUT = join(ROOT, 'public', 'dict');
 
 // 分桶数。查一个词只解析一个桶，而不是把整本词典读进内存
@@ -519,13 +524,10 @@ for (const [wk, lexentries] of byWritten) {
   kept++;
 }
 
-let wordBytes = 0;
-for (let b = 0; b < BUCKETS; b++) {
-  const body = JSON.stringify(wordBuckets.get(b) ?? {});
-  await writeFile(join(OUT, 'w', `${hex(b)}.json`), body, 'utf8');
-  wordBytes += Buffer.byteLength(body);
-}
-console.log(`  w/  ${kept} 条词，${BUCKETS} 桶，共 ${mib(wordBytes)}（均 ${kib(wordBytes / BUCKETS)}/桶）`);
+// **w/ 的写盘挪到了文件末尾**（原来就在这一行）。
+// 原因：FR-16.9 的例句只给牌组词抓，而「谁是牌组词」要等下面按词频排完名才知道，
+// 抓到的例句又要写回 `rec.ex`。先写盘就得再读一遍改一遍，
+// 那等于把 26MB 的产物读写三次。
 
 // 词形→词元：只留词元确实进了 w/ 的那些，否则查到词元又查不到词条。
 const formBuckets = new Map();
@@ -545,6 +547,260 @@ for (let b = 0; b < BUCKETS; b++) {
   formBytes += Buffer.byteLength(body);
 }
 console.log(`  f/  ${formKept} 个词形，共 ${mib(formBytes)}（均 ${kib(formBytes / BUCKETS)}/桶）`);
+
+// ══════ 例句抓取与清洗（FR-16.9）══════
+//
+// WikDict 只有「词条 / 词形 / 翻译」三张表，**没有例句**，所以这是这条管线里
+// 唯一一个需要第五个数据源的字段。走 API 而不是下 dump：例句只需要 1.7 万个牌组词，
+// 而 dewiktionary 的 pages-articles dump 是 1GB 量级 —— 为一份只用到 11% 的数据
+// 下 1GB 是本末倒置。`prop=revisions` 一次能问 50 个标题，347 次往返就够。
+//
+// 原始 wikitext 的 `{{Beispiele}}` 段缓存在 .cache/dict/beispiele.json，
+// 缓存的是**清洗前**的原文：清洗规则一定会调（下面那四条都是看着真实数据定的），
+// 缓存成品的话每次调规则都要重抓一遍。
+const WIKTIONARY_API = 'https://de.wiktionary.org/w/api.php';
+// Wikimedia 的 User-Agent 策略要求能识别到人。别改成空的或者浏览器 UA。
+const WIKI_UA = 'deutsch-listening-trainer/0.1 (build:dict; https://github.com/bigtaoo/deutsch)';
+const WIKI_BATCH = 50; // MediaWiki 的 titles 上限
+const WIKI_GAP_MS = 200; // 串行 + 间隔，与 R-3 的 politely() 同一个姿势
+const BEISPIELE_CACHE = join(CACHE, 'beispiele.json');
+const SKIP_EXAMPLES = process.argv.includes('--no-examples');
+
+/**
+ * 取页面的**德语章节**。
+ *
+ * 不能拿整页去找 `{{Beispiele}}`：de.wiktionary 上一个词条可以有多个语言章节
+ * （`Tool` 同时有德语和英语条目），而英语章节里的例句是英语句子 ——
+ * 混进来的话卡背上会出现一句英文，而且看不出是哪来的。
+ */
+function germanSection(text) {
+  const re = /^==\s*[^\n=]*\(\{\{Sprache\|([^}|]+)\}\}\)\s*==\s*$/gm;
+  const marks = [];
+  let m;
+  while ((m = re.exec(text))) marks.push({ lang: m[1].trim(), start: m.index + m[0].length });
+  if (marks.length === 0) return text; // 没有语言标记的老式页面：整页当德语
+  for (let i = 0; i < marks.length; i++) {
+    if (marks[i].lang !== 'Deutsch') continue;
+    return text.slice(marks[i].start, i + 1 < marks.length ? marks[i + 1].start : text.length);
+  }
+  return ''; // 有语言章节但没有德语的 —— 这个词在德语维基词典里不是德语词
+}
+
+/** 截出 `{{Beispiele}}` 到下一个模板/标题/分类之间的那一段。 */
+function beispieleBlock(text) {
+  const section = germanSection(text);
+  const i = section.indexOf('{{Beispiele}}');
+  if (i < 0) return '';
+  const rest = section.slice(i + '{{Beispiele}}'.length);
+  const stop = rest.search(/\n\{\{[A-ZÄÖÜ]|\n==|\n\[\[Kategorie/);
+  return (stop < 0 ? rest : rest.slice(0, stop)).trim();
+}
+
+/**
+ * 把一行 wikitext 例句洗成纯文本。
+ *
+ * 顺序有讲究：`<ref>` 里嵌着 `{{Literatur|…}}` 模板，先剥模板会把 ref 剩下半截。
+ */
+function cleanExample(line) {
+  let s = line.replace(/^:+\s*\[[^\]]*\]\s*/, ''); // 义项号 `:[1]` / `:[1, 2]` / `:[1a]`
+  s = s.replace(/<ref[^>]*>[\s\S]*?<\/ref>/gi, '').replace(/<ref[^>]*\/>/gi, '');
+  s = s.replace(/<[^>]+>/g, '');
+  for (let i = 0; i < 3; i++) s = s.replace(/\{\{[^{}]*\}\}/g, ''); // 嵌套模板，剥三层够用
+  s = s.replace(/\[\[(?:[^\]|]*\|)?([^\]]*)\]\]/g, '$1'); // 内链取显示文本
+  s = s.replace(/'''?/g, ''); // 斜体/粗体标记（词头在例句里就是用它标出来的）
+  s = s.replace(/^[„"'“”]+/, '').replace(/[„"'“”]+$/, ''); // 书面引文的包裹引号
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 从一段 `{{Beispiele}}` 里挑最多两条。
+ *
+ * 排序键的顺序是实测定的：
+ *   ① **无 `<ref>` 优先** —— 带引注的是书面文学引文（`„Gegen Ende der Lehrzeit
+ *      bekam ich einen Spind…"`），长、句式绕、还常带年代感的词，不适合当卡背。
+ *   ② **义项 1 优先** —— Wiktionary 把主义项排在前面。
+ *   ③ 短的优先。
+ * 长度下限 15 是为了滤掉 `Er kam.` 这种没有语境的碎片；上限 140 是卡背的显示上限。
+ */
+function pickExamples(block, word) {
+  if (!block) return [];
+  const cands = [];
+  for (const line of block.split('\n')) {
+    if (!/^:+\s*\[/.test(line)) continue;
+    const senseNo = Number(line.match(/^:+\s*\[(\d+)/)?.[1] ?? 0);
+    const text = cleanExample(line);
+    if (text.length < 15 || text.length > 140) continue;
+    if (text.includes('{{') || text.includes('[[')) continue; // 洗不干净的一律不要
+    cands.push({ text, hasRef: /<ref/i.test(line) ? 1 : 0, notFirst: senseNo === 1 ? 0 : 1 });
+  }
+  cands.sort((a, b) => a.hasRef - b.hasRef || a.notFirst - b.notFirst || a.text.length - b.text.length);
+  const out = [];
+  for (const c of cands) {
+    if (out.length >= 2) break;
+    if (!out.includes(c.text)) out.push(c.text);
+  }
+  // 一条都挑不出来时返回空数组，而不是退到「原样给一条带 ref 的长引文」——
+  // 卡背上没有例句是可接受的（FR-10.3 那一行本来就有课程卡/预置卡两种形态），
+  // 而一条洗不干净的例句会把 wikitext 标记显示给用户。
+  return out;
+}
+
+async function fetchAllBeispiele(words) {
+  /** @type {Record<string,string>} */
+  let cache = {};
+  try {
+    cache = JSON.parse(await readFile(BEISPIELE_CACHE, 'utf8'));
+    console.log(`  · 缓存里已有 ${Object.keys(cache).length} 个词`);
+  } catch {
+    // 首次跑
+  }
+  const missing = words.filter((w) => !(w in cache));
+  if (SKIP_EXAMPLES) {
+    if (missing.length) console.log(`  · --no-examples：跳过 ${missing.length} 个词的抓取`);
+  } else if (missing.length) {
+    const batches = Math.ceil(missing.length / WIKI_BATCH);
+    console.log(`  ↓ 要抓 ${missing.length} 个词，${batches} 批（每批 ${WIKI_BATCH} 个，间隔 ${WIKI_GAP_MS}ms）`);
+    for (let i = 0; i < missing.length; i += WIKI_BATCH) {
+      const batch = missing.slice(i, i + WIKI_BATCH);
+      const url =
+        `${WIKTIONARY_API}?action=query&prop=revisions&rvprop=content&rvslots=main` +
+        `&format=json&formatversion=2&titles=${encodeURIComponent(batch.join('|'))}`;
+      let pages = [];
+      let normalized = [];
+      try {
+        const res = await fetch(url, { headers: { 'User-Agent': WIKI_UA } });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const query = (await res.json()).query ?? {};
+        pages = query.pages ?? [];
+        normalized = query.normalized ?? [];
+      } catch (err) {
+        // 一批失败不能让整个构建失败：这一批的词就当没有例句，
+        // 且**不写进缓存**（下次跑会重试）。词典的其它字段与例句无关。
+        console.warn(`  ! 第 ${i / WIKI_BATCH + 1} 批失败（${err.message}），跳过`);
+        continue;
+      }
+      // 请求的标题与返回的标题可能不同（MediaWiki 会把下划线、连续空格等归一化）。
+      // 用 normalized 映回**我们问的那个词**，否则这些词永远命中不了缓存、每次跑都重抓。
+      const asked = new Map();
+      for (const n of normalized) asked.set(n.to, n.from);
+      for (const p of pages) {
+        const content = p.revisions?.[0]?.slots?.main?.content;
+        cache[asked.get(p.title) ?? p.title] = content ? beispieleBlock(content) : '';
+      }
+      for (const w of batch) if (!(w in cache)) cache[w] = ''; // 页面不存在 → 记否定结果
+      const done = Math.min(i + WIKI_BATCH, missing.length);
+      if ((i / WIKI_BATCH) % 20 === 0 || done === missing.length) {
+        await mkdir(CACHE, { recursive: true });
+        await writeFile(BEISPIELE_CACHE, JSON.stringify(cache), 'utf8');
+        console.log(`    ${done}/${missing.length}`);
+      }
+      await new Promise((r) => setTimeout(r, WIKI_GAP_MS));
+    }
+    await writeFile(BEISPIELE_CACHE, JSON.stringify(cache), 'utf8');
+  }
+  return new Map(words.map((w) => [w, cache[w] ?? '']));
+}
+
+// ══════ 干扰项：档内 IPA 最近邻（FR-16.8）══════
+//
+// 这是辨形题（FR-10.9）唯一的干扰项来源，而它决定了那道题**有没有训练价值**：
+// 随机四个不相干的词（`Zuversicht / Haus / gehen / rot`）谁都不会选错，
+// 等于每天点十次「对」。音近才逼人真的去听。
+//
+// 放构建期是因为两两比较是 O(n²)（全牌组 1.7 万词是 3 亿对），手机上不可能跑。
+// 连构建期也不该真做 3 亿次编辑距离，所以先按**词首 / 词尾的两三个音**分桶，
+// 只在同桶里比 —— 音近词几乎总共享词首或词尾，这个预筛不会漏掉真正的近邻。
+//
+// ── 为什么在**全牌组**里找，而不是档内 ──
+// 第一版按档内找，实测第 4 档只有 30% 的词能凑到三个邻居、34% 一个都没有 ——
+// 3000 词里根本没有足够多的最小音对。而「档内」这条限制本来就立不住：
+// 用户不知道某个选项属于哪一档，他只知道词义；辨形题问的是「你听到的是哪个词」，
+// 所以「这个词我认识、所以不是答案」那条排除法在这道题上用不上。
+// 放开到 1.7 万词之后候选多了 5.8 倍，`Falke` 才配得上 `Falte`。
+
+const NEIGHBORS_PER_WORD = 6;
+
+/** 比距离用的 IPA：去掉重音符和音节点，它们不影响「听起来像不像」。 */
+function ipaFor(rec) {
+  const ipa = rec.s.find((s) => s.ipa)?.ipa;
+  return ipa ? ipa.replace(/[ˈˌ.\s]/g, '') : null;
+}
+
+function editDistance(a, b, cap) {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > cap) return cap + 1; // 提前退出：这一行全都超了，最终结果不会更小
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/**
+ * 屈折形式和派生词不能当干扰项。
+ *
+ * `Kreuzung / Kreuzungen`、`heilen / heilend`、`Falke / Falken` 音近得过头 ——
+ * 它们不是「两个不同的词」，而是同一个词的两种形态，选哪个都说得通。
+ * 判据是「短的是长的前缀且差不超过 3 个字符」，外加显式比一次复数形式
+ * （`Vorhang / Vorhänge` 有变音，前缀判不出来）。
+ */
+function sameWordFamily(a, b) {
+  const [s, l] = a.w.length <= b.w.length ? [a.w, b.w] : [b.w, a.w];
+  if (l.toLowerCase().startsWith(s.toLowerCase()) && l.length - s.length <= 3) return true;
+  const plurals = (rec) => rec.s.flatMap((x) => [x.pl, ...(x.pl2 ?? [])].filter(Boolean));
+  return plurals(a).includes(b.w) || plurals(b).includes(a.w);
+}
+
+/** 一个词参与哪些桶。首尾各取二、三个音 —— 四个键，取并集当候选。 */
+function bucketKeysOf(k) {
+  return [`^${k.slice(0, 2)}`, `^${k.slice(0, 3)}`, `$${k.slice(-2)}`, `$${k.slice(-3)}`];
+}
+
+function ipaNeighbors(records) {
+  const keyed = records.map((rec) => ({ rec, k: ipaFor(rec) ?? normalizeKey(rec.w) }));
+  /** @type {Map<string, typeof keyed>} */
+  const index = new Map();
+  for (const item of keyed) {
+    for (const key of bucketKeysOf(item.k)) {
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push(item);
+    }
+  }
+
+  const out = new Map();
+  let pairs = 0;
+  for (const item of keyed) {
+    const seen = new Set([item.rec.w]);
+    const cands = [];
+    // 上限按词长给：三个音的词差 2 个音就是完全不同的词，十个音的词差 3 个还是很像
+    const cap = Math.max(2, Math.floor(item.k.length * 0.45));
+    for (const key of bucketKeysOf(item.k)) {
+      for (const other of index.get(key) ?? []) {
+        if (seen.has(other.rec.w)) continue;
+        seen.add(other.rec.w);
+        if (sameWordFamily(item.rec, other.rec)) continue;
+        pairs++;
+        const d = editDistance(item.k, other.k, cap);
+        if (d > cap) continue;
+        cands.push({ w: other.rec.w, d, ld: Math.abs(other.k.length - item.k.length) });
+      }
+    }
+    cands.sort((a, b) => a.d - b.d || a.ld - b.ld || a.w.localeCompare(b.w, 'de'));
+    if (cands.length) out.set(item.rec.w, cands.slice(0, NEIGHBORS_PER_WORD).map((c) => c.w));
+  }
+  const enough = [...out.values()].filter((v) => v.length >= 3).length;
+  console.log(
+    `  干扰项：${out.size}/${records.length} 有近邻，其中 ${enough} 个够三个` +
+      `（${((enough / records.length) * 100).toFixed(0)}%）；比了 ${(pairs / 1e6).toFixed(1)}M 对`,
+  );
+  return out;
+}
 
 // ══════ 预置词库：按口语词频分档 ══════
 // **这些是词频档，不是 CEFR 等级**（FR-17.2）。命名刻意不用 A1/B2 —— 见文件头。
@@ -573,6 +829,27 @@ for (const [, obj] of wordBuckets) {
 }
 ranked.sort((a, b) => b.f - a.f || a.w.localeCompare(b.w, 'de'));
 
+// ══════ 例句（FR-16.9）══════
+// 只给**牌组词**抓：例句只出现在复习卡背上，而只有牌组词会成为预置卡。
+// 15.3 万条全抓是 3000 次请求换一份 90% 用不到的数据。
+console.log(`\n例句（FR-16.9）：${ranked.length} 个牌组词`);
+const beispiele = await fetchAllBeispiele(ranked.map((r) => r.w));
+let withEx = 0;
+for (const rec of ranked) {
+  const picked = pickExamples(beispiele.get(rec.w) ?? '', rec.w);
+  if (picked.length) {
+    rec.ex = picked;
+    withEx++;
+  }
+}
+console.log(
+  `  ✓ ${withEx}/${ranked.length}（${((withEx / ranked.length) * 100).toFixed(0)}%）有可用例句` +
+    `，共 ${kib(ranked.reduce((s, r) => s + (r.ex?.join('').length ?? 0), 0))}`,
+);
+
+// FR-16.8：干扰项在**全牌组**里找一次，不按档分开找（理由见 ipaNeighbors 上面那段）。
+const distractors = ipaNeighbors(ranked);
+
 // 档位边界按词频**名次**切，不按频次值切：频次是齐夫分布，按值切第一档只会有几十个词。
 const BANDS = [
   { id: 1, label: '最常见 1–500', to: 500 },
@@ -591,7 +868,12 @@ for (const band of BANDS) {
   const body = JSON.stringify({
     id: band.id,
     label: band.label,
-    words: slice.map((r, i) => ({ w: r.w, r: from + i + 1 })),
+    words: slice.map((r, i) => {
+      const out = { w: r.w, r: from + i + 1 };
+      const d = distractors.get(r.w);
+      if (d?.length) out.d = d;
+      return out;
+    }),
   });
   await writeFile(join(OUT, 'deck', `band-${band.id}.json`), body, 'utf8');
   bandMeta.push({ id: band.id, label: band.label, count: slice.length, bytes: Buffer.byteLength(body) });
@@ -600,6 +882,15 @@ for (const band of BANDS) {
   );
   from = band.to;
 }
+
+// ══════ w/ 的写盘（例句已经补进 rec.ex，见上面那段）══════
+let wordBytes = 0;
+for (let b = 0; b < BUCKETS; b++) {
+  const body = JSON.stringify(wordBuckets.get(b) ?? {});
+  await writeFile(join(OUT, 'w', `${hex(b)}.json`), body, 'utf8');
+  wordBytes += Buffer.byteLength(body);
+}
+console.log(`\n  w/  ${kept} 条词，${BUCKETS} 桶，共 ${mib(wordBytes)}（均 ${kib(wordBytes / BUCKETS)}/桶）`);
 
 // meta.json 里带署名：CC BY-SA 要求署名，而这份数据会随 App 分发。
 // 设置页把这段原样显示出来（FR-16.7）—— 写在这里不算履行署名义务。
@@ -621,6 +912,15 @@ const meta = {
       source: 'hermitdave/FrequencyWords，OpenSubtitles 语料',
       license: 'MIT',
       url: 'https://github.com/hermitdave/FrequencyWords',
+    },
+    // 单列一条而不是并进 WikDict 那条：例句取的是 de.wiktionary **正文**
+    // （`{{Beispiele}}` 段），与 WikDict 提供的「经 DBnary 的结构化数据」
+    // 不是同一份东西，署名对象也不同。
+    {
+      what: '例句',
+      source: '德语维基词典（de.wiktionary.org）条目正文的 Beispiele 段，由撰稿人共同创作',
+      license: 'CC BY-SA 4.0',
+      url: 'https://de.wiktionary.org/',
     },
   ],
   note: '档位是口语词频名次，不是 CEFR 等级。官方 CEFR 词表只有 A1/A2/B1 且有版权，理由见 scripts/build-dict.mjs 头部。',

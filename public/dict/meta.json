@@ -47,6 +47,12 @@
       "source": "hermitdave/FrequencyWords，OpenSubtitles 语料",
       "license": "MIT",
       "url": "https://github.com/hermitdave/FrequencyWords"
+    },
+    {
+      "what": "例句",
+      "source": "德语维基词典（de.wiktionary.org）条目正文的 Beispiele 段，由撰稿人共同创作",
+      "license": "CC BY-SA 4.0",
+      "url": "https://de.wiktionary.org/"
     }
   ],
   "note": "档位是口语词频名次，不是 CEFR 等级。官方 CEFR 词表只有 A1/A2/B1 且有版权，理由见 scripts/build-dict.mjs 头部。"

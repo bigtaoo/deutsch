@@ -53,6 +53,15 @@ export interface DictEntry {
   s: DictSense[];
   /** 口语语料里的累计词频。没有这个字段说明它没进词频表，也就不会进任何牌组。 */
   f?: number;
+  /**
+   * 例句（FR-16.9），最多两条，从 de.wiktionary 正文的 `{{Beispiele}}` 段抓。
+   * **只有牌组词有** —— 例句只出现在复习卡背上，而只有牌组词会成为预置卡。
+   *
+   * 挂在**记录级而不是义项级**：Wiktionary 的义项编号与我们这里的义项
+   * （按词性从 WikDict 拼出来、再按 POS_ORDER 排过）对不上，硬映射会把
+   * 名词的例句配到动词义项上。取而代之的是挑句时偏向义项 1，即主义项。
+   */
+  ex?: string[];
 }
 
 export interface DictAttribution {
@@ -84,7 +93,18 @@ export interface DictMeta {
 export interface DictDeck {
   id: number;
   label: string;
-  words: Array<{ w: string; r: number }>;
+  words: Array<{
+    w: string;
+    r: number;
+    /**
+     * FR-16.8：**档内 IPA 最近邻**，最多 6 个，按「像的程度」排好序。
+     * 辨形题（FR-10.9）拿它当干扰项 —— 随机四个不相干的词等于送分。
+     * 构建时算好：档内两两比较是 O(n²)，手机上不可能跑。
+     * 缺这个字段说明这个词没找到足够像的邻居（band-4 实测约 1%），
+     * 运行时退到同档随机补齐。
+     */
+    d?: string[];
+  }>;
 }
 
 /** 一次查词的结果。`via` 说明是直接命中还是经词形还原绕过去的。 */
