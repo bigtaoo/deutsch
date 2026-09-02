@@ -147,7 +147,6 @@ function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
       if (outcome.hasAudio) enqueueAlign(outcome.lessonId);
       const notes = [
         outcome.audioError ? `音频没抓到（${outcome.audioError}），文本已导入，可稍后补齐或手动选文件` : null,
-        outcome.teaserNeedsReview ? '开头的 teaser 块与 teaser 对不上，没有自动排除，请在「切句」里确认' : null,
       ].filter(Boolean);
       setResult(notes.length > 0 ? notes.join('；') : '导入成功，正在自动对齐（进度在页面底部）');
       if (notes.length === 0) {

@@ -80,18 +80,11 @@ describe('parseLessonPage', () => {
     expect(lesson.knowledges[0].text).toBe('eine erfundene Erklärung für den Test');
   });
 
-  it('FR-13.7：首个 <strong> 块含 teaser → 判定为非朗读块', () => {
-    expect(lesson.teaserBlock?.matchesTeaser).toBe(true);
-    expect(lesson.plainText.slice(lesson.teaserBlock!.start, lesson.teaserBlock!.end)).toContain('erfundener Anreißer');
-  });
-
-  it('teaser 对不上时不猜：matchesTeaser=false，留给人工确认', () => {
-    const altered = FIXTURE_PAGE_HTML.replace(
-      '"teaser":"Ein erfundener Anreißer über einen Wald, der nur im Test existiert."',
-      '"teaser":"Ein völlig anderer Anreißer."',
-    );
-    const parsed = parseLessonPage(altered, FIXTURE_LESSON_ID, 'https://example.invalid/x');
-    expect(parsed.teaserBlock?.matchesTeaser).toBe(false);
+  it('标题与导语照常进正文 —— 音频里会念（FR-13.7 已改，不再自动排除）', () => {
+    // 首个 <strong> 块（标题 + 导语）过去被整块排除，实测发现播音员照着念，
+    // 于是它现在只是普通句子：既在纯文本里，也不带 excluded。
+    expect(lesson.plainText.startsWith('Testfolge: Der erfundene Wald')).toBe(true);
+    expect(lesson.plainText).toContain('erfundener Anreißer');
   });
 
   it('lesson id 对不上时报错而不是静默返回空课程', () => {

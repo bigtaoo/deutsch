@@ -6,6 +6,7 @@ import {
   excludeLastN,
   mergeWithNext,
   setExcluded,
+  setExcludedFirstN,
   splitSentence,
 } from './sentences';
 import type { Blank, Sentence } from '@/types/models';
@@ -47,6 +48,26 @@ describe('mergeWithNext', () => {
     expect(sentences[0].startTime).toBe(1);
     expect(sentences[0].endTime).toBe(9);
     expect(sentences[0].endTimeExplicit).toBe(true);
+  });
+
+  it('词级时间戳跟着合并：第二句的 offset 平移，两段接成一段', () => {
+    const base = build();
+    // "Der Wald ist groß." 里的 "Wald" = [4, 8)；"Die Bäume sind alt." 里的 "Bäume" = [4, 9)
+    base[0] = { ...base[0], words: [{ charStart: 4, charEnd: 8, start: 1, end: 1.4 }] };
+    base[1] = { ...base[1], words: [{ charStart: 4, charEnd: 9, start: 2, end: 2.5 }] };
+    const { sentences } = mergeWithNext(base, 0, PLAIN);
+    const words = sentences[0].words!;
+    expect(words).toHaveLength(2);
+    for (const word of words) {
+      expect(PLAIN.slice(sentences[0].charStart + word.charStart, sentences[0].charStart + word.charEnd))
+        .toMatch(/^(Wald|Bäume)$/);
+    }
+    // 音频时间不受结构编辑影响，原样带过来
+    expect(words[1].start).toBe(2);
+  });
+
+  it('两句都没有词级时间戳时，合并结果是 undefined 而不是空数组', () => {
+    expect(mergeWithNext(build(), 0, PLAIN).sentences[0].words).toBeUndefined();
   });
 
   it('第二句的挖空 offset 按新句起点平移', () => {
@@ -116,6 +137,28 @@ describe('splitSentence', () => {
     expect(sentences[1].text.slice(r.start, r.end)).toBe('Bäume');
   });
 
+  it('词级时间戳按切点分家，横跨切点的那个两边都不要', () => {
+    const cut = 'Der Wald ist groß.'.length;
+    const withWords = [
+      {
+        ...merged[0],
+        words: [
+          { charStart: 4, charEnd: 8, start: 1, end: 1.4 }, // Wald，左半句
+          { charStart: 14, charEnd: 22, start: 1.6, end: 2.2 }, // 横跨切点（cut = 18）
+          { charStart: 23, charEnd: 28, start: 2.4, end: 2.9 }, // Bäume，右半句
+        ],
+      },
+      merged[1],
+    ];
+    const { sentences } = splitSentence(withWords, 0, cut, PLAIN);
+    expect(sentences[0].words).toEqual([{ charStart: 4, charEnd: 8, start: 1, end: 1.4 }]);
+    // 右半句的 offset 减掉了新句起点，切出来正是那个词
+    const right = sentences[1].words!;
+    expect(right).toHaveLength(1);
+    expect(sentences[1].text.slice(right[0].charStart, right[0].charEnd)).toBe('Bäume');
+    expect(right[0].start).toBe(2.4);
+  });
+
   it('切点落在纯空白处不产生空句子', () => {
     expect(splitSentence(merged, 0, 0, PLAIN).sentences).toBe(merged);
     expect(splitSentence(merged, 0, merged[0].text.length, PLAIN).sentences).toBe(merged);
@@ -126,6 +169,17 @@ describe('排除', () => {
   it('excludeLastN 排除文末 N 句', () => {
     const sentences = excludeLastN(build(), 2);
     expect(sentences.map((s) => s.excluded)).toEqual([false, true, true]);
+  });
+
+  it('setExcludedFirstN 两个方向都走：排除开头 N 句，也能把它们恢复回来', () => {
+    const excluded = setExcludedFirstN(build(), 2, true);
+    expect(excluded.map((s) => s.excluded)).toEqual([true, true, false]);
+    // 「恢复」是这个函数的主要用途：FR-13.7 以前自动排掉的标题+导语要能一次撤销
+    expect(setExcludedFirstN(excluded, 2, false).map((s) => s.excluded)).toEqual([false, false, false]);
+  });
+
+  it('setExcludedFirstN 的 N 超过总句数时夹住，不越界', () => {
+    expect(setExcludedFirstN(build(), 99, true).map((s) => s.excluded)).toEqual([true, true, true]);
   });
 
   it('排除不重排 index，只影响显示编号', () => {

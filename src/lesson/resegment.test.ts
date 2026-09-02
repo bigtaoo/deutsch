@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { segmentSentences } from './segment';
 import { createSentences } from './sentences';
-import { resegment } from './resegment';
-import type { Sentence } from '@/types/models';
+import { carryGlossary, resegment } from './resegment';
+import type { GlossaryCandidate, Sentence } from '@/types/models';
 
 const OLD = 'Der Wald ist groß. Die Bäume sind alt. Es regnet.';
 
@@ -67,5 +67,34 @@ describe('resegment', () => {
     );
     expect(orphaned).toEqual([]);
     expect(sentences[1].startTime).toBe(12.5);
+  });
+});
+
+describe('carryGlossary（FR-14 候选词跟着重切搬迁）', () => {
+  const candidate = (sentenceIndex: number, surface: string): GlossaryCandidate => ({
+    dwKnowledgeId: `k-${surface}`,
+    sentenceIndex,
+    ranges: [{ start: 4, end: 4 + surface.length }],
+    surface,
+    title: surface,
+  });
+
+  it('句号换成新的，句内 offset 一个字都不动', () => {
+    // 删掉第一句：旧句 1 → 新句 0
+    const { carriedOver } = resegment(annotated(), segmentSentences('Die Bäume sind alt. Es regnet.'));
+    const carried = carryGlossary([candidate(1, 'Bäume')], carriedOver)!;
+    expect(carried).toHaveLength(1);
+    expect(carried[0].sentenceIndex).toBe(0);
+    expect(carried[0].ranges).toEqual([{ start: 4, end: 9 }]);
+  });
+
+  it('落在没被认领的旧句上的候选被丢掉，而不是留着指向别的句子', () => {
+    const { carriedOver } = resegment(annotated(), segmentSentences('Es regnet.'));
+    expect(carryGlossary([candidate(1, 'Bäume')], carriedOver)).toBeUndefined();
+  });
+
+  it('没有候选词时原样返回（undefined 不变成空数组）', () => {
+    const { carriedOver } = resegment(annotated(), segmentSentences(OLD));
+    expect(carryGlossary(undefined, carriedOver)).toBeUndefined();
   });
 });

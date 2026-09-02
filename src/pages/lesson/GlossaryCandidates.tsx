@@ -8,7 +8,7 @@ import { useMemo, useState } from 'react';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { Button, Hint, Section } from '@/components/ui';
-import type { GlossaryCandidate, Lesson, LessonCache } from '@/types/models';
+import type { GlossaryCandidate, Lesson } from '@/types/models';
 
 export interface AcceptResult {
   ok: boolean;
@@ -50,7 +50,7 @@ export async function acceptCandidate(lessonId: string, candidate: GlossaryCandi
   }
 }
 
-export function GlossaryCandidates({ lesson, cache }: { lesson: Lesson; cache: LessonCache | undefined }) {
+export function GlossaryCandidates({ lesson }: { lesson: Lesson }) {
   const entries = useVocabStore((s) => s.entries);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<Array<{ surface: string; reason: string }>>([]);
@@ -61,7 +61,7 @@ export function GlossaryCandidates({ lesson, cache }: { lesson: Lesson; cache: L
     [entries],
   );
 
-  const pending = (cache?.glossary ?? []).filter((c) => !accepted.has(c.dwKnowledgeId));
+  const pending = (lesson.glossary ?? []).filter((c) => !accepted.has(c.dwKnowledgeId));
   if (pending.length === 0) return null;
 
   const accept = async (candidate: GlossaryCandidate) => {
