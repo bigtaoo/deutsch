@@ -152,6 +152,19 @@ jobs:
       # CODE_SIGN_IDENTITY 用 "Apple Distribution" —— 2019 年之后签发的分发证书都叫这个名。
       # 如果这一步报「No signing certificate found」而钥匙串里那张是老证书，
       # 把它改成 "iPhone Distribution"（funny 那份 workflow 就是这么写的，它的证书更老）。
+      #
+      # **描述文件名走 DEUTSCH_PROFILE_NAME 这个自定义变量，不要直接给
+      # PROVISIONING_PROFILE_SPECIFIER。** 命令行上的构建设置会套到**每一个** target 上，
+      # 包括 SPM 依赖的包 target，而那些包不支持描述文件，报错形如
+      #   「Alamofire_Alamofire does not support provisioning profiles」—— 一个包一条，
+      # archive 直接失败（exit 65）。0.1.1 没撞上是因为当时 SPM 图里只有 Capacitor 自己的包；
+      # @capgo/capacitor-social-login 带进来 GoogleSignIn / AppAuth / Facebook SDK /
+      # Alamofire / GoogleUtilities / Promises / GTM* 一大片，全都会报。
+      # 所以真正的设置写在 App target 的 Release 配置里（project.pbxproj 中
+      # PROVISIONING_PROFILE_SPECIFIER = "$(DEUTSCH_PROFILE_NAME)"），这里只喂那个变量：
+      # 包 target 照样收到 DEUTSCH_PROFILE_NAME，但 Xcode 不把它当签名设置，于是不报错。
+      # 副作用也是想要的：本机用 Xcode 打开时这个变量是空的，App target 里
+      # CODE_SIGN_STYLE = Automatic 会接手，不需要在开发机上装那份分发描述文件。
       - name: archive
         run: |
           xcodebuild \
@@ -164,7 +177,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Distribution" \
             DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROVISIONING_PROFILE_NAME }}" \
+            DEUTSCH_PROFILE_NAME="${{ secrets.PROVISIONING_PROFILE_NAME }}" \
             MARKETING_VERSION="${{ steps.version.outputs.marketing }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
