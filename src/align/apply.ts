@@ -9,8 +9,8 @@
 // 自动对齐可以反复重跑（换模型、改了切句），但人工打过的点是不可重建的劳动。
 // 默认只填 timingSource !== 'manual' 的句子；要全量重算得显式传 overwriteManual。
 
-import type { Sentence } from '@/types/models';
-import type { SentenceTiming } from './target';
+import type { Sentence, WordSpan } from '@/types/models';
+import type { SentenceTiming, WordTiming } from './target';
 
 /** 起点向前让一点，避免削掉起音。 */
 export const LEAD_SECONDS = 0.05;
@@ -22,6 +22,13 @@ export interface ApplyOptions {
   audioDuration?: number;
   /** 连人工标注过的句子一起覆盖。默认 false */
   overwriteManual?: boolean;
+  /**
+   * 词级时间戳（`toTimings()` 的另一半）。给了就一起写进 `Sentence.words`。
+   *
+   * 和句级时间戳同进同退：跳过的句子（人工标注过）也不动它的 words ——
+   * 否则会出现「句子边界是我校过的、词边界是机器新算的」这种两套坐标混着的状态。
+   */
+  words?: WordTiming[];
 }
 
 export interface ApplyResult {
@@ -50,8 +57,18 @@ export function applyTimings(
   timings: SentenceTiming[],
   options: ApplyOptions = {},
 ): ApplyResult {
-  const { audioDuration, overwriteManual = false } = options;
+  const { audioDuration, overwriteManual = false, words } = options;
   const byIndex = new Map(timings.map((t) => [t.index, t]));
+
+  // 词级时间戳按句归拢，顺手扔掉对齐器内部那两个字段（sentenceIndex 已经是键、
+  // wordIndex 数的是罗马化后的词，存下来会误导 —— 见 models.ts 的 WordSpan）。
+  const wordsBySentence = new Map<number, WordSpan[]>();
+  for (const w of words ?? []) {
+    const span: WordSpan = { charStart: w.charStart, charEnd: w.charEnd, start: w.start, end: w.end };
+    const list = wordsBySentence.get(w.sentenceIndex);
+    if (list) list.push(span);
+    else wordsBySentence.set(w.sentenceIndex, [span]);
+  }
 
   // 夹住终点用的「下一句起点」要按 timings 自己的顺序找，不能按 sentences ——
   // 中间可能夹着排除句和无时间戳的句子。
@@ -90,6 +107,9 @@ export function applyTimings(
       endTimeExplicit: true,
       timingSource: 'auto' as const,
       timingConfidence: timing.confidence,
+      // 这一句没算出词级时间戳（纯数字句、罗马化后无 token）时保持 undefined，
+      // 而不是留着上一轮的旧数组 —— 那会让 UI 拿旧边界去高亮新时间戳。
+      words: wordsBySentence.get(sentence.index),
     };
   });
 

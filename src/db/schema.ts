@@ -63,8 +63,8 @@ export interface WordAudio {
 
 export const META_KEYS = {
   settings: 'settings',
-  githubToken: 'githubToken',
-  githubRepo: 'githubRepo', // { owner, repo, defaultBranch }
-  backupStatus: 'backupStatus', // FR-11.9：常驻可见的状态
+  syncSession: 'syncSession', // { token, expiresAt, account } —— 同步服务器的会话令牌
+  syncVersions: 'syncVersions', // { [docId]: version } —— 本地记的远端版本号，做乐观并发
+  syncStatus: 'syncStatus', // FR-11.9：常驻可见的状态
   storagePersistence: 'storagePersistence', // FR-11.16
 } as const;

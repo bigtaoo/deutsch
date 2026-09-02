@@ -2,7 +2,15 @@
 // 判断一个字段属于哪层的标准只有一条：丢了能不能重建。
 // 改动这个文件前先改 SPEC.md，不要让模型和文档漂移。
 
-// ══════ 标注层：跨设备同步，永不可重建 ══════
+// ══════ 标注层：跨设备备份 + 同步 ══════
+//
+// 分层的判断标准（2026-09-02 改，见 SPEC §0 变更 27）：
+// **只有音频和原始文稿留在缓存层，其余一切都在这里。**
+// 那两样体积大（一课 6–10MB vs 几十 KB）且都有一个稳定的来源地址，
+// 所以标注层为它们记下**原始下载地址**，别的设备照着地址取回来即可。
+// 旧标准是「丢了能不能重建」，它漏了一个限定词「在哪台设备上」——
+// 词级时间戳在桌面能重算、在手机上压根不能（变更 26 就是被这一条绊到的）。
+// 地址比「能不能重建」好判断：有地址的才准留在缓存层。
 
 export interface Lesson {
   id: string;
@@ -10,9 +18,27 @@ export interface Lesson {
   source:
     | { type: 'dw'; dwLessonId: string; sourceUrl: string } // 可补齐（FR-3.5）
     | { type: 'manual'; audioFileName?: string }; // 不可补齐（FR-3.6）
+  /**
+   * 音频的**原始下载地址**（DW 的 mp3 直链）。音频本身不进备份，这一行进 ——
+   * 换设备后照它把音频取回来，不必先抓一遍页面（FR-3.5 仍然会顺手刷新它，
+   * 因为 CDN 直链会变；变了就以页面上那份为准）。
+   *
+   * 手动导入的课程没有这个字段：那个 mp3 来自本机磁盘，压根没有地址，
+   * 能记的只有 `source.audioFileName`（FR-3.6 拿它提示用户重新选文件）。
+   */
+  audioSrc?: string;
   audioDuration?: number; // 秒；补齐或重绑定时校验时长
   manuscriptHash?: string; // plainText 的 hash；补齐后校验 DW 是否改过稿（FR-3.7）
   sentences: Sentence[];
+  /**
+   * FR-14：DW 在 `manuscript` 里内联标注好的生词候选。
+   *
+   * **在标注层**（2026-09-02 从 `LessonCache.glossary` 搬来，见 §0 变更 27）：
+   * 它不是原始文稿，是从原始文稿里抽出来的一小份结构化数据（一课十几条、几 KB），
+   * 而「哪些候选还没接受」是**跨设备的待办**：在桌面上看过一半、手机上接着看，
+   * 这件事只有它跟着同步才成立。offset 是句内的，所以不依赖 `plainText`。
+   */
+  glossary?: GlossaryCandidate[];
   createdAt: number;
   updatedAt: number; // 跨设备合并用（§2.4）
 }
@@ -36,6 +62,35 @@ export interface Sentence {
   blanks: Blank[];
   markedDifficult: boolean; // 跟读时跟不上的句子
   excluded: boolean; // 非朗读内容，如 Glossar（FR-1.4）
+  /**
+   * FR-15.2 / FR-5.3：句内每个词的音频区间，自动对齐顺带算出来的。
+   *
+   * **它在标注层，不在缓存层**（2026-09-02 改，见 SPEC §0 变更 26）。
+   * 「丢了能不能重建」这条标准要按**设备**问：桌面上有音频+文稿就能重算，
+   * 而手机跑不动对齐模型（iPhone 13 两档都被系统杀掉），在那台设备上它
+   * 压根重建不出来 —— 放缓存层等于「只有对齐过的那台机器能逐词高亮」。
+   * 用户的东西一律要备份，所以它跟着 Lesson 走：备份、同步、合并一行都不用改。
+   *
+   * 存在句子里而不是整课一个数组，是为了让合并/拆分/重新切句
+   * 跟处理 `blanks` 用同一套办法（同为句内 offset，同样要平移、同样按切点分家）。
+   */
+  words?: WordSpan[];
+}
+
+/**
+ * FR-15.2：一个词的音频区间。`charStart`/`charEnd` 是**句内** offset，
+ * 与 `Blank.ranges` 同一套坐标 —— 听写时「只播这个挖空对应的词」是一次直接查找，
+ * 通听时逐词高亮也是同一份数据。
+ *
+ * 刻意**不存**词序号：对齐器内部有一个（`src/align/target.ts` 的 `WordTiming.wordIndex`），
+ * 但它数的是罗马化之后的词（`Work-and-Travel` 在那边是三个），和屏幕上看到的词对不上，
+ * 存下来只会诱人拿它当下标用。要定位就用 offset。
+ */
+export interface WordSpan {
+  charStart: number;
+  charEnd: number;
+  start: number; // 秒
+  end: number;
 }
 
 export interface Blank {
@@ -127,35 +182,35 @@ export interface Settings {
   /** FR-16.5：内置词典查不到时，允许联网查 de.wiktionary 补齐。默认开。 */
   onlineDictFallback: boolean;
   lastBackupAt?: number; // 备份提醒（FR-11.4 / FR-11.12）
+  /**
+   * 最后一次改动设置的时间。**设置整体同步之后才需要它**（§0 变更 28）：
+   * 合并规则要一个比新旧的键，而 Settings 是一个没有 id 的单例对象，
+   * 只能整体 last-write-wins —— 那就必须有这个字段，否则两台设备的设置无法定序。
+   *
+   * 缺失 = 「早于任何一次改动」（老库、或者从没改过设置）。
+   * 只有 `useSettingsStore.update()` 写它，别处不要碰。
+   */
+  updatedAt?: number;
 }
 
 // ══════ 缓存层：本机持有，不同步，可随时丢弃 ══════
+//
+// 2026-09-02（§0 变更 27）之后这一层**只剩两样东西**：音频和原始文稿。
+// 它们的共同点不是「可重建」，而是「**有一个记在标注层里的下载地址**」——
+// `Lesson.audioSrc` 对应音频，`Lesson.source.sourceUrl` 对应文稿。
+// 想往这里加字段，先问那个字段能不能从某个地址原样取回来；不能就该放标注层。
+//
+// 搬出去的两样：`wordTimings` → `Sentence.words`（变更 26）、
+// `glossary` → `Lesson.glossary`（变更 27）。老库里可能还留着这两个字段的数据，
+// 谁都不再读它们 —— 缓存层本来就是可以随时丢的（FR-3.8 清缓存会带走）。
 
 export interface LessonCache {
   lessonId: string; // = Lesson.id
   manuscriptHtml?: string; // DW 原始 HTML；手动导入时存粘贴的原文
   plainText?: string; // 转换后的纯文本，Sentence.charStart/charEnd 的基准
-  glossary?: GlossaryCandidate[]; // FR-14 候选词
-  // FR-15：词级时间戳。放缓存层是因为它**可重建**（有音频+文稿就能再算一遍），
-  // 而且量不小（一课约 800 个词）。放标注层会让每次备份都胖一圈，
-  // 却换不来任何「丢了不能重建」的东西 —— 这正是 §6 划分两层的那条标准。
-  wordTimings?: WordTiming[];
   hasAudio: boolean;
   audioBytes: number; // 占用统计（FR-3.8），读它不必载入 Blob
   fetchedAt: number;
-}
-
-/**
- * FR-15：一个词的时间戳。charStart/charEnd 是**句内** offset，
- * 和 Blank.ranges 同一套坐标 —— 这样听写时「只播这个挖空对应的词」是一次直接查找。
- */
-export interface WordTiming {
-  sentenceIndex: number; // 指向 Sentence.index
-  wordIndex: number; // 句内第几个词，从 0 开始
-  charStart: number;
-  charEnd: number;
-  start: number; // 秒
-  end: number;
 }
 
 export interface GlossaryCandidate {

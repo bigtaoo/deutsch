@@ -1,0 +1,42 @@
+# 独立的 compose 项目，**不改公司那套 wnet 栈的任何文件**（唯一的例外是
+# ~/wnet/docker/Caddyfile 里加的那个 site block，见 deploy/README.md）。
+#
+# 网络：接进 wnet 栈已有的 docker_default，Caddy 才能用容器名 deutsch-sync 找到这里。
+# 端口：只 expose，不 publish —— 这条服务不该在 :8790 上裸奔，一切从 Caddy 的 443 进来。
+services:
+  sync:
+    build: .
+    image: deutsch-sync:latest
+    container_name: deutsch-sync
+    restart: unless-stopped
+    env_file: .env
+    # 以宿主机上那个拥有 ./data 的用户跑。
+    # 不设的话容器里是镜像内的 node（uid 1000），而 bind mount 进来的 ./data 属于宿主用户 ——
+    # 症状是启动即 ERR_SQLITE_ERROR「unable to open database file」，而不是权限错误。
+    # 值从同目录的 .env 里插值（`id -u` / `id -g`）。
+    user: "${SYNC_UID:-1000}:${SYNC_GID:-1000}"
+    volumes:
+      - ./data:/data
+    expose:
+      - "8790"
+    networks:
+      - wnet
+    # 这台机器上跑着别人的东西，给个上限，别让一个失控的进程把 mssql 挤下去。
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # 镜像里没有 curl/wget，用 node 自己发一发。
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/v1/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  wnet:
+    external: true
+    name: docker_default

@@ -21,10 +21,14 @@ export interface MergeSummary {
   addedVocab: string[]; // VocabEntry.id
   updatedVocab: string[];
   skippedVocab: string[];
+  /** 设置被导入的那一份覆盖了（§0 变更 28：Settings 整体 last-write-wins） */
+  settingsUpdated?: boolean;
 }
 
 export interface MergeResult {
   lessons: Lesson[];
   vocab: VocabEntry[];
+  /** 合并后的设置。两边都没给设置时是 undefined —— 调用方据此判断「不用写」 */
+  settings?: Settings;
   summary: MergeSummary;
 }

@@ -7,7 +7,7 @@
 // 匹配是**一对一**的：同一个旧句只能被认领一次，否则一篇里重复出现的短句（"Ja."）
 // 会把同一份标注复制到好几个位置。
 
-import type { Sentence } from '@/types/models';
+import type { GlossaryCandidate, Sentence } from '@/types/models';
 import type { RawSegment } from './segment';
 import { createSentences } from './sentences';
 
@@ -68,6 +68,9 @@ export function resegment(previous: Sentence[], segments: RawSegment[]): Resegme
       // 重新切句会把「机器给的、还没校过」洗成「看起来人工确认过」—— 静默丢掉待办。
       timingSource: old.timingSource,
       timingConfidence: old.timingConfidence,
+      // 词级时间戳同理：它是句内 offset，文本一致（归一化后）就依然对得上。
+      // 漏了它，重新切句会静默把逐词高亮降级成整句高亮，而界面上看不出为什么。
+      words: old.words,
       blanks: old.blanks,
       markedDifficult: old.markedDifficult,
       excluded: old.excluded,
@@ -77,4 +80,27 @@ export function resegment(previous: Sentence[], segments: RawSegment[]): Resegme
   const orphaned = previous.filter((s, i) => !claimed.has(i) && hasAnnotations(s));
 
   return { sentences, carriedOver, orphaned };
+}
+
+/**
+ * FR-14 候选词跟着重切搬迁：句号按 `carriedOver` 换成新的，**句内 offset 一个字都不动**。
+ *
+ * 后半句成立的前提就是认领规则本身 —— 只有归一化后文本一致的旧句才会被认领，
+ * 所以那一句里的 offset 仍然指着同一个词。落在没被认领的旧句上的候选只能丢：
+ * 它的位置在新文稿里不存在了，留着就是**静默错位**（点一下跳到别的词上）。
+ *
+ * 候选词自 §0 变更 27 起在标注层（跟着备份与同步走），所以这一步必须做 ——
+ * 从前它在缓存层，随手重抓一遍页面就能重建，漏了也看不出来。
+ */
+export function carryGlossary(
+  glossary: GlossaryCandidate[] | undefined,
+  carriedOver: Map<number, number>,
+): GlossaryCandidate[] | undefined {
+  if (!glossary || glossary.length === 0) return glossary;
+  const newIndexByOld = new Map([...carriedOver].map(([next, old]) => [old, next]));
+  const carried = glossary.flatMap((candidate) => {
+    const next = newIndexByOld.get(candidate.sentenceIndex);
+    return next === undefined ? [] : [{ ...candidate, sentenceIndex: next }];
+  });
+  return carried.length > 0 ? carried : undefined;
 }

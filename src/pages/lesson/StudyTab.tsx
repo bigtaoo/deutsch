@@ -16,7 +16,7 @@ import { GlossaryCandidates, acceptCandidate } from './GlossaryCandidates';
 import { Banner, Button, Hint } from '@/components/ui';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence, VocabEntry } from '@/types/models';
 
-export function StudyTab({ lesson, cache }: { lesson: Lesson; cache: LessonCache | undefined }) {
+export function StudyTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
   const audio = useLessonAudio(lesson.id);
   const entries = useVocabStore((s) => s.entries);
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
@@ -32,14 +32,14 @@ export function StudyTab({ lesson, cache }: { lesson: Lesson; cache: LessonCache
   );
   const candidatesBySentence = useMemo(() => {
     const map = new Map<number, GlossaryCandidate[]>();
-    for (const c of cache?.glossary ?? []) {
+    for (const c of lesson.glossary ?? []) {
       if (acceptedIds.has(c.dwKnowledgeId)) continue;
       const bucket = map.get(c.sentenceIndex);
       if (bucket) bucket.push(c);
       else map.set(c.sentenceIndex, [c]);
     }
     return map;
-  }, [cache?.glossary, acceptedIds]);
+  }, [lesson.glossary, acceptedIds]);
 
   return (
     <div className="space-y-4">
@@ -48,7 +48,7 @@ export function StudyTab({ lesson, cache }: { lesson: Lesson; cache: LessonCache
         标记会同时在句子上挖空、在生词本里建草稿。
       </Hint>
 
-      <GlossaryCandidates lesson={lesson} cache={cache} />
+      <GlossaryCandidates lesson={lesson} />
 
       <div className="space-y-3">
         {visible.map((sentence) => (

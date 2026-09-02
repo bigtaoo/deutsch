@@ -20,8 +20,6 @@ export interface RawGlossarySpan {
 export interface ManuscriptConversion {
   text: string;
   spans: RawGlossarySpan[];
-  /** 首个 <strong> 块在纯文本中的范围 —— FR-13.7 判定非朗读的 teaser 块用 */
-  firstStrongRange: { start: number; end: number } | null;
 }
 
 export function manuscriptToText(html: string): ManuscriptConversion {
@@ -30,7 +28,6 @@ export function manuscriptToText(html: string): ManuscriptConversion {
 
   let text = '';
   const spans: RawGlossarySpan[] = [];
-  let firstStrongRange: { start: number; end: number } | null = null;
 
   const walk = (node: Node): void => {
     if (node.nodeType === 3 /* Text */) {
@@ -52,10 +49,6 @@ export function manuscriptToText(html: string): ManuscriptConversion {
     const end = text.length;
 
     if (tag === 'p') text += '\n\n';
-
-    if (tag === 'strong' && firstStrongRange === null && text.slice(start, end).trim().length > 0) {
-      firstStrongRange = { start, end };
-    }
 
     if (tag === 'span' && el.getAttribute('data-type') === 'GLOSSARY') {
       const id = el.getAttribute('data-id');
@@ -81,12 +74,6 @@ export function manuscriptToText(html: string): ManuscriptConversion {
   return {
     text: trimmed,
     spans: spans.map((s) => ({ ...s, start: s.start - leading, end: s.end - leading })),
-    firstStrongRange: firstStrongRange
-      ? {
-          start: (firstStrongRange as { start: number; end: number }).start - leading,
-          end: (firstStrongRange as { start: number; end: number }).end - leading,
-        }
-      : null,
   };
 }
 

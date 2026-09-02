@@ -36,6 +36,21 @@ public/models/
 # 排除标准跟 public/models/ 是同一条：按体积，不是按原则。
 .cache/
 
+# 同步后端（server/）的运行时产物。SQLite 库里是**真实学习数据**（含 DW 正文），
+# 与 backup-*.json 同一条理由：永不入库。node_modules 是它自己那套依赖。
+server/data/
+server/node_modules/
+
+# 从 Google Cloud Console 下载的 OAuth 客户端文件（`google/` 是浏览器默认落点）。
+# 这套方案**用不到 client_secret**（前端拿 ID token、后端验签，不走授权码交换），
+# 而它一旦进了 git 历史就很难拔干净。需要的值已经在别处：
+# 客户端 ID 在 GitHub 仓库变量与服务器 .env 里，iOS 的反向域名在 Info.plist 里。
+google/
+client_secret*.json
+
+# 别的会话开在仓库里的 git worktree（.claude/worktrees/<分支>），是同一批文件的另一份快照。
+.claude/worktrees/
+
 # 原生签名材料。ios/ 与 android/ 两个工程本身入库（它们有手写的改动：Info.plist 的
 # 权限说明、AppDelegate 的音频会话、build.gradle 的签名配置），但**密钥一律不入库** ——
 # CI 从 secrets 里解出来用。生成方法见 .github/workflows/release-android.yml 头部。

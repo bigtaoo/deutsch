@@ -4,7 +4,7 @@ import { href, navigate } from '@/app/router';
 import { useLessonStore, isMaterialMissing, isRehydratable } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { Button, EmptyState, formatBytes, formatTime } from '@/components/ui';
-import { BackupStatusBar } from '@/components/BackupStatusBar';
+import { SyncStatusBar } from '@/components/SyncStatusBar';
 
 export function LessonsPage() {
   const { lessons, caches, loaded, removeLesson } = useLessonStore();
@@ -13,7 +13,7 @@ export function LessonsPage() {
 
   return (
     <div className="space-y-4">
-      <BackupStatusBar />
+      <SyncStatusBar />
 
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold">课程</h1>

@@ -14,13 +14,14 @@ import {
   putLessonCache,
 } from '@/db/cache';
 import { getVocabEntriesByLesson, putVocabEntry } from '@/db/vocab';
-import { scheduleLessonBackup } from '@/github/backupTrigger';
+import { migrateGlossaryIntoLessons } from '@/db/migrate';
+import { scheduleLessonSync, syncLessonDeletion } from '@/sync/trigger';
 import { generateId } from '@/lib/id';
 import { manuscriptHash } from '@/lib/hash';
 import { readAudioDuration } from '@/audio/player';
 import { segmentSentences } from '@/lesson/segment';
 import { createSentences } from '@/lesson/sentences';
-import { resegment, type ResegmentResult } from '@/lesson/resegment';
+import { carryGlossary, resegment, type ResegmentResult } from '@/lesson/resegment';
 import type { Lesson, LessonCache, Sentence } from '@/types/models';
 
 export interface NewLessonInput {
@@ -83,12 +84,16 @@ export const useLessonStore = create<LessonState>((set, get) => ({
   loaded: false,
 
   load: async () => {
-    const [lessons, caches] = await Promise.all([getAllLessons(), getAllLessonCaches()]);
+    const [stored, caches] = await Promise.all([getAllLessons(), getAllLessonCaches()]);
+    // 老库迁移（§0 变更 27）：候选词从缓存层搬进标注层。幂等，没得搬时零写入。
+    const { lessons, changed } = await migrateGlossaryIntoLessons(stored, caches);
     set({
-      lessons: lessons.sort((a, b) => b.createdAt - a.createdAt),
+      lessons: [...lessons].sort((a, b) => b.createdAt - a.createdAt),
       caches: Object.fromEntries(caches.map((c) => [c.lessonId, c])),
       loaded: true,
     });
+    // 搬完要推一次，否则这份数据永远留在这台设备上。
+    for (const id of changed) scheduleLessonSync(id);
   },
 
   createLesson: async (input) => {
@@ -131,7 +136,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       lessons: [lesson, ...get().lessons],
       caches: { ...get().caches, [id]: cache },
     });
-    scheduleLessonBackup(id);
+    scheduleLessonSync(id);
     return id;
   },
 
@@ -142,7 +147,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     // 表现就是「连按 Enter 打点，只有最后一下留下来了」。
     set({ lessons: get().lessons.map((l) => (l.id === next.id ? next : l)) });
     await putLesson(next);
-    scheduleLessonBackup(next.id);
+    scheduleLessonSync(next.id);
   },
 
   patchLesson: async (lessonId, updater) => {
@@ -156,6 +161,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     const caches = { ...get().caches };
     delete caches[id];
     set({ lessons: get().lessons.filter((l) => l.id !== id), caches });
+    // 远端也删掉，否则下次在另一台设备上恢复会把它原样拉回来。
+    void syncLessonDeletion(id);
   },
 
   updateSentences: async (lessonId, sentences, indexMap) => {
@@ -202,6 +209,9 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     await get().saveLesson({
       ...lesson,
       sentences: result.sentences,
+      // 候选词的句号跟着重切换（句内 offset 不变，见 carryGlossary）。
+      // 不搬就是静默错位：点一个候选跳到别的句子上。
+      glossary: carryGlossary(lesson.glossary, result.carriedOver),
       manuscriptHash: manuscriptHash(plainText),
     });
     return result;

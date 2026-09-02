@@ -3,7 +3,7 @@
 // 一次只允许跑一个对齐任务。两个并行会各自占一份 187MB+ 的权重，
 // 手机上直接 OOM，桌面上也只是互相抢 CPU。
 
-import { getAudioBlob, getLessonCache, putLessonCache } from '@/db/cache';
+import { getAudioBlob } from '@/db/cache';
 import { useLessonStore } from '@/state/useLessonStore';
 import { nativePlatform } from '@/platform/native';
 import type { Lesson } from '@/types/models';
@@ -131,10 +131,12 @@ export interface AlignLessonResult extends ApplyResult {
 }
 
 /**
- * 对一课跑完整流程：取音频 → 解码 → 对齐 → 写回 Sentence + LessonCache.wordTimings → 触发备份。
+ * 对一课跑完整流程：取音频 → 解码 → 对齐 → 写回 Sentence（句级 + 词级）→ 触发同步。
  *
- * 词级时间戳进缓存层（不进备份），句级时间戳进标注层（进备份）。
- * 所以手机上换个设备打开，句子照样能播 —— 这就是「桌面预处理、手机学习」成立的原因。
+ * **句级和词级时间戳都进标注层**（2026-09-02 改，见 SPEC §0 变更 26）。
+ * 词级曾经只进缓存层、不进备份，理由是「有音频+文稿就能重算」——
+ * 但手机跑不动这个模型，在那台设备上它重算不出来，于是「桌面预处理、手机学习」
+ * 只兑现了一半（句子能播，词不能）。现在一次对齐的产出全都跟着 Lesson 同步过去。
  *
  * 全程往 journal.ts 记面包屑：这一步是**唯一**能在「进程被系统杀掉」之后还留下证据的机制。
  */
@@ -175,7 +177,7 @@ export async function alignLesson(
     // 今天只有一条：把波形交给 Worker，让本机 provider（emissions.ts）算完再对齐。
     // 接原生插件或远端时，改的是这一行 —— 先拿到 EmissionMatrix，再用
     // `{ input: 'emissions', emissions }` 进同一个 Worker 跑 viterbi。
-    // 下游（applyTimings → LessonCache → saveLesson → 备份）一行都不用动。
+    // 下游（applyTimings → saveLesson → 同步）一行都不用动。
     const outcome = await runAlignment(
       { input: 'audio', audio, plan },
       lesson.sentences,
@@ -187,28 +189,17 @@ export async function alignLesson(
     const applied = applyTimings(lesson.sentences, outcome.sentences, {
       audioDuration: outcome.duration,
       overwriteManual: options.overwriteManual,
+      words: outcome.words,
     });
 
-    const cache = await getLessonCache(lesson.id);
-    await putLessonCache({
-      ...cache,
-      lessonId: lesson.id,
-      hasAudio: true,
-      audioBytes: cache?.audioBytes ?? blob.size,
-      fetchedAt: cache?.fetchedAt ?? Date.now(),
-      wordTimings: outcome.words,
-    });
-
-    // saveLesson 自己会更新内存 store 并 scheduleLessonBackup，不要在这里重复触发备份。
+    // 一次写完：句级 + 词级都在 sentences 里，所以只有这一次落库。
+    // saveLesson 自己会更新内存 store 并触发同步，不要在这里重复触发。
     await useLessonStore.getState().saveLesson({
       ...lesson,
       sentences: applied.sentences,
       // 解码出来的时长比 DW 页面上写的可靠，顺手校正。
       audioDuration: outcome.duration,
     });
-    // 但 wordTimings 是直接写进 LessonCache 的，store 里那份 caches 快照还是旧的，
-    // 得重读一次 —— 否则听写页拿不到刚算出来的词级时间戳。
-    await useLessonStore.getState().load();
 
     finishRun('done');
     if (release) terminateAlignWorker();

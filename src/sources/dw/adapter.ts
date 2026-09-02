@@ -31,8 +31,6 @@ export interface DwLesson {
   spans: RawGlossarySpan[];
   knowledges: DwKnowledge[];
   audio?: { mp3Src: string; duration: number };
-  /** FR-13.7：首个 <strong> 块在纯文本里的范围，以及它是否真的与 teaser 重合 */
-  teaserBlock: { start: number; end: number; matchesTeaser: boolean } | null;
 }
 
 export const DW_PAGE_BASE = 'https://learngerman.dw.com';
@@ -87,25 +85,7 @@ export function parseLessonPage(html: string, lessonId: string, url: string): Dw
     spans: conversion.spans,
     knowledges,
     audio,
-    teaserBlock: conversion.firstStrongRange
-      ? {
-          ...conversion.firstStrongRange,
-          // FR-13.7：判定方式不用启发式 —— 该块文本必须**包含** teaser 才算 teaser 块。
-          // 不匹配就保留并提示人工确认，绝不猜。
-          matchesTeaser: blockMatchesTeaser(
-            conversion.text.slice(conversion.firstStrongRange.start, conversion.firstStrongRange.end),
-            teaser,
-          ),
-        }
-      : null,
   };
-}
-
-function blockMatchesTeaser(blockText: string, teaser: string): boolean {
-  const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
-  const block = normalize(blockText);
-  const want = normalize(teaser);
-  return want.length > 0 && block.includes(want);
 }
 
 function collectKnowledges(state: ApolloState, refs: unknown): DwKnowledge[] {

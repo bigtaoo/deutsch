@@ -39,10 +39,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- FR-11.5 配对二维码：新设备扫已连接设备上的码。
-         这是全应用唯一一处 getUserMedia（src/components/QrScanner.tsx）。
-         required="false"：QrScanner 自己做了能力探测，拒绝权限只会退化成
-         「手工粘 token」，不应该让设备因为没摄像头就装不上。 -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- 摄像头权限已删除（2026-09-02）：它当初只为 FR-11.18 的配对二维码而存在，
+         而那条需求随 GitHub 备份一起删掉了，见 SPEC §0 变更 25。
+         App 现在一处也不用摄像头，留着只会让商店页面上多列一条用不到的权限。 -->
 </manifest>

@@ -9,7 +9,7 @@
 // 合并/拆分确实会重排 index（FR-2.3 明说要重排），所以这两个函数额外返回 indexMap，
 // 调用方必须拿它去同步 VocabEntry.sentenceIndex，否则同样会错位。
 
-import type { Blank, Sentence } from '@/types/models';
+import type { Blank, Sentence, WordSpan } from '@/types/models';
 import type { RawSegment } from './segment';
 
 export interface SentenceEdit {
@@ -56,6 +56,25 @@ function shiftBlanks(blanks: Blank[], delta: number): Blank[] {
 }
 
 /**
+ * 词级时间戳（`Sentence.words`）跟 `blanks` 是同一套句内 offset，所以合并/拆分时
+ * 要做同样的事：平移、按切点分家。**不能只让它作废**（合并一下就没有逐词高亮了），
+ * 也不能原样留着（offset 会指向别的词，那是静默错位）。
+ */
+function shiftWords(words: WordSpan[] | undefined, delta: number): WordSpan[] | undefined {
+  if (!words || delta === 0) return words;
+  return words.map((w) => ({ ...w, charStart: w.charStart + delta, charEnd: w.charEnd + delta }));
+}
+
+/** 两段词表接起来；两边都空就返回 undefined（而不是空数组 —— 那会让 UI 以为「算过、但没有词」）。 */
+function concatWords(
+  left: WordSpan[] | undefined,
+  right: WordSpan[] | undefined,
+): WordSpan[] | undefined {
+  const merged = [...(left ?? []), ...(right ?? [])];
+  return merged.length > 0 ? merged : undefined;
+}
+
+/**
  * FR-2.3：与下一句合并。文本从 plainText 原样切出来，
  * 这样两句之间的空格/换行按原文保留，charStart/charEnd 也仍然对得上原文。
  */
@@ -77,6 +96,7 @@ export function mergeWithNext(
     endTime: second.endTime ?? first.endTime,
     endTimeExplicit: second.endTime !== undefined ? second.endTimeExplicit : first.endTimeExplicit,
     blanks: [...first.blanks, ...shiftBlanks(second.blanks, second.charStart - first.charStart)],
+    words: concatWords(first.words, shiftWords(second.words, second.charStart - first.charStart)),
     markedDifficult: first.markedDifficult || second.markedDifficult,
     // 只有两句都被排除，合并后才还是排除 —— 否则会把正文悄悄吞掉。
     excluded: first.excluded && second.excluded,
@@ -130,6 +150,14 @@ export function splitSentence(
     else droppedBlanks.push(blank);
   }
 
+  // 词级时间戳按同一个切点分家。横跨切点的（光标落在词中间）两边都不要 ——
+  // 它的 offset 在任何一边都指不回同一个词。这种词最多一个，不值得报给用户。
+  const leftWords = target.words?.filter((w) => w.charEnd <= cut);
+  const rightWords = shiftWords(
+    target.words?.filter((w) => w.charStart >= rightOffset),
+    -rightOffset,
+  );
+
   const left: Sentence = {
     ...target,
     text: plainText.slice(leftStart, leftEnd),
@@ -138,6 +166,7 @@ export function splitSentence(
     endTime: undefined,
     endTimeExplicit: false,
     blanks: leftBlanks,
+    words: leftWords?.length ? leftWords : undefined,
   };
   const right: Sentence = {
     ...target,
@@ -146,6 +175,7 @@ export function splitSentence(
     charEnd: rightEnd,
     startTime: undefined,
     blanks: rightBlanks,
+    words: rightWords?.length ? rightWords : undefined,
   };
 
   const next = [...sentences.slice(0, index), left, right, ...sentences.slice(index + 1)];
@@ -164,6 +194,19 @@ export function setExcluded(sentences: Sentence[], index: number, excluded: bool
 export function excludeLastN(sentences: Sentence[], n: number): Sentence[] {
   const from = Math.max(0, sentences.length - n);
   return sentences.map((s, i) => (i >= from ? { ...s, excluded: true } : s));
+}
+
+/**
+ * FR-1.4：开头 N 句批量排除 / **取消排除**。
+ *
+ * 为什么需要「取消排除」这一半：FR-13.7 原来会自动排除开头的标题+导语块，
+ * 而那条规则是错的（DW 的播音员照着念）。规则已经去掉，但**在它去掉之前导入的课**
+ * 里那几句仍然是 excluded。没有这个控件就只能逐句点开、逐句取消 ——
+ * 一课三次，回填过的十来课就是几十次。
+ */
+export function setExcludedFirstN(sentences: Sentence[], n: number, excluded: boolean): Sentence[] {
+  const to = Math.min(sentences.length, Math.max(0, n));
+  return sentences.map((s, i) => (i < to ? { ...s, excluded } : s));
 }
 
 function identityMap(sentences: Sentence[]): Map<number, number> {

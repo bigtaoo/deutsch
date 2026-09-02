@@ -30,6 +30,15 @@ describe('enqueuePush / getQueue', () => {
     expect(queue).toHaveLength(1);
   });
 
+  it('删除意图会作废同一课的推送意图，反之亦然（否则一次 drain 会把删掉的课复活）', async () => {
+    await enqueuePush('lesson', 'l1');
+    await enqueuePush('lesson-delete', 'l1');
+    expect(await getQueue()).toEqual([expect.objectContaining({ kind: 'lesson-delete' })]);
+
+    await enqueuePush('lesson', 'l1');
+    expect(await getQueue()).toEqual([expect.objectContaining({ kind: 'lesson' })]);
+  });
+
   it('keeps separate lessons as separate queue entries', async () => {
     await enqueuePush('lesson', 'l1');
     await enqueuePush('lesson', 'l2');

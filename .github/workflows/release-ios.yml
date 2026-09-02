@@ -95,6 +95,15 @@ jobs:
         run: npm run stage:align
 
       - name: build web bundle (native mode)
+        # 同步后端的地址与 Google 客户端 ID 是**构建期**注入的（见 .env.example）。
+        # 不给的话构建出来的包里同步整块是关的 —— 而且不会报错，只在设置页显示
+        # 「这个构建没有配置同步服务器」，很容易被当成代码坏了。
+        # 放 Variables 不放 Secrets：客户端 ID 本来就会原样出现在下发的 JS 里，
+        # 它不是秘密（秘密是服务器那边的 SESSION_SECRET，那个不进这个仓库）。
+        env:
+          VITE_SYNC_API_BASE: ${{ vars.SYNC_API_BASE }}
+          VITE_GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
+          VITE_GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
         run: npm run build:native
 
       # 把 dist/ 刷进 ios/App/App/public，并按 package.json 里的插件重写 Package.swift。

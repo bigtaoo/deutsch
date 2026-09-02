@@ -13,11 +13,11 @@
 import { putLesson } from '@/db/lessons';
 import { getLessonCache, putAudioBlob, putLessonCache } from '@/db/cache';
 import { segmentSentences } from '@/lesson/segment';
-import { createSentences, setExcluded } from '@/lesson/sentences';
+import { createSentences } from '@/lesson/sentences';
 import { resegment } from '@/lesson/resegment';
 import { manuscriptHash } from '@/lib/hash';
 import { generateId } from '@/lib/id';
-import { scheduleLessonBackup } from '@/github/backupTrigger';
+import { scheduleLessonSync } from '@/sync/trigger';
 import { useLessonStore } from '@/state/useLessonStore';
 import { downloadAudio, fetchLesson, mapSpansToSentences, type DwLesson } from './dw/adapter';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence } from '@/types/models';
@@ -43,8 +43,6 @@ export interface ImportOutcome {
   lessonId: string;
   /** FR-13.9：抓到哪算哪。文本成功而音频失败时这里有值，课程照样建出来 */
   audioError?: string;
-  /** FR-13.7 判定失败：teaser 块与 teaser 对不上，需要人工确认 */
-  teaserNeedsReview: boolean;
   /**
    * 音频到位了 —— 调用方据此把这一课排进自动对齐队列（FR-15）。
    *
@@ -69,19 +67,6 @@ function buildCandidates(dw: DwLesson, sentences: Sentence[]): GlossaryCandidate
   }));
 }
 
-/** FR-13.7：teaser 块对得上就自动排除；对不上一句都不排，交给人工确认。 */
-function excludeTeaserBlock(sentences: Sentence[], dw: DwLesson): Sentence[] {
-  const block = dw.teaserBlock;
-  if (!block || !block.matchesTeaser) return sentences;
-  let next = sentences;
-  for (const sentence of sentences) {
-    if (sentence.charStart < block.end && block.start < sentence.charEnd) {
-      next = setExcluded(next, sentence.index, true);
-    }
-  }
-  return next;
-}
-
 export async function importFromDw(
   lessonId: string,
   onProgress?: (progress: ImportProgress) => void,
@@ -90,7 +75,14 @@ export async function importFromDw(
   onProgress?.({ step: 'page' });
   const dw = await politely(() => fetchLesson(lessonId, sourceUrl));
 
-  const sentences = excludeTeaserBlock(createSentences(segmentSentences(dw.plainText)), dw);
+  // FR-13.7（2026-09-02 改）：**一句都不自动排除。**
+  // 原来的规则是「首个 <strong> 块 = 标题 + teaser，音频里不朗读」——
+  // 实测（Alltagsdeutsch 45334084）那是错的：播音员**照着念**标题和导语，
+  // 一字不差。排除它们的后果不只是少练三句，而是把这段真实存在的音频
+  // 从对齐目标里挖掉，逼 CTC 把开头几十秒的声音塞给第一句正文。
+  // 音频里没念的段落（手动粘贴 PDF 时的文末 Glossar）仍然排除，只是走手工 ——
+  // 「切句」页有开头/文末两个批量控件，逐句也能点。
+  const sentences = createSentences(segmentSentences(dw.plainText));
 
   // FR-13.5：音频与文本任一失败不影响另一个。
   let audioBlob: Blob | undefined;
@@ -116,9 +108,12 @@ export async function importFromDw(
     id,
     title: dw.title,
     source: { type: 'dw', dwLessonId: lessonId, sourceUrl: dw.sourceUrl },
+    // 音频本身不进备份，地址进（§0 变更 27）。抓失败时也记 —— 那正是最需要它的时候。
+    audioSrc: dw.audio?.mp3Src,
     audioDuration: dw.audio?.duration || undefined,
     manuscriptHash: manuscriptHash(dw.plainText),
     sentences,
+    glossary: buildCandidates(dw, sentences),
     createdAt: now,
     updatedAt: now,
   };
@@ -127,7 +122,6 @@ export async function importFromDw(
     lessonId: id,
     manuscriptHtml: dw.manuscriptHtml,
     plainText: dw.plainText,
-    glossary: buildCandidates(dw, sentences),
     hasAudio: Boolean(audioBlob),
     audioBytes: audioBlob?.size ?? 0,
     fetchedAt: now,
@@ -136,13 +130,12 @@ export async function importFromDw(
   if (audioBlob) await putAudioBlob(id, audioBlob);
   await Promise.all([putLesson(lesson), putLessonCache(cache)]);
   await useLessonStore.getState().load();
-  scheduleLessonBackup(id);
+  scheduleLessonSync(id);
 
   onProgress?.({ step: 'done' });
   return {
     lessonId: id,
     audioError,
-    teaserNeedsReview: Boolean(dw.teaserBlock && !dw.teaserBlock.matchesTeaser),
     hasAudio: Boolean(audioBlob),
   };
 }
@@ -169,11 +162,15 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
   const manuscriptChanged =
     lesson.manuscriptHash !== undefined && lesson.manuscriptHash !== manuscriptHash(dw.plainText);
 
+  // 页面上那份直链优先（CDN 地址会变），页面里找不到时退到标注层记着的那个地址 ——
+  // 「记下载地址」这件事就是为了这一刻（§0 变更 27）。
+  const mp3Src = dw.audio?.mp3Src ?? lesson.audioSrc;
+
   let audioRestored = false;
   let audioError: string | undefined;
-  if (dw.audio) {
+  if (mp3Src) {
     try {
-      const blob = await politely(() => downloadAudio(dw.audio!.mp3Src));
+      const blob = await politely(() => downloadAudio(mp3Src));
       await putAudioBlob(lesson.id, blob);
       const existing = await getLessonCache(lesson.id);
       await putLessonCache({
@@ -185,20 +182,25 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
         // 文稿没变才敢用新抓的正文覆盖缓存：句子的 charStart/charEnd 与候选词 offset
         // 全都基于 plainText，文稿一变它们就集体失效。这时保留旧的那份，
         // 等用户在 FR-3.7 的两个选项里做完决定再说。
-        ...(manuscriptChanged
-          ? {}
-          : {
-              manuscriptHtml: dw.manuscriptHtml,
-              plainText: dw.plainText,
-              glossary: buildCandidates(dw, lesson.sentences),
-            }),
+        ...(manuscriptChanged ? {} : { manuscriptHtml: dw.manuscriptHtml, plainText: dw.plainText }),
       });
       audioRestored = true;
     } catch (err) {
       audioError = err instanceof Error ? err.message : String(err);
     }
   } else {
-    audioError = '页面里没有找到音频直链';
+    audioError = '页面里没有找到音频直链，这一课也没有记录过原始下载地址';
+  }
+
+  // 标注层这边要更新的两样：刷新音频地址（CDN 直链会变），以及文稿没变时刷新候选词。
+  // 文稿变了就不动候选词 —— 它的 offset 基于旧文稿，等用户在 FR-3.7 里做完决定。
+  const nextAudioSrc = dw.audio?.mp3Src ?? lesson.audioSrc;
+  if (nextAudioSrc !== lesson.audioSrc || !manuscriptChanged) {
+    await useLessonStore.getState().saveLesson({
+      ...lesson,
+      audioSrc: nextAudioSrc,
+      glossary: manuscriptChanged ? lesson.glossary : buildCandidates(dw, lesson.sentences),
+    });
   }
 
   await useLessonStore.getState().load();
@@ -217,7 +219,6 @@ export async function acceptNewManuscript(lesson: Lesson, dw: DwLesson) {
     lessonId: lesson.id,
     manuscriptHtml: dw.manuscriptHtml,
     plainText: dw.plainText,
-    glossary: buildCandidates(dw, result.sentences),
     hasAudio: existing?.hasAudio ?? false,
     audioBytes: existing?.audioBytes ?? 0,
     fetchedAt: Date.now(),
@@ -225,6 +226,9 @@ export async function acceptNewManuscript(lesson: Lesson, dw: DwLesson) {
   await useLessonStore.getState().saveLesson({
     ...lesson,
     sentences: result.sentences,
+    // 候选词的 offset 是按新文稿重算的 —— 必须跟着新句子一起换，
+    // 留着旧的那份会让「点这个候选词」跳到别的位置上（静默错位）。
+    glossary: buildCandidates(dw, result.sentences),
     manuscriptHash: manuscriptHash(dw.plainText),
   });
   await useLessonStore.getState().load();

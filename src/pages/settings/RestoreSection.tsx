@@ -1,13 +1,12 @@
 // FR-11.13 一键恢复 + FR-11.15 每年提示恢复演练 + FR-12 学习设置。
 //
-// 这三块单独一个文件，是因为 SettingsPage 已经被 GitHub 连接那一大段占满了，
+// 这三块单独一个文件，是因为 SettingsPage 已经被账号与同步那一段占满了，
 // 而恢复是**验收清单里唯一「不做完不算通过」**的一项，值得自己一块地方。
 
 import { useEffect, useState } from 'react';
 import { getMeta, putMeta } from '@/db/meta';
-import { restoreFromRepo, type RestoreResult } from '@/github/restore';
-import { META_KEYS } from '@/db/schema';
-import { useBackupStore } from '@/state/useBackupStore';
+import { restoreFromServer, type RestoreResult } from '@/sync/restore';
+import { useSyncStore } from '@/state/useSyncStore';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
@@ -17,7 +16,7 @@ const DRILL_META_KEY = 'lastRestoreDrillAt';
 const DRILL_INTERVAL_MS = 365 * 86_400_000;
 
 export function RestoreSection() {
-  const { status, repo } = useBackupStore();
+  const { status, account } = useSyncStore();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<RestoreResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,14 +31,16 @@ export function RestoreSection() {
     setError(null);
     setResult(null);
     try {
-      const token = await getMeta<string>(META_KEYS.githubToken);
-      if (!token || !repo) throw new Error('还没连接 GitHub 或没选仓库');
-      const outcome = await restoreFromRepo(token, repo);
+      const outcome = await restoreFromServer();
       setResult(outcome);
       await putMeta(DRILL_META_KEY, Date.now());
       setLastDrillAt(Date.now());
-      // 恢复写的是 IndexedDB，内存里的 store 要重新读一遍才能看到
-      await Promise.all([useLessonStore.getState().load(), useVocabStore.getState().load()]);
+      // 恢复写的是 IndexedDB，内存里的 store 要重新读一遍才能看到（设置也在内，§0 变更 28）
+      await Promise.all([
+        useLessonStore.getState().load(),
+        useVocabStore.getState().load(),
+        useSettingsStore.getState().load(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -50,14 +51,15 @@ export function RestoreSection() {
   const drillOverdue = lastDrillAt === null || Date.now() - lastDrillAt > DRILL_INTERVAL_MS;
 
   return (
-    <Section title="从仓库恢复（FR-11.13）">
-      {status !== 'connected' || !repo ? (
-        <Hint>先连接 GitHub 并选好备份仓库。</Hint>
+    <Section title="从同步服务器恢复（FR-11.13）">
+      {status !== 'signed-in' || !account ? (
+        <Hint>先在上面用 Google 登录。</Hint>
       ) : (
         <>
           <Hint>
-            拉取 {repo.owner}/{repo.repo} 里的 vocab.json 与 lessons/*.json，按 §2.4 合并规则写入本机。
+            把 {account.email} 在服务器上的生词与全部课程拉下来，按 §2.4 合并规则写入本机。
             只恢复标注层；课程会显示「素材未下载」，音频去「来源」页一键补齐。
+            设置也在同步范围内（§0 变更 28）；音频与原文不上传，所以课程会显示「素材未下载」。
           </Hint>
 
           {/* FR-11.15：工具在变，恢复路径会悄悄坏掉。每年提醒重演一次。 */}
@@ -83,11 +85,12 @@ export function RestoreSection() {
                 跳过（本机更新）{result.summary.skippedLessons.length}；
                 新增生词 {result.summary.addedVocab.length}、更新 {result.summary.updatedVocab.length}。
               </p>
+              {result.settingsRestored && <p className="mt-1">设置也已从服务器恢复。</p>}
               {result.summary.overwrittenLessonTitles.length > 0 && (
                 <p className="mt-1">被覆盖的课程：{result.summary.overwrittenLessonTitles.join('、')}</p>
               )}
               {result.failures.length > 0 && (
-                <p className="mt-1">这些文件没能读出来：{result.failures.join('；')}</p>
+                <p className="mt-1">这些文档没能读出来：{result.failures.join('；')}</p>
               )}
             </Banner>
           )}

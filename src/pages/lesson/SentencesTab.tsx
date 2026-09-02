@@ -7,7 +7,14 @@ import { useMemo, useRef, useState } from 'react';
 import { useLessonStore } from '@/state/useLessonStore';
 import { segmentSentences } from '@/lesson/segment';
 import { resegment } from '@/lesson/resegment';
-import { displayNumbers, excludeLastN, mergeWithNext, setExcluded, splitSentence } from '@/lesson/sentences';
+import {
+  displayNumbers,
+  excludeLastN,
+  mergeWithNext,
+  setExcluded,
+  setExcludedFirstN,
+  splitSentence,
+} from '@/lesson/sentences';
 import { Banner, Button, Hint } from '@/components/ui';
 import type { Lesson, LessonCache, Sentence } from '@/types/models';
 
@@ -72,10 +79,29 @@ export function SentencesTab({ lesson, cache }: Props) {
         <span className="text-sm text-neutral-600">
           共 {lesson.sentences.length} 句，其中 {lesson.sentences.length - includedCount} 句已排除
         </span>
+        <HeadControl
+          onSet={(n, excluded) =>
+            void apply(
+              { sentences: setExcludedFirstN(lesson.sentences, n, excluded) },
+              `开头 ${n} 句已${excluded ? '排除' : '恢复'}。排除范围变了 —— 去页头点「重新对齐」把时间戳按新范围重算一遍。`,
+            )
+          }
+        />
         <ExcludeTailControl
-          onExclude={(n) => void apply({ sentences: excludeLastN(lesson.sentences, n) })}
+          onExclude={(n) =>
+            void apply(
+              { sentences: excludeLastN(lesson.sentences, n) },
+              `文末 ${n} 句已排除。排除范围变了 —— 去页头点「重新对齐」把时间戳按新范围重算一遍。`,
+            )
+          }
         />
       </div>
+
+      <Hint>
+        「排除」只留给音频里根本没念的段落（手动粘贴时的文末 Glossar）——
+        排除句不参与对齐、跟读和听写。DW 的标题和导语是<strong>会被念出来</strong>的，
+        所以不再自动排除；早先导入的课里那几句仍是排除态，用上面的「开头 N 句 → 恢复」一次撤掉。
+      </Hint>
 
       {notice && <Banner tone="info">{notice}</Banner>}
 
@@ -149,6 +175,33 @@ export function SentencesTab({ lesson, cache }: Props) {
       </ol>
 
       <ResegmentPanel lesson={lesson} plainText={plainText} onCommit={resegmentLesson} />
+    </div>
+  );
+}
+
+/**
+ * 开头 N 句：排除 / 恢复。
+ *
+ * 默认 3 —— DW 的「标题 + 导语」块恰好切成 3 句，这也正是 FR-13.7 以前自动排掉的那几句。
+ * 「恢复」是这个控件存在的主要理由，所以它排在前面。
+ */
+function HeadControl({ onSet }: { onSet: (n: number, excluded: boolean) => void }) {
+  const [n, setN] = useState(3);
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <span className="text-neutral-600">开头</span>
+      <input
+        type="number"
+        min={1}
+        value={n}
+        onChange={(e) => setN(Math.max(1, Number(e.target.value) || 1))}
+        className="w-16 rounded border border-neutral-300 px-2 py-1"
+      />
+      <span className="text-neutral-600">句</span>
+      <Button onClick={() => onSet(n, false)}>恢复</Button>
+      <Button variant="ghost" onClick={() => onSet(n, true)}>
+        排除
+      </Button>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applyTimings, isManual, LEAD_SECONDS, reviewQueue, TAIL_SECONDS } from './apply';
 import type { Sentence } from '@/types/models';
-import type { SentenceTiming } from './target';
+import type { SentenceTiming, WordTiming } from './target';
 
 function sentence(index: number, over: Partial<Sentence> = {}): Sentence {
   return {
@@ -108,6 +108,43 @@ describe('applyTimings', () => {
     // 病态输入：end < start
     const { sentences } = applyTimings([sentence(0)], [timing(0, 5, 1)], { audioDuration: 10 });
     expect(sentences[0].endTime!).toBeGreaterThanOrEqual(sentences[0].startTime!);
+  });
+});
+
+describe('applyTimings：词级时间戳（FR-15.2，进标注层）', () => {
+  const word = (sentenceIndex: number, wordIndex: number, charStart: number, charEnd: number, start: number, end: number): WordTiming =>
+    ({ sentenceIndex, wordIndex, charStart, charEnd, start, end });
+
+  it('按句归拢写进 Sentence.words，并扔掉对齐器内部那两个字段', () => {
+    const { sentences } = applyTimings([sentence(0), sentence(1)], [timing(0, 1, 2), timing(1, 3, 4)], {
+      audioDuration: 10,
+      words: [word(0, 0, 0, 4, 1, 1.5), word(0, 1, 5, 6, 1.6, 2), word(1, 0, 0, 4, 3, 3.5)],
+    });
+    expect(sentences[0].words).toEqual([
+      { charStart: 0, charEnd: 4, start: 1, end: 1.5 },
+      { charStart: 5, charEnd: 6, start: 1.6, end: 2 },
+    ]);
+    expect(sentences[1].words).toEqual([{ charStart: 0, charEnd: 4, start: 3, end: 3.5 }]);
+  });
+
+  it('重跑时旧的词表被整句替换，不会留下上一轮的边界', () => {
+    const first = applyTimings([sentence(0)], [timing(0, 1, 2)], {
+      audioDuration: 10,
+      words: [word(0, 0, 0, 4, 1, 1.5)],
+    }).sentences;
+    // 第二次没算出这一句的词级时间戳 —— 必须变成 undefined，而不是留着第一轮那份
+    const second = applyTimings(first, [timing(0, 5, 6)], { audioDuration: 10 }).sentences;
+    expect(second[0].words).toBeUndefined();
+  });
+
+  it('人工标注过的句子连词表也不动 —— 不许句级是人校的、词级是机器新算的', () => {
+    const manual = sentence(0, { startTime: 5, endTime: 6, timingSource: 'manual' });
+    const { sentences } = applyTimings([manual], [timing(0, 1, 2)], {
+      audioDuration: 10,
+      words: [word(0, 0, 0, 4, 1, 1.5)],
+    });
+    expect(sentences[0]).toBe(manual);
+    expect(sentences[0].words).toBeUndefined();
   });
 });
 

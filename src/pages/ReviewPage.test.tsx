@@ -50,7 +50,7 @@ vi.mock('@/audio/player', () => ({
 }));
 
 vi.mock('@/db/cache', () => ({ getAudioBlob: vi.fn(async () => undefined) }));
-vi.mock('@/github/backupTrigger', () => ({ backupVocabNow: vi.fn() }));
+vi.mock('@/sync/trigger', () => ({ syncVocabNow: vi.fn() }));
 
 const NOW = new Date('2026-09-02T12:00:00Z');
 

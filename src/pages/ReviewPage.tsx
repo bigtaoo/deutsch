@@ -21,7 +21,7 @@ import { buildReviewQueue, cardAudioStatus } from '@/srs/queue';
 import { formatInterval, review } from '@/srs/fsrs';
 import { articled, gradeFromAnswer } from '@/srs/grade';
 import { buildQuestion } from '@/srs/questionSource';
-import { backupVocabNow } from '@/github/backupTrigger';
+import { syncVocabNow } from '@/sync/trigger';
 import { loadDeck, lookupDict } from '@/dict/lookup';
 import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dict/audio';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -104,7 +104,7 @@ export function ReviewPage() {
       if (p + 1 < queue.length) return p + 1;
       setFinished(true);
       // FR-11.6：每次复习会话结束就推 vocab.json —— 不可重建的数据不过夜。
-      void backupVocabNow();
+      void syncVocabNow();
       return p;
     });
   }, [queue.length]);

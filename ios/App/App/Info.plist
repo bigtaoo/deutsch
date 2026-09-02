@@ -73,11 +73,26 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
-	<!-- FR-11.5 配对二维码：新设备用后置摄像头扫已连接设备生成的码。
-	     这是全应用唯一一处 getUserMedia（src/components/QrScanner.tsx）。
-	     没有这条 key，WKWebView 里的 getUserMedia 不是报错，而是直接崩溃退出。 -->
-	<key>NSCameraUsageDescription</key>
-	<string>扫描另一台设备上的配对二维码，用来同步 GitHub 备份设置。</string>
+	<!-- 摄像头权限已删除（2026-09-02）：它当初只为 FR-11.18 的配对二维码而存在
+	     （唯一一处 getUserMedia），而那条需求随 GitHub 备份一起删掉了，
+	     见 SPEC §0 变更 25。App 现在一处也不用摄像头，声明一个用不到的权限
+	     只会在审核时被问、并在系统设置里给用户看一条假的开关。
+	     若哪天又要用摄像头，把 NSCameraUsageDescription 加回来 ——
+	     没有它，WKWebView 里的 getUserMedia 不是报错，而是直接崩溃退出。 -->
+	<!-- Google 登录（FR-11.1）：把 iOS 客户端 ID 的反向域名注册成 URL scheme，
+	     系统浏览器授权完才知道该跳回哪个 App。没有它，登录会跳出去 Safari 然后回不来。
+	     这个字符串就是客户端 ID 前后两段调个个，不是另外申请的东西。
+	     换 Google 项目 / 换 iOS 客户端时，这里和 .env.local 的
+	     VITE_GOOGLE_IOS_CLIENT_ID 必须一起改，只改一边的表现是「点了没反应」。 -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.996386780227-3q7tbo20p6r0744kn7ej0b0d5spl2ep7</string>
+			</array>
+		</dict>
+	</array>
 	<!-- 手动导出的 backup-*.json 写在 App 的 Documents 目录（src/lib/download.ts）。
 	     这两条让「文件」App 直接看到那个文件夹 —— 否则分享面板一划掉，
 	     导出的备份就只存在于一个用户看不见的沙盒目录里。 -->

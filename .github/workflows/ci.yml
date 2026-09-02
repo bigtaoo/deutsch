@@ -2,6 +2,11 @@ name: CI
 
 # 个人小项目，单一 workspace，没有 funny 那种 monorepo 的 docs-check/e2e/docker 分层——
 # 一个 job 把 typecheck + 单测 + 生产构建都跑完就够了。
+#
+# 例外是 server/（同步后端）：它有自己的 node_modules、自己的 vitest 配置，
+# 而且**根目录的 test:run 明确排掉了它**（在 jsdom 里跑 jose 会假红）。
+# 所以它必须单独一个 job，否则后端代码改了 CI 一声不吭。
+# 这个 job 绿了之后 deploy.yml 的 deploy-server 才会把它发到 VPS 上（见 deploy/README.md §6）。
 
 on:
   push:
@@ -37,3 +42,26 @@ jobs:
 
       - name: build
         run: npm run build
+
+  server:
+    name: sync backend (typecheck + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # 后端在生产里靠 Node 内建的类型擦除直接跑 .ts，需要 24+。
+          # 这里对齐生产，别用 22 —— 测试过了但线上起不来是最难查的一类。
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: install
+        run: npm --prefix server ci
+
+      - name: typecheck
+        run: npm --prefix server run typecheck
+
+      - name: test
+        run: npm --prefix server test
