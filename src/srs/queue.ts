@@ -63,10 +63,18 @@ export function buildReviewQueue(entries: VocabEntry[], opts: QueueOptions): Que
   return { queue, newCount: newCards.length, reviewCount: reviewCards.length, nextDueAt: upcoming };
 }
 
-/** FR-10.5：无音频卡要区分两种原因，给不同出口。 */
-export type CardAudioStatus = 'ok' | 'no-timestamp' | 'no-material';
+/**
+ * FR-10.5：无音频卡要区分原因，给不同出口。
+ *
+ * `preset-word` 是 FR-17 加的第四种：预置词库的卡没有课、没有原句、也没有真语料音频，
+ * 它的声音来自 Wiktionary 的真人录音或系统 TTS（都是**孤立词**发音）。
+ * 单独一档而不是并进 'ok'，是因为 FR-10.5 的要求是「不能静默降级」——
+ * 卡面必须说清这是孤立词发音、练不到连读，否则用户会以为自己在练真语料。
+ */
+export type CardAudioStatus = 'ok' | 'no-timestamp' | 'no-material' | 'preset-word';
 
 export function cardAudioStatus(entry: VocabEntry, hasMaterial: boolean): CardAudioStatus {
+  if (entry.preset) return 'preset-word';
   if (!entry.hasTimestamp) return 'no-timestamp';
   if (!hasMaterial) return 'no-material';
   return 'ok';

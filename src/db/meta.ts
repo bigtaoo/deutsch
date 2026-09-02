@@ -10,6 +10,9 @@ export const DEFAULT_SETTINGS: Settings = {
   playbackRate: 1.0,
   dictationStrictCase: true,
   autoAlignOnImport: true,
+  // FR-17.4：默认从第 4 档（3001–6000 名）取预置词 —— 理由见 models.ts 里那段注释。
+  presetBand: 4,
+  onlineDictFallback: true,
 };
 
 export async function getSettings(): Promise<Settings> {

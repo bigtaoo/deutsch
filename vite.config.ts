@@ -64,6 +64,11 @@ export default defineConfig(({ mode }) => {
             }),
           ]),
     ],
+    // 端口听 PORT 环境变量。Vite 默认不读它，自己在 5173 被占时递增 ——
+    // 而外部工具（预览面板、脚本）是按它分配的那个端口来找服务器的，
+    // 递增之后两边就对不上，症状是「服务起来了但打不开」。
+    server: { port: Number(process.env.PORT) || 5173 },
+
     resolve: {
       alias: {
         '@': path.resolve(import.meta.dirname, './src'),

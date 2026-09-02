@@ -4,12 +4,13 @@
 //   L3 去手动导入（永不删除的地板）
 // DW 改版会打掉 L1/L2，那时 L3 的按钮仍然在这里，指向的代码路径一行都没变。
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { navigate } from '@/app/router';
 import { getMeta, putMeta } from '@/db/meta';
 import { SOURCES, type SourceDefinition } from '@/sources/registry';
 import { fetchFeed, parseLessonId, type FeedItem } from '@/sources/dw/adapter';
 import { acceptNewManuscript, importFromDw, rehydrateLesson, type ImportProgress } from '@/sources/importLesson';
+import { backfillRecent, BACKFILL_LIMITS, type BackfillProgress } from '@/sources/backfill';
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { Banner, Button, EmptyState, Hint, Section, formatBytes } from '@/components/ui';
@@ -91,8 +92,7 @@ export function SourcesPage() {
                 <FeedRow key={item.lessonId} item={item} imported={importedIds.has(item.lessonId)} />
               ))}
             </ul>
-            {/* R-3 / FR-13.10：没有「一键导入全部」。既是礼貌，也是防止灌进 100 期后一篇不学。 */}
-            <Hint>一次导入一期。没有批量导入 —— 那既不礼貌，也不会让你多学一篇。</Hint>
+            <BackfillPanel items={feed.items} importedIds={importedIds} />
           </>
         ) : (
           <EmptyState>还没有列表。点「刷新列表」拉一次 RSS。</EmptyState>
@@ -312,5 +312,82 @@ function RehydratePanel() {
         ))}
       </ul>
     </Section>
+  );
+}
+
+/**
+ * FR-13.12：回填最近几期。冷启动用 —— 一次导几期旧刊，
+ * 它们的 Glossar 候选词（FR-14）就是一批**带真语料**的生词：
+ * 有德德释义、有语境句、有真人朗读。FR-17 的预置词库这三样都给不了。
+ *
+ * **与 R-3 的关系写在 `src/sources/backfill.ts` 头部**，不在这里重复。
+ * 界面上只需要三件事到位：期数有上限且没有「全部」、能停、进度看得见。
+ */
+function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds: ReadonlySet<string> }) {
+  const [progress, setProgress] = useState<BackfillProgress | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const stopRef = useRef(false);
+
+  const pending = items.filter((i) => !importedIds.has(i.lessonId)).length;
+
+  const run = async (limit: number) => {
+    stopRef.current = false;
+    setResult(null);
+    setProgress({ index: 0, total: Math.min(limit, pending), title: '' });
+    const outcome = await backfillRecent({
+      items,
+      importedIds,
+      limit,
+      onProgress: setProgress,
+      shouldStop: () => stopRef.current,
+    });
+    setProgress(null);
+    const parts = [`导入 ${outcome.imported.length} 期`];
+    if (outcome.withoutAudio.length) parts.push(`其中 ${outcome.withoutAudio.length} 期没拿到音频（课程已建，可稍后补齐）`);
+    if (outcome.failed.length) parts.push(`${outcome.failed.length} 期失败：${outcome.failed.map((f) => f.title).join('、')}`);
+    if (outcome.stopped) parts.push('（你停下的）');
+    setResult(parts.join('，') + '。');
+  };
+
+  if (pending === 0) {
+    return <Hint>列表里的期次都已经导入过了。</Hint>;
+  }
+
+  return (
+    <div className="space-y-2 border-t border-neutral-100 pt-3">
+      <p className="text-sm">
+        <b>回填最近几期</b>
+        <span className="ml-2 text-neutral-500">列表里还有 {pending} 期没导入</span>
+      </p>
+      <p className="text-xs text-neutral-500">
+        导进来之后每期的 Glossar 候选词就能一键接受成生词 —— 那些词带德语释义、带语境句、带真人朗读，
+        比预置词库的孤立词发音有用得多。<b>不接受候选词的话，导入本身不会往生词本里加任何东西。</b>
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {BACKFILL_LIMITS.map((n) => (
+          <Button key={n} disabled={progress !== null} onClick={() => void run(n)}>
+            回填 {n} 期
+          </Button>
+        ))}
+        {progress && (
+          <>
+            <span className="text-sm text-neutral-600">
+              第 {progress.index}/{progress.total} 期
+              {progress.step ? `（${{ page: '取文稿', audio: '取音频', saving: '落库', done: '完成' }[progress.step]}）` : ''}
+              {progress.title ? ` · ${progress.title.slice(0, 28)}` : ''}
+            </span>
+            <Button variant="danger" onClick={() => { stopRef.current = true; }}>
+              停
+            </Button>
+          </>
+        )}
+      </div>
+      <p className="text-xs text-neutral-400">
+        串行、每次出网间隔 ≥ 1 秒，只从上面这份已拉到的列表里取 —— 不翻页、不爬归档。
+        <b>没有「全部」这个选项</b>，最多 {Math.max(...BACKFILL_LIMITS)} 期（§3.1.1 R-3）。
+        「停」会停在期与期之间，不留半篇课程。
+      </p>
+      {result && <Hint tone="ok">{result}</Hint>}
+    </div>
   );
 }

@@ -31,6 +31,11 @@ backup-*.json
 # ORT 的 wasm 不在这里 —— 它走 Vite ?url，构建时自动进 dist/assets/。
 public/models/
 
+# 词典的**源**文件（FR-16）：de.sqlite3 一份就 1GB。不入库，npm run build:dict 会重新下。
+# 注意 public/dict/ 里的**产物**是入库的 —— 它只有几 MB，换来的是 CI 完全不必碰这 1GB。
+# 排除标准跟 public/models/ 是同一条：按体积，不是按原则。
+.cache/
+
 # 原生签名材料。ios/ 与 android/ 两个工程本身入库（它们有手写的改动：Info.plist 的
 # 权限说明、AppDelegate 的音频会话、build.gradle 的签名配置），但**密钥一律不入库** ——
 # CI 从 secrets 里解出来用。生成方法见 .github/workflows/release-android.yml 头部。

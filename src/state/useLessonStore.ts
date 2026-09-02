@@ -166,6 +166,10 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       const entries = await getVocabEntriesByLesson(lessonId);
       await Promise.all(
         entries.map(async (entry) => {
+          // 预置卡没有 sentenceIndex（FR-17）。它压根不属于任何课程，
+          // 本来也不会出现在 getVocabEntriesByLesson 的结果里（by-lessonId 索引
+          // 跳过缺字段的记录），但判一下比依赖索引的这个行为稳。
+          if (entry.sentenceIndex === undefined) return;
           const mapped = indexMap.get(entry.sentenceIndex);
           if (mapped === undefined || mapped === entry.sentenceIndex) return;
           await putVocabEntry({ ...entry, sentenceIndex: mapped, updatedAt: Date.now() });

@@ -9,6 +9,7 @@ import { QrScanner } from '@/components/QrScanner';
 import type { BackupFile, MergeResult, MergeSummary } from '@/backup/types';
 import type { RepoRef } from '@/github/repo';
 import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
+import { DictSection } from './settings/DictSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { MMS_FA, LOCAL_MODEL_PATH, PLAN_LADDER, hasLocalWeights, pickDevice } from '@/align/config';
 import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
@@ -596,6 +597,7 @@ export function SettingsPage() {
     <div className="mx-auto max-w-2xl space-y-4">
       <h1 className="text-xl font-bold">设置</h1>
       <StorageSection />
+      <DictSection />
       <AlignBackendSection />
       <ConnectSection />
       <RepoSection />

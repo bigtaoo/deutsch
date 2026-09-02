@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:native": "tsc -b && vite build --mode native",
     "stage:align": "node scripts/stage-align-assets.mjs",
+    "build:dict": "node scripts/build-dict.mjs",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",

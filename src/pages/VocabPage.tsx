@@ -8,6 +8,7 @@ import { href } from '@/app/router';
 import { useLessonStore } from '@/state/useLessonStore';
 import { needsGender, useVocabStore } from '@/state/useVocabStore';
 import { Button, EmptyState, Hint } from '@/components/ui';
+import { PresetPanel } from './vocab/PresetPanel';
 import type { VocabEntry } from '@/types/models';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重学中'] as const;
@@ -22,7 +23,7 @@ export function VocabPage() {
   const filtered = useMemo(
     () =>
       entries
-        .filter((e) => !lessonFilter || e.lessonId === lessonFilter)
+        .filter((e) => (lessonFilter === 'preset' ? Boolean(e.preset) : !lessonFilter || e.lessonId === lessonFilter))
         .filter((e) => stateFilter === '' || String(e.fsrs.state) === stateFilter)
         .sort((a, b) => a.fsrs.due - b.fsrs.due),
     [entries, lessonFilter, stateFilter],
@@ -41,7 +42,8 @@ export function VocabPage() {
           value={lessonFilter}
           onChange={(e) => setLessonFilter(e.target.value)}
         >
-          <option value="">全部课程</option>
+          <option value="">全部来源</option>
+          <option value="preset">预置词库</option>
           {lessons.map((l) => (
             <option key={l.id} value={l.id}>{l.title}</option>
           ))}
@@ -57,6 +59,8 @@ export function VocabPage() {
           ))}
         </select>
       </div>
+
+      <PresetPanel />
 
       {missingGender > 0 && (
         <Hint tone="warn">
@@ -119,16 +123,29 @@ function Row({
           {entry.surface}
           {entry.plural && <span className="ml-2 text-sm text-neutral-500">{entry.plural}</span>}
           {entry.suspended && <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">已暂停</span>}
-          {!entry.hasTimestamp && (
-            <span className="ml-2 rounded bg-amber-100 px-1.5 text-xs text-amber-800" title="来源句没有时间戳">
-              无音频卡
+          {entry.preset ? (
+            <span
+              className="ml-2 rounded bg-sky-100 px-1.5 text-xs text-sky-800"
+              title={`预置词库第 ${entry.preset.band} 档第 ${entry.preset.rank} 名（词频档，不是 CEFR 等级）`}
+            >
+              预置 第{entry.preset.band}档
             </span>
+          ) : (
+            !entry.hasTimestamp && (
+              <span className="ml-2 rounded bg-amber-100 px-1.5 text-xs text-amber-800" title="来源句没有时间戳">
+                无音频卡
+              </span>
+            )
           )}
         </p>
         <p className="text-sm">{entry.meaning ?? <span className="text-neutral-400">（释义待填）</span>}</p>
-        <p className="text-sm text-neutral-500">{entry.contextSentence}</p>
+        {entry.contextSentence && <p className="text-sm text-neutral-500">{entry.contextSentence}</p>}
         <p className="text-xs text-neutral-400">
-          {lessonTitle ? (
+          {entry.preset ? (
+            // 预置卡没有出处课程，也没有原句。如实写出来，不要显示「（课程已删除）」
+            // —— 那会让人以为丢了数据。
+            '预置词库（孤立词发音）'
+          ) : lessonTitle && entry.lessonId ? (
             <a className="hover:underline" href={href({ name: 'lesson', lessonId: entry.lessonId, tab: 'study' })}>
               《{lessonTitle}》
             </a>

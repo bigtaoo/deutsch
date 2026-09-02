@@ -1,0 +1,53 @@
+{
+  "formatVersion": 1,
+  "buckets": 256,
+  "words": 153040,
+  "forms": 304957,
+  "decks": [
+    {
+      "id": 1,
+      "label": "最常见 1–500",
+      "count": 500
+    },
+    {
+      "id": 2,
+      "label": "501–1500",
+      "count": 1000
+    },
+    {
+      "id": 3,
+      "label": "1501–3000",
+      "count": 1500
+    },
+    {
+      "id": 4,
+      "label": "3001–6000",
+      "count": 3000
+    },
+    {
+      "id": 5,
+      "label": "6001–10000",
+      "count": 4000
+    },
+    {
+      "id": 6,
+      "label": "10000 名以后",
+      "count": 7313
+    }
+  ],
+  "attribution": [
+    {
+      "what": "词条、性、IPA、复数、德语释义、英译、中译",
+      "source": "WikDict (wikdict.com)，数据源自 Wiktionary 经 DBnary",
+      "license": "CC BY-SA 4.0",
+      "url": "https://www.wikdict.com/"
+    },
+    {
+      "what": "口语词频（用于分档）",
+      "source": "hermitdave/FrequencyWords，OpenSubtitles 语料",
+      "license": "MIT",
+      "url": "https://github.com/hermitdave/FrequencyWords"
+    }
+  ],
+  "note": "档位是口语词频名次，不是 CEFR 等级。官方 CEFR 词表只有 A1/A2/B1 且有版权，理由见 scripts/build-dict.mjs 头部。"
+}

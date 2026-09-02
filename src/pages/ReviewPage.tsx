@@ -13,6 +13,7 @@ import { toClozeSegments } from '@/lesson/tokens';
 import { buildReviewQueue, cardAudioStatus } from '@/srs/queue';
 import { formatInterval, previewIntervals, review, type ReviewRating } from '@/srs/fsrs';
 import { backupVocabNow } from '@/github/backupTrigger';
+import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dict/audio';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
@@ -103,7 +104,12 @@ export function ReviewPage() {
         {position + 1} / {queue.length} · 新卡 {breakdown.newCount} · 复习 {breakdown.reviewCount}
       </p>
 
-      <CardFace entry={current} lesson={lesson} hasMaterial={Boolean(caches[current.lessonId]?.hasAudio)} revealed={revealed} />
+      <CardFace
+        entry={current}
+        lesson={lesson}
+        hasMaterial={Boolean(current.lessonId && caches[current.lessonId]?.hasAudio)}
+        revealed={revealed}
+      />
 
       {/* FR-10.7：手机端按钮在拇指可达区 —— 评分区固定在底部，不跟着卡片长度浮动 */}
       <div className="mt-auto space-y-2">
@@ -145,10 +151,13 @@ function CardFace({
   revealed: boolean;
 }) {
   const audioStatus = cardAudioStatus(entry, hasMaterial);
-  const sentence = lesson?.sentences[entry.sentenceIndex];
+  // 预置卡（FR-17）没有 sentenceIndex —— 它不来自任何课程。
+  const sentence = entry.sentenceIndex === undefined ? undefined : lesson?.sentences[entry.sentenceIndex];
   const range = sentence && lesson ? resolveRange(lesson.sentences, sentence.index, lesson.audioDuration) : null;
 
   const [playable, setPlayable] = useState(false);
+  /** 预置卡的音源（FR-17.7）。卡面必须说清是真人还是合成 —— 见下面那段。 */
+  const [wordSource, setWordSource] = useState<WordAudioSource | 'loading'>('loading');
 
   // 正面自动播一次（FR-10.2）。每张卡都要重新 load —— 相邻两张卡多半来自不同课程。
   useEffect(() => {
@@ -168,8 +177,51 @@ function CardFace({
     return () => { cancelled = true; audioPlayer.pause(); };
   }, [entry.id, audioStatus, lesson?.id, range?.start, range?.end]);
 
+  // 预置卡（FR-17）：真人录音优先，没有就退 TTS。
+  //
+  // 走同一个全局单例 `<audio>`（键前缀 `word:`）而不是 new Audio()：§3.2 记着
+  // iOS 只让「用户手势链」上的元素开始播放，每张卡新建一个元素的话第二张起就静默被拒。
+  const playWord = useMemo(
+    () => async () => {
+      if (!entry.preset) return 'none' as WordAudioSource;
+      const blob = await ensureWordAudio(entry.surface);
+      if (blob) {
+        await audioPlayer.load(`word:${entry.surface}`, blob);
+        await audioPlayer.play(0).catch(() => {});
+        return 'human' as WordAudioSource;
+      }
+      return speak(entry.surface) ? ('tts' as WordAudioSource) : ('none' as WordAudioSource);
+    },
+    [entry.preset, entry.surface],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (audioStatus !== 'preset-word') return;
+    setWordSource('loading');
+    void (async () => {
+      // 先只判**有没有**音源再播：把「查」和「播」并成一步的话，
+      // iOS 拒绝自动播放时会被当成「没有音源」，卡面就会错报成纯文本卡。
+      const blob = await ensureWordAudio(entry.surface).catch(() => undefined);
+      if (cancelled) return;
+      const source: WordAudioSource = blob ? 'human' : germanVoice() ? 'tts' : 'none';
+      setWordSource(source);
+      if (blob) {
+        await audioPlayer.load(`word:${entry.surface}`, blob);
+        if (!cancelled) await audioPlayer.play(0).catch(() => {});
+      } else if (source === 'tts' && !cancelled) {
+        speak(entry.surface);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      audioPlayer.pause();
+      if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+    };
+  }, [entry.id, entry.surface, audioStatus]);
+
   const clozeText = useMemo(() => {
-    if (!sentence) return entry.contextSentence;
+    if (!sentence) return entry.contextSentence ?? '';
     const blank = sentence.blanks.find((b) => b.vocabEntryId === entry.id);
     if (!blank) return sentence.text;
     return toClozeSegments(sentence.text, [blank.ranges])
@@ -183,6 +235,31 @@ function CardFace({
         <Button disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)}>
           ▶ 重播句子
         </Button>
+      ) : audioStatus === 'preset-word' ? (
+        // FR-17.7：预置卡的正面**只有声音，没有文字**。
+        // 给了文字这张卡就变成「看词回忆意思」—— 那是生产方向的卡，
+        // 而这个应用存在的理由是训练听觉识别（听到 /ˈtsuːfɐˌzɪçt/ 反应过来是 Zuversicht）。
+        <div className="space-y-2">
+          <Button disabled={wordSource === 'loading' || wordSource === 'none'} onClick={() => void playWord()}>
+            ▶ 再听一次
+          </Button>
+          {wordSource === 'none' ? (
+            // FR-10.5：绝不静默降级。真人音没有、系统又没有德语嗓音时，
+            // 这张卡确实只能看文字 —— 那就明说，并且把词显示出来（否则卡面是空的）。
+            <Banner tone="warn">
+              <p>
+                这张卡没有声音：Wiktionary 上没有 <b>{entry.surface}</b> 的录音，系统里也没有德语嗓音。
+                只能当文字卡用。
+              </p>
+            </Banner>
+          ) : (
+            <p className="text-xs text-neutral-500">
+              {wordSource === 'human' ? '真人录音（Wiktionary，CC BY-SA）' : wordSource === 'tts' ? '系统合成音' : '取音频中…'}
+              {' · '}
+              <span className="text-neutral-400">孤立词发音，练不到连读 —— 那要靠课程里的真语料</span>
+            </p>
+          )}
+        </div>
       ) : (
         // FR-10.5：两种无音频原因给不同出口，绝不静默降级成纯文本卡
         <Banner tone="warn">
@@ -209,7 +286,13 @@ function CardFace({
         </Banner>
       )}
 
-      <p className="text-lg leading-loose">{clozeText}</p>
+      {clozeText ? (
+        <p className="text-lg leading-loose">{clozeText}</p>
+      ) : (
+        // 预置卡没有原句。未翻面时留白（正面只有声音）；
+        // 没有任何音源时上面那条 Banner 已经把词写出来了，这里不必再来一遍。
+        !revealed && wordSource !== 'none' && <p className="py-6 text-center text-sm text-neutral-400">听音辨词</p>
+      )}
 
       {revealed && (
         <div className="space-y-2 border-t border-neutral-200 pt-4">
@@ -219,8 +302,16 @@ function CardFace({
             {entry.plural && <span className="ml-2 text-base text-neutral-500">{entry.plural}</span>}
           </p>
           <p className="text-base">{entry.meaning ?? <span className="text-neutral-400">（释义还没填）</span>}</p>
-          <p className="text-sm text-neutral-500">{sentence?.text ?? entry.contextSentence}</p>
-          {lesson && <p className="text-xs text-neutral-400">出自《{lesson.title}》</p>}
+          {(sentence?.text ?? entry.contextSentence) && (
+            <p className="text-sm text-neutral-500">{sentence?.text ?? entry.contextSentence}</p>
+          )}
+          {entry.ipa && <p className="text-sm text-neutral-400">[{entry.ipa}]</p>}
+          {lesson && !entry.preset && <p className="text-xs text-neutral-400">出自《{lesson.title}》</p>}
+          {entry.preset && (
+            <p className="text-xs text-neutral-400">
+              预置词库 · 口语词频第 {entry.preset.band} 档第 {entry.preset.rank} 名（词频档，不是 CEFR 等级）
+            </p>
+          )}
         </div>
       )}
     </div>

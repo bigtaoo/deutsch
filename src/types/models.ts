@@ -49,13 +49,30 @@ export interface Blank {
 export interface VocabEntry {
   id: string;
   surface: string;
-  lemma?: string; // V2
+  lemma?: string; // V2 → FR-16 落地后由内置词典填
   gender?: 'm' | 'f' | 'n';
   plural?: string;
   meaning?: string;
-  contextSentence: string; // 原句，只存本地，永不进 ShareablePackage
-  lessonId: string;
-  sentenceIndex: number;
+  /**
+   * 音标（FR-16.3）。由内置词典填，人可以改。
+   * 单独存一个字段而不是塞进 meaning：这个应用的痛点就是**听觉识别**，
+   * 「这串音对应哪个词」是卡背上最该看见的一行，不该混在释义里。
+   */
+  ipa?: string;
+  // ══ 来源：课程 或 预置词库（FR-17）══
+  // 这三个字段**只有课程来的词条才有**。改成可选而不是给预置卡填 '' / -1，
+  // 是为了让 TypeScript 逼着每个读它们的地方显式处理「没有原句」这件事 ——
+  // 哨兵值只会把问题推到运行时，变成卡面上一句空白的原句。
+  contextSentence?: string; // 原句，只存本地，永不进 ShareablePackage
+  lessonId?: string;
+  sentenceIndex?: number;
+  /**
+   * FR-17：这张卡来自预置词库，不来自任何课程。
+   * `band` 是词频档（**不是 CEFR 等级**，见 FR-17.2），`rank` 是档内名次。
+   * 释义/性/复数在建卡时就从内置词典拷进上面那几个字段了 ——
+   * 词典是缓存层、可重建，而**复习过的卡不可重建**，所以卡自己必须是完整的（§2.3）。
+   */
+  preset?: { band: number; rank: number };
   dwKnowledgeId?: string; // 来自 Glossar 候选（FR-14）；也用于判断候选是否已接受
   hasTimestamp: boolean; // 来源句是否有 startTime（FR-10.5）
   suspended: boolean; // 暂停复习
@@ -90,6 +107,14 @@ export interface Settings {
   // FR-15：DW 自动导入后立刻跑一遍自动打点。默认开 ——
   // 「下载完就能直接练」是这个功能存在的理由，默认关掉等于没做。
   autoAlignOnImport: boolean;
+  /**
+   * FR-17.4：从哪一档词频开始取预置词。默认 **4**（3001–6000 名）。
+   * 不默认第 1 档：前三档合起来约三千词，C1 的人全认识，
+   * 默认从那里开始等于让人点几千次「太简单」才挖到有用的地方。
+   */
+  presetBand: number;
+  /** FR-16.5：内置词典查不到时，允许联网查 de.wiktionary 补齐。默认开。 */
+  onlineDictFallback: boolean;
   lastBackupAt?: number; // 备份提醒（FR-11.4 / FR-11.12）
 }
 

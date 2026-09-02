@@ -26,6 +26,11 @@ export function getDB(): Promise<IDBPDatabase<AppDBSchema>> {
         if (!db.objectStoreNames.contains('audioBlobs')) {
           db.createObjectStore('audioBlobs');
         }
+        // v2：预置卡的发音缓存（FR-17.6）。upgrade 整体是幂等的 ——
+        // 每个 store 都自带 contains 判断，所以从 v1 升上来只会建这一个。
+        if (!db.objectStoreNames.contains('wordAudio')) {
+          db.createObjectStore('wordAudio');
+        }
       },
     });
   }
