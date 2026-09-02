@@ -1,6 +1,10 @@
 name: deploy
 
-# 发布到 Cloudflare Workers 静态资源，对外域名 d.gamestao.com。
+# 两个部署目标，同一个触发条件（CI 在 main 上跑绿）：
+#   deploy         前端 → Cloudflare Workers 静态资源，对外域名 d.gamestao.com
+#   deploy-server  同步后端 → 自己那台 VPS 上的 docker（sync.gamestao.com）
+# 两者互不依赖，谁失败都不影响另一个 —— 前端和后端本来就可以各自单独上线
+# （API 是加法式演进的：新前端配旧后端最多是某个新功能不工作，不会把数据弄坏）。
 # 部署方式参考同账号下 funny 项目的 animator-deploy.yml（纯静态资源、无 Worker 脚本的最简形态）。
 #
 # 触发：CI 在 main 上跑成功之后（workflow_run），或手动 Run。
@@ -14,8 +18,14 @@ name: deploy
 # 需要在仓库 Settings → Secrets and variables → Actions 配置：
 #   Secrets  CLOUDFLARE_API_TOKEN   —— 至少需要 Workers Scripts:Edit（账号级）
 #            CLOUDFLARE_ACCOUNT_ID  —— Cloudflare 账号 ID
-#   Variables DEPLOY_ENABLED = true —— 开关；不设置时这个 job 直接跳过，
-#             避免密钥配置好之前每次 CI 后都跑一次必然失败的部署
+#            SYNC_DEPLOY_KEY        —— 部署 VPS 用的 SSH 私钥（本地留档在 D:\cloud，
+#                                      因为 Secret 只写不可读）
+#   Variables DEPLOY_ENABLED = true        —— 前端部署开关
+#             SERVER_DEPLOY_ENABLED = true —— 后端部署开关
+#             SYNC_SSH_HOST / SYNC_SSH_USER / SYNC_SSH_KNOWN_HOSTS
+#             SYNC_API_BASE / GOOGLE_WEB_CLIENT_ID / GOOGLE_IOS_CLIENT_ID
+#                                      —— 前端的构建期变量，见下面 build 步骤的注释
+#   两个开关都是「不设置就跳过」：避免密钥配好之前每次 CI 之后都跑一次必然失败的部署
 
 on:
   workflow_run:
@@ -50,6 +60,15 @@ jobs:
         run: npm ci
 
       - name: build
+        # 同步后端的地址与 Google 客户端 ID 是**构建期**注入的（见 .env.example）。
+        # 不给的话构建出来的包里同步整块是关的 —— 而且不会报错，只在设置页显示
+        # 「这个构建没有配置同步服务器」，很容易被当成代码坏了。
+        # 放 Variables 不放 Secrets：客户端 ID 本来就会原样出现在下发的 JS 里，
+        # 它不是秘密（秘密是服务器那边的 SESSION_SECRET，那个不进这个仓库）。
+        env:
+          VITE_SYNC_API_BASE: ${{ vars.SYNC_API_BASE }}
+          VITE_GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
+          VITE_GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
         run: npm run build
 
       # 用 npx 直接调 wrangler（不用 wrangler-action），报错原样可见。版本与 funny 项目锁一致，
@@ -59,3 +78,59 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx -y wrangler@4.104.0 deploy
+
+  # ── 同步后端 ────────────────────────────────────────────────────────────
+  # 这个 job 拿到的那把密钥**不能登录那台机器**：它在服务器的 authorized_keys 里
+  # 挂着 `command="~/deutsch-sync-ci-deploy.sh",restrict` 强制命令，
+  # 无论这里请求执行什么，sshd 只会运行那个脚本（脚本本体见 deploy/ci-deploy.sh 的注释，
+  # 它装在部署目标之外，所以一次部署改不了它自己）。
+  # 那台机器上还跑着公司的 wnet 栈，所以这一层收紧不是洁癖。
+  #
+  # 不按「server/ 有没有改」做路径过滤：`docker compose up -d --build` 是幂等的 ——
+  # 内容没变时镜像 ID 不变，compose 就不会重建容器。为省十几秒去引入
+  # 「判断改了什么」的逻辑，换来的是一类很难查的漏发。
+  deploy-server:
+    name: sync backend (VPS)
+    runs-on: ubuntu-latest
+    if: ${{ vars.SERVER_DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: deploy over ssh
+        env:
+          DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
+          SSH_HOST: ${{ vars.SYNC_SSH_HOST }}
+          SSH_USER: ${{ vars.SYNC_SSH_USER }}
+          SSH_KNOWN_HOSTS: ${{ vars.SYNC_SSH_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          install -m 700 -d ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # 固定主机密钥，**不用 StrictHostKeyChecking=no** —— 那等于每次部署都接受
+          # 任何自称是这台机器的主机，把私钥和整份载荷交给它。
+          echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          # 载荷走 stdin：服务器端那个强制命令从 stdin 读 tar.gz。
+          # 不带 node_modules / data / .env —— 依赖在服务器上装，数据和密钥不出那台机器。
+          tar czf - --exclude=node_modules --exclude=data --exclude=.env -C server . |
+            ssh -T -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$SSH_USER@$SSH_HOST"
+
+      - name: verify from the outside
+        # 上一步已经在容器里问过 healthz 了；这一步走公网，
+        # 顺带证明 DNS、Caddy、证书这三段也没在这次部署里坏掉。
+        env:
+          API_BASE: ${{ vars.SYNC_API_BASE }}
+        run: |
+          set -eu
+          for i in $(seq 1 10); do
+            if curl -fsS --max-time 10 "$API_BASE/v1/healthz"; then
+              echo
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "公网 healthz 不通" >&2
+          exit 1

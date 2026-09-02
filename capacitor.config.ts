@@ -25,8 +25,10 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     // iOS 固定用 capacitor://localhost；这里只影响 Android 的 scheme。
-    // 必须是 https —— IndexedDB 的持久化配额和 getUserMedia（FR-11.5 扫码配对）
-    // 都只在安全上下文里给，http://localhost 在 WebView 里不算。
+    // 必须是 https —— IndexedDB 的持久化配额只在安全上下文里给，
+    // http://localhost 在 WebView 里不算。
+    // （原注释还提到 getUserMedia，那是给 FR-11.18 扫码配对用的，
+    // 那条需求已随 GitHub 备份一起删掉，见 SPEC §0 变更 25。）
     androidScheme: 'https',
   },
   ios: {

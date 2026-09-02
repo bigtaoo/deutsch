@@ -3,8 +3,8 @@ import { href, useRoute, useScrollToTopOnRouteChange } from '@/app/router';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { useBackupStore } from '@/state/useBackupStore';
-import { drainBackupQueue, setBackupHooks, startBackupAutoRetry } from '@/github/backupTrigger';
+import { useSyncStore } from '@/state/useSyncStore';
+import { drainSyncQueue, setSyncHooks, startSyncAutoRetry } from '@/sync/trigger';
 import { audioPlayer } from '@/audio/player';
 import { hideNativeSplash } from '@/platform/native';
 import { useAlignStore } from '@/state/useAlignStore';
@@ -37,7 +37,7 @@ function App() {
       useSettingsStore.getState().load(),
       useLessonStore.getState().load(),
       useVocabStore.getState().load(),
-      useBackupStore.getState().hydrate(),
+      useSyncStore.getState().hydrate(),
     ]);
     // 原生壳的启动图等这四张表读完再关（capacitor.config.ts 里 launchAutoHide: false）。
     // allSettled 而不是 all：某张表读挂了也得关，否则用户对着启动图干等。
@@ -48,10 +48,21 @@ function App() {
     // 必须在这里、而且只做一次 —— detectCrash() 会把那条记录归档，第二次调用就看不到了。
     useAlignStore.getState().init();
 
-    // FR-11.10：备份状态变化时刷新常驻状态条；网络恢复时自动重推排队项。
-    setBackupHooks({ onChange: () => void useBackupStore.getState().refreshPendingCount() });
-    void drainBackupQueue();
-    const stopRetry = startBackupAutoRetry();
+    // FR-11.10：同步状态变化时刷新常驻状态条；网络恢复时自动重推排队项。
+    // onRemoteDataWritten：合并把另一台设备的数据写进了本地库，内存里的 store
+    // 得重读一遍 —— 否则界面上还是合并前的旧值，而用户什么提示都没有。
+    // 设置也在其中（§0 变更 28）：它同步之后，「另一台设备改的值」同样会走这条路进来。
+    setSyncHooks({
+      onChange: () => void useSyncStore.getState().refreshPendingCount(),
+      onRemoteDataWritten: () => {
+        void useLessonStore.getState().load();
+        void useVocabStore.getState().load();
+        void useSettingsStore.getState().load();
+      },
+      onSessionExpired: () => useSyncStore.getState().markSessionExpired(),
+    });
+    void drainSyncQueue();
+    const stopRetry = startSyncAutoRetry();
 
     return () => {
       stopRetry();

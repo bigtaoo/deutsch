@@ -11,7 +11,7 @@ import { toClozeSegments, type ClozeSegment } from '@/lesson/tokens';
 import { checkAnswer, verdictToRating, type DictationResult, type DiffPart } from '@/dictation/check';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
-import { backupVocabNow } from '@/github/backupTrigger';
+import { syncVocabNow } from '@/sync/trigger';
 import { review } from '@/srs/fsrs';
 import { Banner, Button, EmptyState } from '@/components/ui';
 import type { Lesson, LessonCache, Sentence } from '@/types/models';
@@ -63,7 +63,7 @@ export function DictationTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
         }}
         onNext={() => {
           if (position + 1 < queue.length) setPosition(position + 1);
-          else void backupVocabNow(); // FR-11.6：一轮做完就把 vocab.json 推上去
+          else void syncVocabNow(); // FR-11.6：一轮做完就把生词推上去
         }}
         isLast={position + 1 >= queue.length}
       />

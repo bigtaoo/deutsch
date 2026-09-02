@@ -15,7 +15,7 @@ import {
 } from '@/db/cache';
 import { getVocabEntriesByLesson, putVocabEntry } from '@/db/vocab';
 import { migrateGlossaryIntoLessons } from '@/db/migrate';
-import { scheduleLessonBackup } from '@/github/backupTrigger';
+import { scheduleLessonSync, syncLessonDeletion } from '@/sync/trigger';
 import { generateId } from '@/lib/id';
 import { manuscriptHash } from '@/lib/hash';
 import { readAudioDuration } from '@/audio/player';
@@ -93,7 +93,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       loaded: true,
     });
     // 搬完要推一次，否则这份数据永远留在这台设备上。
-    for (const id of changed) scheduleLessonBackup(id);
+    for (const id of changed) scheduleLessonSync(id);
   },
 
   createLesson: async (input) => {
@@ -136,7 +136,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       lessons: [lesson, ...get().lessons],
       caches: { ...get().caches, [id]: cache },
     });
-    scheduleLessonBackup(id);
+    scheduleLessonSync(id);
     return id;
   },
 
@@ -147,7 +147,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     // 表现就是「连按 Enter 打点，只有最后一下留下来了」。
     set({ lessons: get().lessons.map((l) => (l.id === next.id ? next : l)) });
     await putLesson(next);
-    scheduleLessonBackup(next.id);
+    scheduleLessonSync(next.id);
   },
 
   patchLesson: async (lessonId, updater) => {
@@ -161,6 +161,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     const caches = { ...get().caches };
     delete caches[id];
     set({ lessons: get().lessons.filter((l) => l.id !== id), caches });
+    // 远端也删掉，否则下次在另一台设备上恢复会把它原样拉回来。
+    void syncLessonDeletion(id);
   },
 
   updateSentences: async (lessonId, sentences, indexMap) => {

@@ -12,7 +12,7 @@ import { resolveRange } from '@/lesson/timing';
 import { toClozeSegments } from '@/lesson/tokens';
 import { buildReviewQueue, cardAudioStatus } from '@/srs/queue';
 import { formatInterval, previewIntervals, review, type ReviewRating } from '@/srs/fsrs';
-import { backupVocabNow } from '@/github/backupTrigger';
+import { syncVocabNow } from '@/sync/trigger';
 import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dict/audio';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
@@ -64,7 +64,7 @@ export function ReviewPage() {
     } else {
       setFinished(true);
       // FR-11.6：每次复习会话结束就推 vocab.json —— 不可重建的数据不过夜。
-      void backupVocabNow();
+      void syncVocabNow();
     }
   };
 

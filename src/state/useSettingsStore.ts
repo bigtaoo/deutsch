@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getSettings, putSettings, DEFAULT_SETTINGS } from '@/db/meta';
+import { scheduleSettingsSync } from '@/sync/trigger';
 import type { Settings } from '@/types/models';
 
 interface SettingsState {
@@ -24,5 +25,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = { ...get().settings, ...patch, updatedAt: Date.now() };
     await putSettings(next);
     set({ settings: next });
+    scheduleSettingsSync();
   },
 }));

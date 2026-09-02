@@ -17,7 +17,7 @@ import { createSentences } from '@/lesson/sentences';
 import { resegment } from '@/lesson/resegment';
 import { manuscriptHash } from '@/lib/hash';
 import { generateId } from '@/lib/id';
-import { scheduleLessonBackup } from '@/github/backupTrigger';
+import { scheduleLessonSync } from '@/sync/trigger';
 import { useLessonStore } from '@/state/useLessonStore';
 import { downloadAudio, fetchLesson, mapSpansToSentences, type DwLesson } from './dw/adapter';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence } from '@/types/models';
@@ -130,7 +130,7 @@ export async function importFromDw(
   if (audioBlob) await putAudioBlob(id, audioBlob);
   await Promise.all([putLesson(lesson), putLessonCache(cache)]);
   await useLessonStore.getState().load();
-  scheduleLessonBackup(id);
+  scheduleLessonSync(id);
 
   onProgress?.({ step: 'done' });
   return {
