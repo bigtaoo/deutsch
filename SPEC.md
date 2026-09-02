@@ -1052,6 +1052,24 @@ wasm 堆/GPU 一份。手机端要真的跑得动，只有两条路：换一个�
 装机应降到约 481MB，下一次出包时回写实测值。）
 超过 App Store 蜂窝下载的 200MB 门槛，装的时候要 Wi-Fi。
 
+**0.2.0 出包实测（2026-09-02，run 33661964392）**：6m51s，`UPLOAD SUCCEEDED`，
+**版本 0.2.0 构建号 4，IPA 400MB**（0.1.0 是 381MB —— 权重降了 72.3 MiB，
+内置词典加了 35MB，净 +19MB）。装机体积还没量。这是**第一个带同步的包**。
+
+**这一次撞了一道只有装上第三方插件才会出现的坑，第一次 archive 直接失败**（exit 65）：
+`xcodebuild` 命令行上的构建设置会套到**每一个** target，包括 SPM 依赖的包 target，
+而那些包不支持描述文件 —— `Alamofire_Alamofire does not support provisioning profiles`，
+一个包一条（GoogleSignIn / AppAuth / Facebook SDK / Alamofire / GoogleUtilities /
+Promises / GTM* 全都报）。**0.1.x 没撞上是因为当时 SPM 图里只有 Capacitor 自己的包**；
+Google 登录插件（`@capgo/capacitor-social-login`）才把这一大片带进来。
+修法是把真正的设置写进 App target 的 Release 配置，值用一个 Xcode 不认作签名设置的
+自定义变量（pbxproj 里 `PROVISIONING_PROFILE_SPECIFIER = "$(DEUTSCH_PROFILE_NAME)"`，
+workflow 只喂 `DEUTSCH_PROFILE_NAME`）—— 包 target 照样收到它但不解释它。
+副作用正好是想要的：本机用 Xcode 打开时变量是空的，`CODE_SIGN_STYLE = Automatic` 接手，
+开发机不需要装分发描述文件。
+**这条的形状值得记住：命令行上的构建设置没有「只给某个 target」这回事**，
+所以凡是只对 App target 成立的设置，都要走「pbxproj 里引用一个自定义变量」这条路。
+
 **「上传成功」到「手机上能装」之间还有两道**，原文只写了第一道：
 
 1. ASC 处理十几分钟 → `processingState` 变 `VALID`。
