@@ -70,7 +70,8 @@ export async function hasLocalWeights(config: AlignModelConfig): Promise<boolean
 }
 
 export type Device = 'webgpu' | 'wasm';
-export type Dtype = 'q4f16' | 'int8' | 'fp32';
+/** transformers.js 的 dtype 名，对应 onnx/model_<dtype>.onnx */
+export type Dtype = 'q4f16' | 'q4' | 'bnb4' | 'int8' | 'fp32';
 
 export interface DevicePlan {
   device: Device;
@@ -84,15 +85,35 @@ export interface DevicePlan {
  * （见 journal.ts 顶部那次事故），而崩溃是 try/catch 抓不到的。能做的只有
  * 「记住哪一档崩过，下次换一档」—— 阶梯就是给这件事用的。
  *
- * 两档的实际字节数（onnx-community/mms-300m-1130-forced-aligner-ONNX）：
- *   - model_q4f16.onnx  187.6 MiB  —— 需要 fp16，只有 WebGPU 路径支持
- *   - model_int8.onnx   302.6 MiB  —— WASM 唯一能跑的组合，单线程，慢一个量级
- * 也只有这两份进了 public/models/（scripts/stage-align-assets.mjs），所以阶梯只有两档：
- * 加第三档就意味着 IPA 再胖 200MB。
+ * ── 为什么第 2 档是 q4 而不是 int8（2026-09-02 实测改正）──
+ * 原来写的是 `wasm/int8`，理由是「WASM 唯一能跑的组合」。**那句话是错的**：
+ * 4-bit 那两份（q4 / bnb4）的算子在 wasm EP 上都有实现，实测都跑通了。
+ * 而 int8 那份根本跑不起来 —— 在 Windows/Chrome、32GB 内存的机器上，
+ * 光是加载就会让渲染进程被干掉，JS 侧一行报错都没有（302.6 MiB 的权重在 ORT 的
+ * wasm 堆里同时存在三份左右：JS 缓冲 + protobuf 解析 + 权重张量）。
+ * 也就是说「没有 WebGPU 的浏览器」以前是**必死**，不是「慢一个量级」。
+ *
+ * 这个仓库里各档的实际字节与实测结果（同一台机器、同一条 Worker 通路）：
+ *   - model_q4f16.onnx  187.6 MiB  ✅ 真实一课 8:05，45/45 句，26 秒。需要 fp16，只有 WebGPU 支持
+ *   - model_bnb4.onnx   212.2 MiB  ✅ wasm 跑通（25 秒音频 32 秒）
+ *   - model_q4.onnx     230.3 MiB  ✅ wasm 跑通（25 秒音频 36 秒，约 1.4× 实时）
+ *   - model_int8.onnx   302.6 MiB  💥 加载即被杀
+ *   - model_uint8 / model_quantized 同为 302.6 MiB，不必再试
+ * 选 q4 而不是更小的 bnb4：两者体积只差 8%，都在能跑的一侧，而 q4 走的是 ORT 自己的
+ * MatMulNBits，是 optimum / transformers.js 的默认 4-bit 通路 —— 出问题时可查的东西多得多。
+ * 若哪天 q4 也被杀，降到 bnb4 是现成的下一步（改这一行 + stage-align-assets.mjs）。
+ *
+ * 只有这两份进 public/models/（scripts/stage-align-assets.mjs），所以阶梯只有两档：
+ * 加第三档就意味着 IPA 再胖 200MB。顺带，换掉 int8 让随包权重从 490.2 MiB 降到 417.9 MiB。
+ *
+ * ── 手机上两档都不够 ──
+ * iPhone 13 实测两档都在「加载对齐模型」这一步被系统杀掉，而 q4f16 已经是这个模型
+ * **最小的一个变体**。所以降档在手机上救不了 —— 要么换个小一个数量级的模型，
+ * 要么把 emissions 那一半挪出 WebView（原生插件或远端，见 emissionMatrix.ts）。
  */
 export const PLAN_LADDER: DevicePlan[] = [
   { device: 'webgpu', dtype: 'q4f16' },
-  { device: 'wasm', dtype: 'int8' },
+  { device: 'wasm', dtype: 'q4' },
 ];
 
 /**

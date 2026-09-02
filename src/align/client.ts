@@ -10,10 +10,30 @@ import type { Lesson } from '@/types/models';
 import { applyTimings, type ApplyResult } from './apply';
 import { decodeToMono16k } from './decode';
 import { LOCAL_MODEL_PATH, MMS_FA, PLAN_LADDER, hasLocalWeights, pickPlan } from './config';
+import { emissionTransferables } from './emissionMatrix';
 import { probeRanged } from './rangedFetch';
 import { beginRun, finishRun, nextPlanStep, noteStage } from './journal';
 import type { AlignOutcome, AlignProgress } from './align';
-import type { AlignWorkerRequest, AlignWorkerResponse } from './worker';
+import type { AlignWorkerInput, AlignWorkerRequest, AlignWorkerResponse } from './worker';
+
+/**
+ * Worker 整个没了 —— 不是它抛的错，是它**被杀了**。
+ *
+ * 必须和普通抛错区分开，因为两者的后续处置相反：普通抛错（词表不对、音频没有可对齐的句子）
+ * 重试一次也是同样的结果；被杀说明这台设备跑不动这一档，**下次必须降档**。
+ * 而降档的判据来自黑匣子里的 `crashed` 计数（journal.crashedSteps），
+ * 所以这一类必须记成 crashed 而不是 error —— 否则第 2 档会被无限重试。
+ *
+ * 实测（2026-09-02，Windows/Chrome，32GB）：`wasm/int8` 那份 302.6 MiB 权重
+ * 在加载时就会让进程被干掉，JS 侧一行报错都没有。Worker 单独死就走到这里；
+ * 整个 tab 一起死则连这里都到不了，靠下次启动 detectCrash() 兜。
+ */
+export class AlignWorkerDeath extends Error {
+  constructor(message?: string) {
+    super(message || '对齐进程被系统杀掉了 —— 多半是加载权重时内存不够');
+    this.name = 'AlignWorkerDeath';
+  }
+}
 
 let worker: Worker | null = null;
 let nextId = 1;
@@ -48,13 +68,13 @@ export function cancelAlignment(): void {
 }
 
 /**
- * @param audio 已解好的单声道 16kHz 波形。它的 ArrayBuffer 会被 **transfer** 进 Worker
- *   （6 分钟音频是 24MB float32，拷一份没必要），所以调用方交出去之后不要再读它。
+ * @param input 喂波形（本机全程算）还是喂已经算好的 log-prob 矩阵（只跑 viterbi）。
+ *   两者底下那个 ArrayBuffer 都会被 **transfer** 进 Worker（音频 24MB、矩阵 3MB，
+ *   拷一份没必要），所以调用方交出去之后不要再读它。
  */
 export function runAlignment(
-  audio: Float32Array,
+  input: AlignWorkerInput,
   sentences: Lesson['sentences'],
-  plan: AlignWorkerRequest['plan'],
   onProgress?: (p: AlignProgress) => void,
   release = false,
 ): Promise<AlignOutcome> {
@@ -77,10 +97,11 @@ export function runAlignment(
     };
     const onError = (event: ErrorEvent) => {
       cleanup();
-      // Worker 整个挂了（多半是模型加载失败）——下次重新起一个，
+      // Worker 整个挂了 —— 下次重新起一个，
       // 不然后续每次调用都会往一个已死的 Worker 里 postMessage。
       terminateAlignWorker();
-      reject(new Error(event.message || '对齐 Worker 异常退出'));
+      // 空 message 的 ErrorEvent = 进程被外面干掉的，不是 JS 抛的。见 AlignWorkerDeath。
+      reject(new AlignWorkerDeath(event.message));
     };
     const cleanup = () => {
       running = false;
@@ -95,8 +116,13 @@ export function runAlignment(
     };
     w.addEventListener('message', onMessage);
     w.addEventListener('error', onError);
-    const request: AlignWorkerRequest = { id, audio, sentences, plan, release };
-    w.postMessage(request, [audio.buffer]);
+    const request: AlignWorkerRequest = { id, sentences, release, ...input };
+    w.postMessage(
+      request,
+      input.input === 'audio'
+        ? [input.audio.buffer as ArrayBuffer]
+        : emissionTransferables(input.emissions),
+    );
   });
 }
 
@@ -145,7 +171,17 @@ export async function alignLesson(
     // 解码必须在主线程（Web Audio 在 Worker 里不存在）。6 分钟 mp3 大约 1 秒，
     // 之后波形直接 transfer 进 Worker，主线程就空出来了。
     const audio = await decodeToMono16k(blob, MMS_FA.sampleRate);
-    const outcome = await runAlignment(audio, lesson.sentences, plan, report, release);
+    // ── 这里就是那道缝在应用层的位置 ──
+    // 今天只有一条：把波形交给 Worker，让本机 provider（emissions.ts）算完再对齐。
+    // 接原生插件或远端时，改的是这一行 —— 先拿到 EmissionMatrix，再用
+    // `{ input: 'emissions', emissions }` 进同一个 Worker 跑 viterbi。
+    // 下游（applyTimings → LessonCache → saveLesson → 备份）一行都不用动。
+    const outcome = await runAlignment(
+      { input: 'audio', audio, plan },
+      lesson.sentences,
+      report,
+      release,
+    );
 
     report({ stage: 'apply' });
     const applied = applyTimings(lesson.sentences, outcome.sentences, {
@@ -179,7 +215,11 @@ export async function alignLesson(
     return { ...applied, outcome };
   } catch (err) {
     // 正常抛错也要收尾：active 不清掉，下次启动会把这次误判成「被系统杀掉」。
-    finishRun('error', err instanceof Error ? err.message : String(err));
+    // 但 Worker 被杀**要**记成 crashed —— 那正是降档的判据（见 AlignWorkerDeath）。
+    finishRun(
+      err instanceof AlignWorkerDeath ? 'crashed' : 'error',
+      err instanceof Error ? err.message : String(err),
+    );
     if (release) terminateAlignWorker();
     throw err;
   }

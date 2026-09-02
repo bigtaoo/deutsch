@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { alignWindowed } from './windowed';
+import {
+  LONGEST_SENTENCE_CHARS,
+  SLOWEST_CHARS_PER_SECOND,
+  WINDOW_DEFAULTS,
+  alignWindowed,
+} from './windowed';
 import { forcedAlign } from './viterbi';
 
 const V = 16;
@@ -130,5 +135,30 @@ describe('alignWindowed', () => {
 
   it('空目标返回空结果', () => {
     expect(alignWindowed(new Float32Array(0), 0, V, new Int32Array(0)).spans).toEqual([]);
+  });
+});
+
+// ── 为什么这里钉的是「窗口装不装得下最长的句子」而不是钉住 6000 这个数 ──
+// 窗口太短的真实后果是逐窗漂移，最后把一堆 token 挤成「一句 50 字符/秒」
+// （2026-09-02 三课实测，数字记在 windowed.ts 的 WINDOW_DEFAULTS 上面）。
+// 那个失败**造不出可信的单测**：试过用合成矩阵复现，匀速矩阵漂 0；
+// 加了速率摆动仍然漂 0（合成的后验太「确定」，声学把一切钉死了）；
+// 把正确 token 的概率压到 0.25（比真实模型还差）才在 30 秒窗上漂出 144 帧，
+// 而 120 秒窗仍然是 0 —— 方向对，量级差太远，而且要 4000 个 token 才出得来，
+// 一条测试就把整个 suite 的时间翻倍。所以不留那条测试，只钉住这条**能解释那个数的不变量**：
+// 窗口必须装得下实测最长的句子还有余，否则「估歪的 token 数」就与「一整句」同量级。
+describe('窗口长度的下限', () => {
+  it('默认窗口装得下实测最长的句子，还留出一倍余量', () => {
+    const longestSentenceFrames =
+      (LONGEST_SENTENCE_CHARS / SLOWEST_CHARS_PER_SECOND) * 50;
+    // 一倍余量：窗口里至少要能同时放下「最长句 + 它前后的上下文」，
+    // 否则速率估计的误差没有地方被 tailDiscard 吸收。
+    expect(WINDOW_DEFAULTS.windowFrames).toBeGreaterThanOrEqual(longestSentenceFrames * 2);
+  });
+
+  it('最坏情况下的回溯缓冲仍然是手机能吃下的量级', () => {
+    // 缓冲 = windowFrames × (2×winTokens+1) 字节，而 winTokens 受 fullAlignCells 兜住 ——
+    // 收尾窗那一把是这条路径上最大的一次分配。
+    expect(WINDOW_DEFAULTS.fullAlignCells).toBeLessThanOrEqual(64 * 1024 * 1024);
   });
 });

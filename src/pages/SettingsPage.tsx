@@ -66,9 +66,9 @@ function StorageSection() {
 
 /**
  * 对齐后端诊断（FR-15）。存在的理由很具体：**IPA 里两份权重只会用到一份**
- * （`pickDevice()` 有 WebGPU 走 q4f16，退 WASM 走 int8），但装机 553MB 里
- * 490MB 是权重，砍掉没用的那份是最大的一笔。而「iOS 的 WKWebView 到底有没有
- * WebGPU」只能在真机上问，猜不出来 —— 所以把答案显示出来。
+ * （`pickPlan()` 有 WebGPU 走第 1 档，否则走第 2 档），而装机体积里绝大部分是权重，
+ * 砍掉没用的那份是最大的一笔。而「iOS 的 WKWebView 到底有没有 WebGPU」
+ * 只能在真机上问，猜不出来 —— 所以把答案显示出来。（问出来了：有，走 q4f16。）
  *
  * 顺便探每份权重在不在包里：砍完之后回来看这里就能确认砍对了。
  */
@@ -90,7 +90,9 @@ function AlignBackendSection() {
       }
       out.push(`平台：${await nativePlatform()}`);
       out.push(`权重来源：${(await hasLocalWeights(MMS_FA)) ? '随包（public/models/）' : 'HF CDN（首次用时下载）'}`);
-      for (const dtype of ['q4f16', 'int8'] as const) {
+      // 探的就是阶梯上那几档,而不是手写一份名单 ——
+      // 手写的那份已经漂过一次（第 2 档从 int8 换成 q4 时这里还在探一份压根不带的权重)。
+      for (const dtype of PLAN_LADDER.map((p) => p.dtype)) {
         const url = `${LOCAL_MODEL_PATH}${MMS_FA.modelId}/onnx/model_${dtype}.onnx`;
         const mark = dtype === next.dtype ? ' ← 下一次实际会加载这份' : '';
         out.push(`　model_${dtype}.onnx：${await probeSize(url)}${mark}`);
@@ -164,14 +166,14 @@ function AlignBackendSection() {
 }
 
 /**
- * 只要大小、不要正文 —— 权重有 300MB，真下下来会把这个页面卡死。
+ * 只要大小、不要正文 —— 权重有 200MB 量级，真下下来会把这个页面卡死。
  * 先试 HEAD；`capacitor://localhost` 的内建服务器不保证支持 HEAD，
  * 所以退到「只要第一个字节」的 Range 请求，从 content-range 的总长读大小。
  *
  * 一个真实的误报：文件不在时，SPA fallback（Cloudflare 与 vite dev 都会）回的是
  * **200 + index.html**，于是这里显示「1.1 KB」。而这一页的用途就是「确认哪份权重
  * 真的在包里」——「1.1 KB」比「不在包里」更糟，因为它看起来像个答案。
- * 所以任何 .onnx 小于 1MB 一律判成不在包里：真实的两份是 187MB 与 302MB，不存在中间地带。
+ * 所以任何 .onnx 小于 1MB 一律判成不在包里：真实的两份是 187MB 与 230MB，不存在中间地带。
  */
 const MIN_PLAUSIBLE_WEIGHTS_BYTES = 1024 * 1024;
 

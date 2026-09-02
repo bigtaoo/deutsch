@@ -1,5 +1,9 @@
-// 波形 → 帧级 log-prob。这是唯一需要浏览器运行时（WASM/WebGPU）的一层，
-// 因此单测只覆盖里面的纯函数（logSoftmaxInPlace / planChunks），模型本身靠手动跑真实素材验。
+// 波形 → 帧级 log-prob 的**本机实现**：`EmissionsProvider` 的第一个（目前唯一一个）实现，
+// 跑在浏览器运行时（WASM/WebGPU）上。产物的形状与那道缝的契约在 emissionMatrix.ts ——
+// 换地方算（原生插件、远端）就是换一个 provider，下游一行都不用改。
+//
+// 这是唯一需要浏览器运行时的一层，因此单测只覆盖里面的纯函数
+// （logSoftmaxInPlace / planChunks），模型本身靠手动跑真实素材验。
 //
 // ── 解码为什么不在这里 ──
 // **Web Audio API 在 Worker 里不存在**：AudioContext / OfflineAudioContext 只在主线程暴露。
@@ -22,6 +26,7 @@
 
 import { AutoModelForCTC, AutoProcessor, Tensor } from '@huggingface/transformers';
 import type { AlignModelConfig, DevicePlan } from './config';
+import type { EmissionMatrix, EmissionsProgress, EmissionsProvider } from './emissionMatrix';
 import { configureRuntime } from './runtime';
 
 export interface Chunk {
@@ -90,24 +95,6 @@ export function logSoftmaxInPlace(data: Float32Array, frames: number, vocabSize:
   }
 }
 
-export interface EmissionsProgress {
-  stage: 'model' | 'infer';
-  /** 0..1，仅 infer 阶段有意义 */
-  fraction?: number;
-  /** model 阶段：已下载字节 / 总字节 */
-  loaded?: number;
-  total?: number;
-}
-
-export interface Emissions {
-  logProbs: Float32Array;
-  frames: number;
-  vocabSize: number;
-  /** 音频总时长（秒），写回 Lesson.audioDuration 用 */
-  duration: number;
-  plan: DevicePlan;
-}
-
 type CtcModel = {
   (inputs: Record<string, Tensor>): Promise<{ logits: { data: Float32Array; dims: number[] } }>;
   dispose?: () => Promise<void>;
@@ -142,16 +129,17 @@ export async function disposeModel(): Promise<void> {
 }
 
 /**
- * @param audio 单声道、config.sampleRate 采样率的波形（由主线程的 decodeToMono16k 产出）
- * @param plan 用哪套后端。**由主线程决定**（client.ts）而不是这里自己探 ——
- *   崩溃降档要靠 localStorage 里的黑匣子，而 Worker 里没有 localStorage。
+ * 本机 provider。参数与返回值的含义见 emissionMatrix.ts 的 `EmissionsProvider`。
+ *
+ * 显式标注成 `EmissionsProvider` 而不是让它自己长出签名：这样签名一旦漂移，
+ * 编译期就红 —— 而不是等到接第二个 provider 时才发现两边对不上。
  */
-export async function computeEmissions(
+export const computeEmissions: EmissionsProvider = async (
   audio: Float32Array,
   config: AlignModelConfig,
   plan: DevicePlan,
   onProgress?: (p: EmissionsProgress) => void,
-): Promise<Emissions> {
+): Promise<EmissionMatrix> => {
   onProgress?.({ stage: 'model' });
   const { model, processor } = await loadModel(config, plan, onProgress);
 
@@ -194,6 +182,6 @@ export async function computeEmissions(
     frames: totalFrames,
     vocabSize: config.vocabSize,
     duration: audio.length / config.sampleRate,
-    plan,
+    source: { kind: 'local', plan },
   };
-}
+};

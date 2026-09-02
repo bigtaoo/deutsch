@@ -27,8 +27,12 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // env.localModelPath 下按 modelId 找目录。
 const MODEL_ID = 'onnx-community/mms-300m-1130-forced-aligner-ONNX';
 
-// 两种权重都要带：pickDevice() 有 WebGPU 时走 q4f16，退到 WASM 时走 int8。
+// 两种权重都要带：pickDevice() 有 WebGPU 时走 q4f16，退到 WASM 时走 q4。
 // 只带一个的话，换台没有 WebGPU 的设备就又得联网。
+//
+// 曾经第二份是 int8（302.6 MiB）。换成 q4（230.3 MiB）是 2026-09-02 实测的结果：
+// int8 那份在 WASM 上加载即被系统杀掉，第 2 档以前是必死的。理由见 src/align/config.ts
+// 的 PLAN_LADDER —— 两个文件必须同步改，这里带的文件就是那里选的档。
 const MODEL_FILES = [
   'config.json',
   'preprocessor_config.json',
@@ -37,7 +41,7 @@ const MODEL_FILES = [
   'special_tokens_map.json',
   'vocab.json',
   'onnx/model_q4f16.onnx',
-  'onnx/model_int8.onnx',
+  'onnx/model_q4.onnx',
 ];
 
 const mib = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;

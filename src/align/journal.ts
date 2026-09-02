@@ -117,8 +117,15 @@ export function noteStage(patch: Partial<AlignRunRecord> & { stage: AlignStage }
   lastWriteAt = Date.now();
 }
 
-/** 正常收尾（成功或抛错都算）。清掉 active 就等于告诉下次启动「这次不是被杀的」。 */
-export function finishRun(status: 'done' | 'error', error?: string): void {
+/**
+ * 收尾。清掉 active 就等于告诉下次启动「这次不用当成被杀的来判」。
+ *
+ * `crashed` 也从这里进：Worker 被杀而主线程活着时，JS 是有机会收尾的
+ * （见 client.ts 的 AlignWorkerDeath），但性质仍然是崩溃 —— 必须进 crashed 计数，
+ * 否则 nextPlanStep() 不会降档，那一档会被无限重试。
+ * 只有「整个 tab 一起死」才走 detectCrash() 那条路。
+ */
+export function finishRun(status: 'done' | 'error' | 'crashed', error?: string): void {
   if (!active) return;
   const record: AlignRunRecord = { ...active, status, error, finishedAt: Date.now(), updatedAt: Date.now() };
   active = null;

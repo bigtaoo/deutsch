@@ -55,6 +55,25 @@ describe('黑匣子', () => {
     expect(readHistory()[0]).toMatchObject({ status: 'error', error: '词表大小不对' });
   });
 
+  // Worker 被杀而主线程活着（client.ts 的 AlignWorkerDeath）：JS 有机会收尾，
+  // 但性质是崩溃。记成 error 的话降档判据就丢了 —— 那一档会被无限重试。
+  it('Worker 被杀要记成 crashed，并且真的能让下一次降档', () => {
+    startStep(0);
+    finishRun('crashed', '对齐进程被系统杀掉了 —— 多半是加载权重时内存不够');
+    // 已经收尾了，所以不该再被下次启动当成「上次没跑完」重复报一遍
+    expect(detectCrash()).toBeNull();
+    expect(readHistory()[0].status).toBe('crashed');
+    expect(nextPlanStep(PLAN_LADDER.length)).toBe(1);
+  });
+
+  it('两档各被杀一次（都走 finishRun 那条路）也要停掉自动对齐', () => {
+    for (const step of [0, 1]) {
+      startStep(step);
+      finishRun('crashed', '被杀');
+    }
+    expect(allPlansCrashed(PLAN_LADDER.length)).toBe(true);
+  });
+
   it('没收尾就等于被系统杀掉，并且记得死在哪一步', () => {
     startStep(0);
     noteStage({ stage: 'model', loaded: 181_000_000, total: 196_708_000 });

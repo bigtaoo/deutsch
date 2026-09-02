@@ -8,7 +8,7 @@
 // 队列只有一条并发：两个对齐同时跑各自要一份 187MB 权重，手机上必死。
 
 import { create } from 'zustand';
-import { alignLesson, cancelAlignment, isAligning } from '@/align/client';
+import { AlignWorkerDeath, alignLesson, cancelAlignment, isAligning } from '@/align/client';
 import { PLAN_LADDER } from '@/align/config';
 import { reviewQueue } from '@/align/apply';
 import { allPlansCrashed, detectCrash, type AlignRunRecord } from '@/align/journal';
@@ -143,6 +143,16 @@ async function drain(): Promise<void> {
         // 取消不是失败，别在界面上摆一条红条。
         lastError: message === '已取消' ? null : { ...task, message },
       });
+      // Worker 被系统杀掉：client.ts 已经把它记进黑匣子的 crashed 计数，
+      // 所以队列里的下一课会自动落到更保守的一档（pickPlan ← nextPlanStep）—— 让它接着跑。
+      // 但**两档都崩过之后必须停**：那时 nextPlanStep() 会回到第 0 档，
+      // 而 blocked 只在 init() 算过一次，不在这里重算的话，
+      // 本次会话里这个队列就成了「每课杀一次进程」的循环 —— 正是 FR-15.10 要防的那个。
+      if (err instanceof AlignWorkerDeath) {
+        const blocked = allPlansCrashed(PLAN_LADDER.length);
+        useAlignStore.setState(blocked ? { blocked, queue: [] } : { blocked });
+        if (blocked) return;
+      }
     }
   }
 }
