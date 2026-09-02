@@ -187,16 +187,17 @@ WebView 的 WebContent 进程 jetsam 线远低于原生进程，而 ORT-web 至�
 `/v1/healthz` 从 Caddy 容器里能通，拿一张伪造 ID token 去登录会被 Google 的 JWKS 挡成 401
 （也就是说出网验签这条路是活的）。服务端 27 个测试、前端 21 个同步测试全绿。
 
-**还没跑通的**（三件事都只有用户能做，代码侧不缺东西）：
-1. **DNS**：`sync.gamestao.com` 的 A 记录要指到 `92.205.18.79`，**必须是灰云**（仅 DNS）——
-   橙云代理会让 Caddy 永远签不下 Let's Encrypt 证书。
-2. **Google OAuth 客户端**：Web / iOS / Android 三个，填进服务器的 `GOOGLE_CLIENT_IDS`
-   和前端的 `.env.local`。现在 `.env` 里是 `REPLACE_ME` 占位值，所以**登录必然失败**。
-3. **Caddy 的 site block**：那段配置已经放在服务器 `~/deutsch-sync/Caddyfile.snippet`，
-   但**没有替用户追加进 `~/wnet/docker/Caddyfile`** —— 那是公司那套栈的配置文件。
+**当天下午全部接通了**：DNS（灰云 A 记录）、Google 的 Web + iOS 两个客户端、白名单
+`tao.wang.go@gmail.com`、Caddy 的 site block，证书已从正式 Let's Encrypt 签下。
+`https://sync.gamestao.com/v1/healthz` 通、无令牌访问回 401、CORS 只放行 `d.gamestao.com`。
+**前后端也都进了 CI**：push main → CI 绿 → `deploy` 发 Cloudflare、`deploy-server` 发 VPS，
+两个 job 首次跑通（10s / 44s），线上主包里能 grep 到注入的客户端 ID。
 
-全部步骤、验收清单、排错都在 **`deploy/README.md`**。§10 验收清单里标 ❌ 的那一串仍然卡着，
-只是现在卡在上面这三件配置上，而不是卡在「有一整条代码路径从没执行过」。
+**唯一还没做的是「真的用 Google 登录跑一遍」以及 §10 那串验收（含恢复演练）** ——
+那需要在弹窗里输密码，只能由用户做。步骤、排错、验收清单全在 **`deploy/README.md`**。
+
+Android 那个 OAuth 客户端**还没建**：`android-v*` 流水线一次没推过、签名 keystore
+还不存在（本机也没 JDK 算 SHA-1）。等真要出 Android 包时再建，那个 ID 不进代码。
 
 ## 下一步建议（按价值排序）
 

@@ -9,7 +9,12 @@
 
 ---
 
-## 0. 先决条件（只有你能做的三件事）
+## 0. 先决条件（**已于 2026-09-02 全部完成**，重装时照这里走）
+
+> 现状：DNS 已配（灰云）、Google 项目 `deutsch`（项目号 996386780227）下的 Web 与 iOS
+> 两个客户端已建、白名单是 `tao.wang.go@gmail.com`、Caddy 的 site block 已加且证书已从
+> 正式 Let's Encrypt 签下。`curl https://sync.gamestao.com/v1/healthz` 现在就通。
+> **Android 客户端还没建** —— 那条流水线一次没推过、签名 keystore 还不存在。
 
 ### ① DNS
 
