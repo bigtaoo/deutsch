@@ -64,6 +64,26 @@ export function buildReviewQueue(entries: VocabEntry[], opts: QueueOptions): Que
 }
 
 /**
+ * FR-17.4：今天还缺几张新卡 —— 惰性激活要补的就是这个数。
+ *
+ * 「缺」= 今天的新卡配额 − 今天已经学掉的新卡 − 手上还没学的新卡。
+ * 三项都从卡片自身的状态推，不另设每日计数器（理由见文件头）。
+ *
+ * 为什么要减「手上还没学的新卡」：课上标的生词也是新卡，它们优先。
+ * 不减的话，一篇课文标了 8 个词的那天，预置词库还会再发 10 张 ——
+ * 那天就变成 18 张新卡，而 `newPerDay` 存在的理由正是不让这种事发生。
+ */
+export function newCardShortfall(entries: VocabEntry[], opts: Pick<QueueOptions, 'newPerDay' | 'now'>): number {
+  const now = opts.now ?? Date.now();
+  const active = entries.filter((e) => !e.suspended);
+  const newDoneToday = active.filter(
+    (e) => e.fsrs.reps === 1 && e.fsrs.last_review !== undefined && isSameDay(e.fsrs.last_review, now),
+  ).length;
+  const untouched = active.filter((e) => e.fsrs.state === 0).length;
+  return Math.max(0, opts.newPerDay - newDoneToday - untouched);
+}
+
+/**
  * FR-10.5：无音频卡要区分原因，给不同出口。
  *
  * `preset-word` 是 FR-17 加的第四种：预置词库的卡没有课、没有原句、也没有真语料音频，

@@ -34,21 +34,24 @@ export function pickFromBand(deck: DictDeck, taken: ReadonlySet<string>, count: 
 }
 
 /**
- * 跨档挑：从 `startBand` 开始，一档取空了就往下一档。
+ * 从**已报名的那几档**里挑（FR-17.3/17.4）：按档号从小到大，一档取空了接下一档。
+ *
+ * 参数是**档号列表**而不是「起始档」：报名是一个集合（可以只报第 4 和第 6 档），
+ * 而「从第 4 档一路往下」会把没报名的第 5 档也发出来。
  *
  * `loadBand` 传进来而不是直接 import loadDeck，是为了让这个函数在测试里
  * 不需要一个假的 fetch —— 它要测的是挑选规则，不是取文件。
  */
 export async function pickPresetWords(
-  startBand: number,
+  bands: readonly number[],
   taken: ReadonlySet<string>,
   count: number,
   loadBand: (band: number) => Promise<DictDeck | null>,
-  maxBand = 6,
 ): Promise<PresetPick[]> {
   const picked: PresetPick[] = [];
   const seen = new Set(taken);
-  for (let band = startBand; band <= maxBand && picked.length < count; band++) {
+  for (const band of [...new Set(bands)].sort((a, b) => a - b)) {
+    if (picked.length >= count) break;
     const deck = await loadBand(band);
     if (!deck) continue; // 这一档没部署或取失败 —— 跳过，不要整个失败
     const batch = pickFromBand(deck, seen, count - picked.length);

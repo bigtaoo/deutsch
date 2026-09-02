@@ -10,8 +10,10 @@ export const DEFAULT_SETTINGS: Settings = {
   playbackRate: 1.0,
   dictationStrictCase: true,
   autoAlignOnImport: true,
-  // FR-17.4：默认从第 4 档（3001–6000 名）取预置词 —— 理由见 models.ts 里那段注释。
+  // FR-17.4a：面板上推荐第 4 档（3001–6000 名）—— 理由见 models.ts 里那段注释。
   presetBand: 4,
+  // FR-17.4：默认**不报名任何档**。报名会一路发卡几个月，不该由默认值替用户决定。
+  enrolledBands: [],
   onlineDictFallback: true,
 };
 

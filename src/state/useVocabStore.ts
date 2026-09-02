@@ -14,6 +14,7 @@ import {
 import { useLessonStore } from './useLessonStore';
 import { generateId } from '@/lib/id';
 import { newCard } from '@/srs/fsrs';
+import { newCardShortfall } from '@/srs/queue';
 import { surfaceOf, type Range } from '@/lesson/tokens';
 import { normalizeKey } from '@/dict/bucket';
 import { dedupeKey, loadDeck, lookupDict } from '@/dict/lookup';
@@ -78,17 +79,20 @@ interface VocabState {
   attachToExisting: (input: CreateFromSelectionInput & { entryId: string }) => Promise<void>;
 
   /**
-   * FR-17.3：从预置词库加一批词。返回真的建出来的条目。
+   * FR-17.4：把**今天缺的新卡**从已报名的档里补上（惰性激活）。返回真的建出来的条目。
    *
-   * 三件事必须在这里一起做完，缺一件卡就是坏的：
+   * 「报名一整档」不等于「建一整档的卡」—— 第 4 档是 3000 个词，那要 60 次
+   * MediaWiki 往返和 100MB 以上的录音。所以报名只写一条设置，卡在这里按天发。
+   *
+   * 四件事必须在这里一起做完，缺一件卡就是坏的：
    *   ① 查内置词典拿释义/性/复数 —— 词典是缓存层、可重建，而卡不可重建，
    *      所以要把值**拷进**卡里，不能让卡运行时再去查（§2.3）。
    *   ② 词典查不到的词直接跳过，不建空卡 —— 卡背空白的卡没有任何用处。
-   *   ③ 预取发音。加词是一次必然在线的操作，而复习不是（§2.1）。
+   *   ③ 取发音。激活发生在打开复习页的那一刻，那时**通常**在线；
+   *      而复习本身按 §2.1 是在碎片时间、很可能没网时做的。
+   *   ④ 顺手把**下一批**的发音也下下来（不建卡）。这样明天的激活可以完全离线完成。
    */
-  addPresetWords: (
-    startBand: number,
-    count: number,
+  topUpNewCards: (
     onProgress?: (phase: 'picking' | 'audio', done: number, total: number) => void,
   ) => Promise<{ added: VocabEntry[]; skipped: number; human: number }>;
 
@@ -219,9 +223,17 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     // Q3 记录了这个已知局限：V1 一个词条只挂一个 contextSentence。
   },
 
-  addPresetWords: async (startBand, count, onProgress) => {
+  topUpNewCards: async (onProgress) => {
+    const { settings } = useSettingsStore.getState();
+    // `?? []` 不是多余的：从旧备份恢复出来的 settings 里没有这个字段
+    const bands = settings.enrolledBands ?? [];
+    const empty = { added: [] as VocabEntry[], skipped: 0, human: 0 };
+    if (bands.length === 0) return empty;
+
+    const count = newCardShortfall(get().entries, { newPerDay: settings.newPerDay });
     const taken = new Set(get().entries.map(vocabKey));
-    const picks = await pickPresetWords(startBand, taken, count, loadDeck);
+    // 已经够了也别直接走：下一批的发音还是要预取（那是这个函数的第 ④ 件事）。
+    const picks = count > 0 ? await pickPresetWords(bands, taken, count, loadDeck) : [];
 
     const added: VocabEntry[] = [];
     let skipped = 0;
@@ -262,6 +274,19 @@ export const useVocabStore = create<VocabState>((set, get) => ({
       );
       human = result.human;
     }
+
+    // ④ 预取下一批的发音，**不建卡**。
+    //
+    // 不建卡是关键：多建出来的卡会挤掉课上标的生词（它们同为新卡且优先），
+    // 而多下几个发音只占几百 KB 缓存、丢了还能重下。
+    // 不 await：它对「今天能不能练」没有影响，让界面先动起来。
+    const nextTaken = new Set([...taken, ...added.map(vocabKey)]);
+    void pickPresetWords(bands, nextTaken, settings.newPerDay, loadDeck)
+      .then((ahead) => (ahead.length ? prefetchWordAudio(ahead.map((p) => p.w)) : undefined))
+      .catch(() => {
+        // 离线或 Wiktionary 抽风：明天激活时会再试一次。不打扰用户。
+      });
+
     return { added, skipped, human };
   },
 

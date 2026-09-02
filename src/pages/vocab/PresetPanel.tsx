@@ -1,13 +1,20 @@
-// FR-17：从预置词库加一批词。生词本页顶部的一块。
+// FR-17.3/17.4：报名预置词库。生词本页顶部的一块。
 //
-// ── 为什么这块要写得这么啰嗦 ──
-// 它给出的东西比一般功能更容易被误解，而误解会直接影响学习判断：
+// ── 为什么是「报名一整档」而不是「加 N 个词」 ──
+// 原来这里是三个按钮：加 10 / 25 / 50 个词。那个形状把两件事压成了一个动作：
+// 「我要学哪些词」是一次性的选择，「今天学几个」是每天的配额。
+// 混在一个按钮上的结果是每学完十几个词就要回来点一次。
+// 现在报名只写一条设置（`enrolledBands`），卡片由复习页按 `newPerDay` 每天惰性激活。
+//
+// ── 为什么不在这里就把整档建成卡 ──
+// 第 4 档是 3000 个词。建卡要查 3000 次词典、按 50 个一批打 60 次 MediaWiki
+// 取发音、往 IndexedDB 写 100MB 以上的录音。那条路走不通，所以报名是「记一个意向」。
+//
+// ── 界面上必须写清的三件事（它们会直接影响学习判断）──
 //   ① 档位是**口语词频名次，不是 CEFR 等级**。官方 CEFR 词表只有 A1/A2/B1
 //      且有版权，B2/C1/C2 压根没有官方表 —— 详见 scripts/build-dict.mjs 头部。
-//      界面上标成「A1/B2」会让人按 CEFR 去理解一个完全不同的东西。
-//   ② 语料是 OpenSubtitles（影视对白），所以偏口语，也会带进人名和粗话。
+//   ② 语料是 OpenSubtitles（影视对白），偏口语，也会带进人名和粗话。
 //   ③ 声音是**孤立词**发音，练不到连读 —— 而连读才是精听真正的难点。
-// 三条都写在界面上，而不是只写在文档里。
 
 import { useEffect, useState } from 'react';
 import { dictMeta } from '@/dict/lookup';
@@ -16,11 +23,9 @@ import { useVocabStore } from '@/state/useVocabStore';
 import { Banner, Button, Hint, Section } from '@/components/ui';
 import type { DictMeta } from '@/dict/types';
 
-const COUNTS = [10, 25, 50];
-
 export function PresetPanel() {
   const { settings, update } = useSettingsStore();
-  const { entries, addPresetWords } = useVocabStore();
+  const { entries, topUpNewCards } = useVocabStore();
   const [meta, setMeta] = useState<DictMeta | null | 'loading'>('loading');
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -30,33 +35,45 @@ export function PresetPanel() {
     void dictMeta().then(setMeta);
   }, []);
 
-  const presetCount = entries.filter((e) => e.preset).length;
+  const enrolled = settings.enrolledBands ?? [];
+  const activated = entries.filter((e) => e.preset).length;
 
-  const add = async (count: number) => {
+  /**
+   * 报名之后立刻发一批 —— 不然点完按钮界面上什么都不会变，
+   * 而「什么都没发生」在这个动作上尤其容易被当成没生效（它本来就只写一条设置）。
+   */
+  const enroll = async (band: number) => {
     setResult(null);
-    setBusy('挑词…');
+    await update({ enrolledBands: [...enrolled, band].sort((a, b) => a - b) });
+    setBusy('准备今天的新卡…');
     try {
-      const { added, skipped, human } = await addPresetWords(settings.presetBand, count, (phase, done, total) => {
-        setBusy(phase === 'picking' ? `查词典 ${done}/${total}` : `取发音 ${done}/${total}`);
-      });
+      const { added, skipped, human } = await topUpNewCards((phase, done, total) =>
+        setBusy(phase === 'picking' ? `查词典 ${done}/${total}` : `取发音 ${done}/${total}`),
+      );
       if (added.length === 0) {
         setResult(
           skipped > 0
-            ? `一个都没加上：${skipped} 个词在内置词典里查不到。词典可能没跟着构建走（npm run build:dict）。`
-            : '这一档以后的词都已经在生词本里了 —— 没有新词可加。',
+            ? `报名了，但今天这批词在内置词典里查不到（${skipped} 个）。词典可能没跟着构建走（npm run build:dict）。`
+            : '报名了。今天的新卡配额已经满了 —— 明天会接着发。',
         );
       } else {
         // 如实报出「多少张是真人音」：剩下的是合成音，而两者的训练价值不一样。
         setResult(
-          `加了 ${added.length} 个词，其中 ${human} 个有真人录音、${added.length - human} 个用系统合成音。` +
-            (skipped > 0 ? `另有 ${skipped} 个词典里查不到，跳过了。` : ''),
+          `报名了，今天先发 ${added.length} 个词：${human} 个有真人录音、${added.length - human} 个用系统合成音。` +
+            '往后每天按「每天新卡数」自动发，不必再回来点。',
         );
       }
     } catch (err) {
-      setResult(`失败：${err instanceof Error ? err.message : String(err)}`);
+      setResult(`报名了，但取词失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(null);
     }
+  };
+
+  const leave = async (band: number) => {
+    setResult(null);
+    await update({ enrolledBands: enrolled.filter((b) => b !== band) });
+    setResult(`退出了第 ${band} 档。**已经发出来的卡不会被删** —— 要删得去下面的列表里删。`);
   };
 
   if (meta === 'loading') return null;
@@ -73,19 +90,16 @@ export function PresetPanel() {
     );
   }
 
-  const band = meta.decks.find((d) => d.id === settings.presetBand);
-
   return (
     <Section
-      title={`预置词库${presetCount > 0 ? `（已加 ${presetCount} 个）` : ''}`}
-      aside={
-        <Button onClick={() => setOpen(!open)}>{open ? '收起' : '展开'}</Button>
-      }
+      title={`预置词库${activated > 0 ? `（已激活 ${activated} 个）` : ''}`}
+      aside={<Button onClick={() => setOpen(!open)}>{open ? '收起' : '展开'}</Button>}
     >
       {!open ? (
         <p className="text-sm text-neutral-500">
-          笔记还不多的时候，从这里取词先练起来。当前：第 {settings.presetBand} 档
-          {band ? `（${band.label}，${band.count} 词）` : ''}。
+          {enrolled.length > 0
+            ? `已报名第 ${enrolled.join(' / ')} 档，每天自动发 ${settings.newPerDay} 个新词。`
+            : '笔记还不多的时候，从这里报名一整档，之后每天自动发新词。'}
         </p>
       ) : (
         <div className="space-y-3">
@@ -95,41 +109,55 @@ export function PresetPanel() {
             语料是影视字幕，偏口语，偶尔会混进人名。
           </Hint>
 
-          <label className="block text-sm">
-            从哪一档开始取
-            <select
-              className="ml-2 rounded border border-neutral-300 px-2 py-1 text-sm"
-              value={settings.presetBand}
-              onChange={(e) => void update({ presetBand: Number(e.target.value) })}
-            >
-              {meta.decks.map((d) => (
-                <option key={d.id} value={d.id}>
-                  第 {d.id} 档 · {d.label} · {d.count} 词
-                </option>
-              ))}
-            </select>
-          </label>
+          <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+            {meta.decks.map((deck) => {
+              const inBand = entries.filter((e) => e.preset?.band === deck.id).length;
+              const isEnrolled = enrolled.includes(deck.id);
+              return (
+                <li key={deck.id} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">
+                      第 {deck.id} 档 · {deck.label} · {deck.count} 词
+                      {deck.id === settings.presetBand && (
+                        <span className="ml-2 rounded bg-sky-100 px-1.5 text-xs text-sky-800">推荐起点</span>
+                      )}
+                    </p>
+                    <p className="text-xs text-neutral-500">
+                      {isEnrolled
+                        ? `已报名 · 已激活 ${inBand} / 剩余 ${Math.max(0, deck.count - inBand)}`
+                        : inBand > 0
+                          ? `没报名，但已经有 ${inBand} 张这一档的卡`
+                          : '未报名'}
+                    </p>
+                  </div>
+                  {isEnrolled ? (
+                    <Button disabled={busy !== null} onClick={() => void leave(deck.id)}>
+                      退出这一档
+                    </Button>
+                  ) : (
+                    <Button variant="primary" disabled={busy !== null} onClick={() => void enroll(deck.id)}>
+                      报名（{deck.count} 词）
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          {busy && <p className="text-sm text-neutral-500">{busy}</p>}
+
           <p className="text-xs text-neutral-500">
-            默认第 4 档。前三档合起来约三千词，C1 的人基本全认识 ——
-            从那里开始等于要点几千次「太简单」才挖到有用的地方。取空一档会自动接着往下一档。
+            推荐从第 4 档起：前三档合起来约三千词，C1 的人基本全认识 —— 从第 1 档开始等于要答几千道
+            「这个我早就会了」才挖到有用的地方。报了几档就按档号从小到大发，一档发完接着下一档。
           </p>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {COUNTS.map((n) => (
-              <Button key={n} variant="primary" disabled={busy !== null} onClick={() => void add(n)}>
-                加 {n} 个词
-              </Button>
-            ))}
-            {busy && <span className="text-sm text-neutral-500">{busy}</span>}
-          </div>
-
           <p className="text-xs text-neutral-500">
-            加词时会顺手把发音下下来（Wiktionary 上的真人录音，自由许可），因为复习多半发生在没网的时候。
+            每天发多少由<b>设置里的「每天新卡数」</b>决定（现在 {settings.newPerDay} 个），
+            而且课上标的生词也算在这个额度里 —— 标了 8 个词的那天，预置词库只会再补 2 个。
+            发卡时会顺手把发音下下来（Wiktionary 上的真人录音，自由许可），因为复习多半发生在没网的时候；
             没有录音的词退到系统合成音。两者都是<b>孤立词</b>发音 —— 练得到词形和读音的对应，
             练不到连读，而连读要靠课程里的真语料。
           </p>
 
-          {result && <Hint tone={result.startsWith('失败') ? 'error' : 'ok'}>{result}</Hint>}
+          {result && <Hint tone={result.includes('失败') ? 'error' : 'ok'}>{result}</Hint>}
         </div>
       )}
     </Section>

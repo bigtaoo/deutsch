@@ -91,12 +91,12 @@ describe('buildFormQuestion', () => {
     const q = buildFormQuestion(w('Vorhang', { gender: 'm' }), neighbors, keepOrder);
     expect(q.choices).toHaveLength(MAX_CHOICES);
     expect(q.choices.filter((c) => c.correct)).toHaveLength(1);
-    expect(q.choices.find((c) => c.correct)!.text).toBe('der Vorhang');
+    expect(q.choices.find((c) => c.correct)!.text).toBe('Vorhang');
   });
 
-  it('名词选项带冠词 —— 选项上也要给性', () => {
+  it('选项不带冠词 —— 只有名词有冠词的话，那本身就是线索', () => {
     const q = buildFormQuestion(w('Vorhang', { gender: 'm' }), neighbors, keepOrder);
-    expect(q.choices.map((c) => c.text)).toEqual(['der Vorhang', 'Vorgang', 'die Vorhand', 'der Anhang']);
+    expect(q.choices.map((c) => c.text)).toEqual(['Vorhang', 'Vorgang', 'Vorhand', 'Anhang']);
   });
 
   it('只有大小写不同的词不能当干扰项（Laufen / laufen 归一化同键）', () => {
