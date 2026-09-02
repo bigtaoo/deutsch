@@ -5,6 +5,11 @@ import './index.css';
 import { initStoragePersistence } from './db';
 import { initNativeShell } from './platform/native';
 import { drainSyncQueue } from './sync/trigger';
+import { initAppShellUpdates } from './platform/pwa';
+
+// 注册 Service Worker，并让「服务器上有新壳」自动变成「这个页面刷新一次」。
+// 不这样接的话，deploy 之后刷新拿到的是旧壳（理由见 src/platform/pwa.ts 顶部）。
+initAppShellUpdates();
 
 // FR-11.16: 启动时申请持久化配额，不阻塞渲染。
 void initStoragePersistence();

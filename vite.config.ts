@@ -15,6 +15,13 @@ import path from 'node:path';
 //      而原生壳没有「刷新」这回事 —— 版本更新走 App Store。一旦某次装出来的 SW
 //      缓存了旧壳的 index.html，下次 `cap sync` 换掉了 dist 也照样吃旧的，
 //      而用户没有任何界面可以清它（原生壳里没有地址栏、没有开发者工具）。
+//
+// 「不装」的实现是 `disable: native`，不是把插件从 plugins 数组里去掉：注册改成
+// import 虚拟模块 `virtual:pwa-register`（src/platform/pwa.ts）之后，插件不在数组里
+// 就没人解析那个 id，原生构建会直接报「找不到模块」。`disable` 下插件仍然解析它、
+// 但给的是一个空实现，同时不生成 sw.js、不注入 manifest 与注册脚本 ——
+// 产物与「没有这个插件」等价 —— 实测原生构建的主 chunk 内容哈希与改动前完全相同
+// （`index-bIZTSlaa.js`），src/platform/pwa.ts 那段被整块摇掉了，而两种构建共用同一份入口代码。
 // `base` 保持 '/' —— 理由见 capacitor.config.ts 顶部那段（Capacitor 不走 file://）。
 export default defineConfig(({ mode }) => {
   const native = mode === 'native';
@@ -23,46 +30,43 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      ...(native
-        ? []
-        : [
-            VitePWA({
-              registerType: 'autoUpdate',
-              includeAssets: ['apple-touch-icon.png'],
-              manifest: {
-                name: '德语精听训练器',
-                short_name: '精听',
-                description: '德语精听：切句、打点、跟读、听写、FSRS 复习。素材自备，只存本地。',
-                lang: 'zh-CN',
-                start_url: '/',
-                scope: '/',
-                display: 'standalone',
-                // background_color 是 PWA 启动闪屏的底，要跟原生启动图（白）一致；
-                // theme_color 是浏览器/系统 UI 的着色，跟图标底色 TILE 一致。
-                background_color: '#ffffff',
-                theme_color: '#e0f2fe',
-                icons: [
-                  { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-                  { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
-                  { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-                ],
-              },
-              workbox: {
-                // §7.6：**只缓存应用壳，不缓存学习数据**。
-                // 学习数据在 IndexedDB 里，Service Worker 本来也碰不到；真正的风险是
-                // 顺手把 DW 的 mp3 或 GitHub API 的响应缓存进来 —— 前者会让缓存层出现第二份副本
-                // 且绕过 FR-3.8 的清除，后者会让备份读到过期的 sha。所以不配任何 runtimeCaching。
-                globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-                navigateFallback: '/index.html',
-                cleanupOutdatedCaches: true,
-                // 200MB 的对齐权重（public/models/，npm run stage:align）不在 globPatterns 里，
-                // 但 workbox 的默认单文件上限是 2MiB，撞上大文件会在构建时刷一片警告。
-                // 明确写死上限，让「哪些文件进预缓存」这件事只由 globPatterns 决定。
-                maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
-              },
-              devOptions: { enabled: false },
-            }),
-          ]),
+      VitePWA({
+        disable: native,
+        registerType: 'autoUpdate',
+        includeAssets: ['apple-touch-icon.png'],
+        manifest: {
+          name: '德语精听训练器',
+          short_name: '精听',
+          description: '德语精听：切句、打点、跟读、听写、FSRS 复习。素材自备，只存本地。',
+          lang: 'zh-CN',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          // background_color 是 PWA 启动闪屏的底，要跟原生启动图（白）一致；
+          // theme_color 是浏览器/系统 UI 的着色，跟图标底色 TILE 一致。
+          background_color: '#ffffff',
+          theme_color: '#e0f2fe',
+          icons: [
+            { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+            { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+            { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        workbox: {
+          // §7.6：**只缓存应用壳，不缓存学习数据**。
+          // 学习数据在 IndexedDB 里，Service Worker 本来也碰不到；真正的风险是
+          // 顺手把 DW 的 mp3 或 GitHub API 的响应缓存进来 —— 前者会让缓存层出现第二份副本
+          // 且绕过 FR-3.8 的清除，后者会让备份读到过期的 sha。所以不配任何 runtimeCaching。
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          navigateFallback: '/index.html',
+          cleanupOutdatedCaches: true,
+          // 200MB 的对齐权重（public/models/，npm run stage:align）不在 globPatterns 里，
+          // 但 workbox 的默认单文件上限是 2MiB，撞上大文件会在构建时刷一片警告。
+          // 明确写死上限，让「哪些文件进预缓存」这件事只由 globPatterns 决定。
+          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+        },
+        devOptions: { enabled: false },
+      }),
     ],
     // 端口听 PORT 环境变量。Vite 默认不读它，自己在 5173 被占时递增 ——
     // 而外部工具（预览面板、脚本）是按它分配的那个端口来找服务器的，

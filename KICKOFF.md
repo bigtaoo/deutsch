@@ -250,6 +250,25 @@ WebView 的 WebContent 进程 jetsam 线远低于原生进程，而 ORT-web 至�
 Android 那个 OAuth 客户端**还没建**：`android-v*` 流水线一次没推过、签名 keystore
 还不存在（本机也没 JDK 算 SHA-1）。等真要出 Android 包时再建，那个 ID 不进代码。
 
+**应用壳自动更新（2026-09-02，SPEC §0 变更 30）**：起因是他说「浏览器刷新后没有谷歌登录」。
+**线上两边都是最新的** —— CI 绿、`deploy` 与 `deploy-server` 两个 job 都成功、
+Variables 三个构建期变量都在、线上主包里 grep 得到 Web 客户端 ID 和「用 Google 登录」、
+`sync.gamestao.com/v1/healthz` 回 `{"ok":true,"users":0,"docs":0}`。
+在干净会话的浏览器里打开 `#/settings`，登录按钮正常显示。**问题在客户端缓存**：
+§7.6 的 `navigateFallback: '/index.html'` 让导航请求由 Service Worker 从预缓存直出，
+所以 deploy 之后那一次刷新拿到的**必然**是旧 SW 手里的旧 index.html，要刷第二次才吃到新壳。
+**这个症状与「没部署成功」长得一模一样**，这次是把 CI、Variables、线上产物全查一遍才排除掉的。
+修法见 `src/platform/pwa.ts`：注册从插件注入的 `registerSW.js` 换成虚拟模块 `virtual:pwa-register`
+（`autoUpdate` 下它监听新 SW 的 `activated`+`isUpdate` 自己 reload），另加每小时 / 回前台 / 刚联网三处探测，
+以及唯一自己写的那点逻辑「不在打字的当口刷」。原生构建同时从「不加载这个插件」改成 `disable: native`。
+**在 `npm run preview` 上实测过两条路**：空闲时来更新 → 3 秒内自己 reload（`navigation.type === "reload"`、
+`sessionStorage` 标记存活，证明是同一个标签页）；光标在输入框里时 → 新 SW 已 activated 但 3.5 秒后不刷，
+`blur()` 之后立刻刷且保留 hash 路由。原生产物主 chunk 哈希与改动前完全一致，那段代码被整块摇掉。
+**注意一个一次性的坎**：这个修复本身要靠一次部署才上线，而浏览器里缓存的是**没有**它的那一版 ——
+所以还得手动刷最后一次（或 Ctrl+Shift+R）拿到带自动更新的构建，**从那之后**才是自动的。
+`.claude/launch.json` 因此加了个 `preview` 配置：`vite dev` 下 `devOptions.enabled: false`，
+SW 压根不装，这类行为只能在 preview 上验。
+
 ## 下一步建议（按价值排序）
 
 0. **新复习流程还差 iPhone 真机那一关**（桌面浏览器已经点过一轮，见上面）。三件事只有真机能答：
@@ -260,9 +279,11 @@ Android 那个 OAuth 客户端**还没建**：`android-v*` 流水线一次没推
    答错态不用滚动；375px 与真手指还没验），以及辨义题的释义在那个宽度下读不读得下去。
    ③ **报名第 4 档之后连着用三天**，确认每天真的只发 `newPerDay` 张、且课上标的词占额度。
    （单测覆盖了这条规则，但「跨天」这件事只有真的过一夜才算验过。）
-1. **把同步链路接通并走完 §10 里标 ❌ 的那一串**，尤其是**恢复演练** ——
-   文档里写了「不做完不算验收通过」。三件配置 + 验收清单在 `deploy/README.md`：
-   DNS 灰云 A 记录 → 三个 Google 客户端 ID → Caddy 追加 site block → 登录 → 跨设备恢复。
+1. **真的用 Google 登录跑一遍，然后走完 §10 里标 ❌ 的那一串**，尤其是**恢复演练** ——
+   文档里写了「不做完不算验收通过」。链路本身已经全部接通（DNS、两个客户端 ID、Caddy、CI，
+   见上面「大窟窿一」），**三件配置都不用做了**；剩下的只有登录这一下和跨设备恢复，
+   而登录要在弹窗里输密码，只能他做。判据很直接：`sync.gamestao.com/v1/healthz` 现在还是
+   `users:0`，登录成功它就不是 0 了。排错与验收清单在 `deploy/README.md`。
    附录 B.2 那三个 GitHub 待确认项**不用填了**，它们随 PAT 一起作废。
 2. **实际用两周**，然后再回来改。§10 里标 🧪 的几条（跟读循环、多区间挖空）代码路径有测试，
    但没有人真的连着跟读过十分钟，手感问题只有用出来。
@@ -325,6 +346,12 @@ Android 那个 OAuth 客户端**还没建**：`android-v*` 流水线一次没推
   compose 里的 `user: "${SYNC_UID}:${SYNC_GID}"` 从同目录 `.env` 插值
 - **`sync.gamestao.com` 的 DNS 必须是灰云（仅 DNS）**。橙云代理下 Caddy 拿不到 ACME 挑战，
   证书永远签不下来，症状是浏览器报 SSL 错而服务器日志里只有重试
+- **「deploy 之后刷新还是旧版」不是部署失败**，是 Service Worker 从预缓存直出导航请求
+  （`navigateFallback`），第一次刷新拿到的必然是旧壳。查这类症状**先看线上产物**
+  （`curl` 拿 index.html 里那个 `index-*.js` 再 grep 里面的字符串），不要先怀疑 CI。
+  变更 30 之后这件事自动了，但**原生壳与任何关掉 SW 的构建上这条推理仍然有效**
+- **验 Service Worker 的行为只能用 `npm run preview`**：`vite dev` 下 `devOptions.enabled: false`，
+  SW 压根不装。`.claude/launch.json` 里有个 `preview` 配置就是为此
 - **Google 的 `webClientId` 在 Android 上填的也是 Web 那个客户端 ID**，不是 Android 客户端 ID。
   Android 客户端只在 Google 控制台登记（包名 + 签名 SHA-1），不进代码；填错的报错是
   `[28444] Developer console is not set up correctly`
