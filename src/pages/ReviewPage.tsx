@@ -352,7 +352,10 @@ function QuizCard({
         )}
       </div>
 
-      <div className="space-y-4 rounded-lg border border-neutral-200 p-6">
+      {/* 卡面撑满剩余高度并把内容居中：正面只有一个播放键（FR-10.2），
+          靠上贴着标题行的话，播放键和底部的选项之间会空掉半屏。
+          选项那一块仍然由 `mt-auto` 钉在底部（FR-10.7），所以按钮位置不受影响。 */}
+      <div className="flex flex-1 flex-col justify-center space-y-4 rounded-lg border border-neutral-200 p-6">
         {audioStatus === 'ok' ? (
           <div className="flex flex-col items-center gap-2">
             <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
@@ -471,8 +474,12 @@ function ChoiceGrid({
   revealed: boolean;
   onPick?: (id: string, correct: boolean) => void;
 }) {
+  // 列数按题型分，而不是一套响应式断点走到底（实测 430px 下两种题都会变单列）：
+  // 辨形题的选项是短词，手机上 2×2 按起来更省手；辨义题的选项是截到 80 字符的释义，
+  // 挤进半个屏宽会折成四五行，那时单列才读得下去。
+  const cols = question.kind === 'form' ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2';
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+    <div className={`grid gap-2 ${cols}`}>
       {question.choices.map((choice, i) => {
         const tone = !revealed
           ? 'border-neutral-300 bg-white hover:border-sky-400'
