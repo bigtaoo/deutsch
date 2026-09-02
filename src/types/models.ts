@@ -171,6 +171,15 @@ export interface Settings {
   /** FR-16.5：内置词典查不到时，允许联网查 de.wiktionary 补齐。默认开。 */
   onlineDictFallback: boolean;
   lastBackupAt?: number; // 备份提醒（FR-11.4 / FR-11.12）
+  /**
+   * 最后一次改动设置的时间。**设置整体同步之后才需要它**（§0 变更 28）：
+   * 合并规则要一个比新旧的键，而 Settings 是一个没有 id 的单例对象，
+   * 只能整体 last-write-wins —— 那就必须有这个字段，否则两台设备的设置无法定序。
+   *
+   * 缺失 = 「早于任何一次改动」（老库、或者从没改过设置）。
+   * 只有 `useSettingsStore.update()` 写它，别处不要碰。
+   */
+  updatedAt?: number;
 }
 
 // ══════ 缓存层：本机持有，不同步，可随时丢弃 ══════

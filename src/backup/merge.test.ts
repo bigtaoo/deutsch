@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mergeBackup, mergeLessons, mergeVocabEntries } from './merge';
-import type { Lesson, VocabEntry } from '@/types/models';
+import { mergeBackup, mergeLessons, mergeSettings, mergeVocabEntries } from './merge';
+import { DEFAULT_SETTINGS } from '@/db/meta';
+import type { Lesson, Settings, VocabEntry } from '@/types/models';
 
 function lesson(overrides: Partial<Lesson>): Lesson {
   return {
@@ -126,5 +127,54 @@ describe('mergeBackup', () => {
     expect(mergedVocab.map((v) => v.id)).toEqual(['v1']);
     expect(summary.addedLessons).toEqual(['l2']);
     expect(summary.addedVocab).toEqual(['v1']);
+  });
+});
+
+describe('mergeSettings（§0 变更 28：整体 last-write-wins）', () => {
+  const settings = (over: Partial<Settings> = {}): Settings => ({ ...DEFAULT_SETTINGS, ...over });
+
+  it('导入的那份更新 → 整体胜出', () => {
+    const local = settings({ newPerDay: 10, updatedAt: 100 });
+    const incoming = settings({ newPerDay: 30, updatedAt: 200 });
+    const { merged, changed } = mergeSettings(local, incoming);
+    expect(changed).toBe(true);
+    expect(merged.newPerDay).toBe(30);
+  });
+
+  it('本地更新 → 一个字段都不动', () => {
+    const local = settings({ newPerDay: 10, updatedAt: 300 });
+    const incoming = settings({ newPerDay: 30, updatedAt: 200 });
+    const { merged, changed } = mergeSettings(local, incoming);
+    expect(changed).toBe(false);
+    expect(merged.newPerDay).toBe(10);
+  });
+
+  it('updatedAt 缺失（老库、从没改过设置）算最旧，任何真实改动都赢过它', () => {
+    const fresh = settings({ presetBand: 6, updatedAt: 1 });
+    expect(mergeSettings(settings(), fresh).changed).toBe(true);
+    // 反过来：本地改过、远端还是老库那份 → 本地留着
+    expect(mergeSettings(fresh, settings()).changed).toBe(false);
+  });
+
+  it('同一毫秒时保留本地 —— 确定性优先', () => {
+    const local = settings({ newPerDay: 10, updatedAt: 500 });
+    const incoming = settings({ newPerDay: 30, updatedAt: 500 });
+    expect(mergeSettings(local, incoming).merged.newPerDay).toBe(10);
+  });
+
+  it('mergeBackup 顺带把设置一起合并，并在 summary 里报出来', () => {
+    const base = { lessons: [] as Lesson[], vocab: [] as VocabEntry[] };
+    const result = mergeBackup(
+      { ...base, settings: settings({ reviewPerDay: 60, updatedAt: 1 }) },
+      { ...base, settings: settings({ reviewPerDay: 90, updatedAt: 2 }) },
+    );
+    expect(result.settings?.reviewPerDay).toBe(90);
+    expect(result.summary.settingsUpdated).toBe(true);
+  });
+
+  it('调用方不给设置时 mergeBackup 照常跑 —— settings 为 undefined，不误报改过', () => {
+    const result = mergeBackup({ lessons: [], vocab: [] }, { lessons: [], vocab: [] });
+    expect(result.settings).toBeUndefined();
+    expect(result.summary.settingsUpdated).toBe(false);
   });
 });

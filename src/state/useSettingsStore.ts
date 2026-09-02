@@ -19,7 +19,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   },
 
   update: async (patch) => {
-    const next = { ...get().settings, ...patch };
+    // updatedAt 是设置能跨设备定序的唯一依据（§0 变更 28 / §2.4）——
+    // **只有这里写它**，所以任何绕过 store 直接 putSettings 的地方都会让合并失去准绳。
+    const next = { ...get().settings, ...patch, updatedAt: Date.now() };
     await putSettings(next);
     set({ settings: next });
   },

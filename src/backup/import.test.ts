@@ -7,7 +7,7 @@ import { prepareImport, commitImport, importBackup } from './import';
 import { BACKUP_WARNING } from './export';
 import type { BackupFile } from './types';
 import type { Lesson } from '@/types/models';
-import { DEFAULT_SETTINGS } from '@/db/meta';
+import { DEFAULT_SETTINGS, getSettings, putSettings } from '@/db/meta';
 
 afterEach(async () => {
   const db = await getDB();
@@ -81,5 +81,40 @@ describe('importBackup (one-shot convenience)', () => {
 
     expect(summary.summary.overwrittenLessonTitles).toEqual(['Old local']);
     expect((await getLesson('l1'))?.title).toBe('New from backup');
+  });
+});
+
+describe('设置也走导入（§0 变更 28 补上的缺口）', () => {
+  it('备份里的设置更新时写进本地 —— 以前只导出、从不导入', async () => {
+    await putSettings({ ...DEFAULT_SETTINGS, newPerDay: 10, updatedAt: 100 });
+
+    await importBackup({
+      _warning: BACKUP_WARNING,
+      formatVersion: 1,
+      exportedAt: 0,
+      lessons: [],
+      vocab: [],
+      settings: { ...DEFAULT_SETTINGS, newPerDay: 42, updatedAt: 200 },
+    });
+
+    expect((await getSettings()).newPerDay).toBe(42);
+  });
+
+  it('本地那份更新时一个字段都不动，也不刷新 updatedAt', async () => {
+    await putSettings({ ...DEFAULT_SETTINGS, newPerDay: 10, updatedAt: 300 });
+
+    const result = await importBackup({
+      _warning: BACKUP_WARNING,
+      formatVersion: 1,
+      exportedAt: 0,
+      lessons: [],
+      vocab: [],
+      settings: { ...DEFAULT_SETTINGS, newPerDay: 42, updatedAt: 200 },
+    });
+
+    expect(result.summary.settingsUpdated).toBe(false);
+    const stored = await getSettings();
+    expect(stored.newPerDay).toBe(10);
+    expect(stored.updatedAt).toBe(300);
   });
 });
