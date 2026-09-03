@@ -50,8 +50,10 @@ struct AudioDecoder {
 
         var samples = [Float]()
         samples.reserveCapacity(Int(Double(file.length) * ratio) + 1024)
-        // 输入取完了没有：`.inputRanOut` 既可能是「这一轮喂完了」也可能是「文件到底了」，
+        // 输入取完了没有：`.inputRanDry` 既可能是「这一轮喂完了」也可能是「文件到底了」，
         // 只看返回值分不出来，所以由喂数据的那个闭包自己记一下。
+        // （名字是 `inputRanDry` 不是 `inputRanOut` —— 后者编不过，2026-09-03 那次
+        // archive 失败就是这一个字。）
         var exhausted = false
 
         loop: while true {
@@ -89,7 +91,7 @@ struct AudioDecoder {
             switch status {
             case .haveData:
                 continue
-            case .inputRanOut:
+            case .inputRanDry:
                 if exhausted { break loop }
             case .endOfStream:
                 break loop
