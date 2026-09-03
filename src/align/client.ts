@@ -19,7 +19,11 @@ import {
   pickPlan,
 } from './config';
 import { emissionTransferables } from './emissionMatrix';
-import { computeNativeEmissions, nativeEmissionsAvailable } from './nativeEmissions';
+import {
+  cancelNativeEmissions,
+  computeNativeEmissions,
+  nativeEmissionsAvailable,
+} from './nativeEmissions';
 import { probeRanged } from './rangedFetch';
 import { buildTarget } from './target';
 import { beginRun, finishRun, nextPlanStep, noteStage } from './journal';
@@ -48,6 +52,11 @@ export class AlignWorkerDeath extends Error {
 let worker: Worker | null = null;
 let nextId = 1;
 let running = false;
+/**
+ * 原生 emissions 正在跑。`running` 管不了这一段 —— 那十几分钟里 Worker 还没起，
+ * 所以「停止」要靠这一位才知道该往插件那边递取消（见 cancelAlignment）。
+ */
+let nativeRunning = false;
 /** 取消要靠它把挂着的 Promise 拒掉 —— terminate() 之后 Worker 不会再回任何消息。 */
 let cancelCurrent: ((reason: Error) => void) | null = null;
 
@@ -69,8 +78,18 @@ export function isAligning(): boolean {
   return running;
 }
 
-/** 用户点「停止」。Worker 整个干掉是唯一可靠的中断方式：ORT 的 run() 不可打断。 */
+/**
+ * 用户点「停止」。
+ *
+ * 两条路要分别停，而且**原生那条必须先停**：
+ *   · Worker（浏览器那条）：整个干掉是唯一可靠的中断方式，ORT 的 run() 不可打断。
+ *   · 原生那条：`running` 在算 emissions 的那十几分钟里**是 false** —— Worker 那时
+ *     还没起。所以以前这个函数会在第一行就 return，「停止」在手机上整整十几分钟
+ *     是个死按钮。现在它给插件递一个标志，插件在下一个块边界停下，
+ *     已经算完的块留在断点里（变更 33）。
+ */
 export function cancelAlignment(): void {
+  if (nativeRunning) void cancelNativeEmissions();
   if (!running) return;
   const reject = cancelCurrent;
   terminateAlignWorker();
@@ -290,7 +309,12 @@ async function alignLessonNative(
     if (buildTarget(lesson.sentences).ids.length === 0) {
       throw new Error('没有可对齐的句子：要么全被标成了非朗读内容，要么正文里没有字母');
     }
-    const emissions = await computeNativeEmissions(blob, MMS_FA, report);
+    // 键用 lesson id：断点跟着「这一课」走，而不是跟着这一次运行。
+    // 插件那边还会拿音频长度和参数做指纹，换了音频的话旧中间态自己作废。
+    nativeRunning = true;
+    const emissions = await computeNativeEmissions(blob, MMS_FA, report, lesson.id).finally(() => {
+      nativeRunning = false;
+    });
     const outcome = await runAlignment({ input: 'emissions', emissions }, lesson.sentences, report);
     const applied = await saveOutcome(lesson, outcome, options, report);
     finishRun('done');

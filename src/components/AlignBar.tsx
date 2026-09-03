@@ -4,6 +4,7 @@
 // 进度只画在某一页上，等于「切走就看不见了」——那和卡死无法区分，
 // 而这个功能上一次的真实故障（进程被系统杀掉）恰恰长得就像卡死。
 
+import { useEffect, useState } from 'react';
 import { planLabel } from '@/align/config';
 import { formatBytes } from '@/components/ui';
 import { stageLabel, useAlignStore } from '@/state/useAlignStore';
@@ -14,8 +15,55 @@ function detail(p: AlignProgress): string {
     // 首次使用要下 187MB 权重；随包版本走本机文件，这行会快很多但仍然看得见。
     return p.total ? `${formatBytes(p.loaded ?? 0)} / ${formatBytes(p.total)}` : '…';
   }
+  // 块数优先于百分数。百分数是个没有单位的量：手机上 4% 既可能是「在正常爬」
+  // 也可能是「卡住了」，而「第 1/27 块」配上下面那个秒表就能自己说清楚。
+  if (p.stage === 'infer' && p.chunks) {
+    return `第 ${p.chunk ?? 0}/${p.chunks} 块`;
+  }
   if (p.stage === 'infer' || p.stage === 'align') return `${Math.round((p.fraction ?? 0) * 100)}%`;
   return '…';
+}
+
+/** 毫秒 → `M:SS`。 */
+function clock(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/**
+ * 「还要多久」。只有推理那一段算得出来 —— 它是唯一有分母的一段（块数）。
+ *
+ * 手机上一课要十几分钟，而进度条一格一格跳的间隔本身就有几十秒。
+ * 没有这句话的话，「慢」和「死了」在界面上是同一个样子。
+ */
+function remaining(
+  p: AlignProgress,
+  base: { inferStartedAt?: number; inferStartedChunk?: number },
+  now: number,
+): string | null {
+  if (p.stage !== 'infer' || !p.chunks || p.chunk === undefined || !base.inferStartedAt) return null;
+  // 只有**这一段里新算完的**块能当样本。续算时前面那些块是从磁盘读回来的，
+  // 拿它们去除刚过去的几秒会算出一个荒谬的速度（变更 33）。
+  const done = p.chunk - (base.inferStartedChunk ?? 0);
+  if (done <= 0) return null;
+  const left = ((now - base.inferStartedAt) / done) * (p.chunks - p.chunk);
+  return left >= 5000 ? `约还需 ${clock(left)}` : null;
+}
+
+/**
+ * 一秒一跳的时钟。**存在的理由就是「让静默看起来不像死机」**：
+ * 2026-09-03 iPhone 上的症状是「一开始就卡住好几分钟」，而那几分钟里
+ * 界面上每一个像素都是静止的。有一个自己在走的秒表，人至少知道应用还活着。
+ */
+function useTicker(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
 }
 
 function percent(p: AlignProgress): number {
@@ -38,8 +86,11 @@ function percent(p: AlignProgress): number {
 
 export function AlignBar() {
   const { current, queue, lastDone, lastError, cancel, dismiss } = useAlignStore();
+  const now = useTicker(current !== null);
 
   if (!current && !lastDone && !lastError) return null;
+
+  const eta = current ? remaining(current.progress, current, now) : null;
 
   return (
     <div className="align-bar fixed inset-x-0 bottom-0 z-30 border-t border-neutral-200 bg-white/95 px-4 py-2 backdrop-blur">
@@ -51,6 +102,10 @@ export function AlignBar() {
                 <span className="font-medium">《{current.title}》</span>
                 <span className="ml-2 text-neutral-600">
                   {stageLabel(current.progress)} {detail(current.progress)}
+                </span>
+                <span className="ml-2 text-xs text-neutral-400">
+                  已跑 {clock(now - current.startedAt)}
+                  {eta && ` · ${eta}`}
                 </span>
                 {queue.length > 0 && (
                   <span className="ml-2 text-xs text-neutral-400">还有 {queue.length} 课排队</span>
@@ -110,7 +165,12 @@ export function AlignCrashBanner() {
   const where =
     crash.stage === 'model' && crash.total
       ? `加载模型（${formatBytes(crash.loaded ?? 0)} / ${formatBytes(crash.total)}）`
-      : stageLabel({ stage: crash.stage, fraction: crash.fraction });
+      : `${stageLabel({ stage: crash.stage, fraction: crash.fraction })} ${detail({
+          stage: crash.stage,
+          fraction: crash.fraction,
+          chunk: crash.chunk,
+          chunks: crash.chunks,
+        })}`;
 
   return (
     <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
@@ -123,7 +183,7 @@ export function AlignCrashBanner() {
       </p>
       <p className="mt-1">
         {native
-          ? '这台设备现在走原生插件算 emissions —— 那 230MB 权重不再进 WebView，下一次会用它重试。上面这条记录来自旧的路径。'
+          ? '这台设备走原生插件算 emissions —— 那 230MB 权重不再进 WebView。已经算完的块存在断点里，接着算不会从头开始。'
           : blocked
             ? '两档后端都被杀过了 —— 这台设备跑不动这个模型。自动对齐已停掉，请在桌面上对齐，句级时间戳会跟着备份同步回来。'
             : '下一次会自动换一档更保守的后端重试（同一档不会连试两次）。'}
@@ -140,7 +200,11 @@ export function AlignCrashBanner() {
             dismiss();
           }}
         >
-          {native ? '再试一次（用原生插件）' : '再试一次（用降档后的后端）'}
+          {native
+            ? crash.chunk && crash.chunks
+              ? `接着算（上次到第 ${crash.chunk}/${crash.chunks} 块）`
+              : '接着算'
+            : '再试一次（用降档后的后端）'}
         </button>
         <button className="underline" onClick={dismiss}>
           知道了

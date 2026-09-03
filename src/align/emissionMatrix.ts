@@ -54,12 +54,26 @@ export interface EmissionMatrix {
 }
 
 export interface EmissionsProgress {
-  stage: 'model' | 'infer';
+  /**
+   * `decode` 只有**自己解码的 provider** 会报（原生那条：mp3 过桥、AVAudioFile 在
+   * 原生侧解）。本机 provider 收到的已经是波形,它从 `model` 开始。
+   */
+  stage: 'decode' | 'model' | 'infer';
   /** 0..1,仅 infer 阶段有意义 */
   fraction?: number;
   /** model 阶段:已下载字节 / 总字节 */
   loaded?: number;
   total?: number;
+  /**
+   * infer 阶段:已算完第几块 / 一共几块。
+   *
+   * 有了 `fraction` 还要这两个数,是 2026-09-03 iPhone 那次「开始之后好几分钟
+   * 一动不动」逼出来的:比例是个**没有单位**的量,4% 既可能是「正在正常爬」
+   * 也可能是「卡在这里了」。块数有单位 —— 分母一出来就能算出「一块大约多久」,
+   * 于是界面能说「还要 11 分钟」,而不是让人盯着一个不动的百分数猜。
+   */
+  chunk?: number;
+  chunks?: number;
 }
 
 /**

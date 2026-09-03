@@ -20,6 +20,16 @@ import type { AlignProgress } from '@/align/align';
 export interface AlignTask {
   lessonId: string;
   title: string;
+  /**
+   * 人自己点的，还是导入流程排进来的。
+   *
+   * 这一位现在**决定手机上跑不跑**（变更 33）：iOS 原生壳上自动对齐不再启动，
+   * 只有手动那一次才跑。理由不是「怕崩」——原生这条路是稳的 —— 而是**时长**：
+   * 一课十几分钟，而 iOS 默认 30 秒到 2 分钟就锁屏，锁屏或切走 App 之后进程被挂起，
+   * 带着 400MB 常驻被挂起的进程又正是 jetsam 最先挑的那一个。
+   * 也就是说自动跑在手机上十有八九跑不完，只是白热一台机器。
+   */
+  manual?: boolean;
 }
 
 export interface AlignDone extends AlignTask {
@@ -30,7 +40,23 @@ export interface AlignDone extends AlignTask {
 }
 
 interface AlignState {
-  current: (AlignTask & { progress: AlignProgress; startedAt: number }) | null;
+  /**
+   * `inferStartedAt` 是**推理那一段**开始的时刻，不是整次运行的开始。
+   * 分开记是为了算「还要多久」：前面那两段（过桥 + 解码 + 加载 230MB 权重）在手机上
+   * 要几分钟，把它们摊进「每块平均耗时」会让预估离谱地偏大。
+   *
+   * `inferStartedChunk` 是那一刻**已经算完几块**了。断点续算（变更 33）之后它不一定是 0：
+   * 续算时第一条事件报的是「第 13/27 块」，拿 13 去除刚过去的两秒会算出一个荒谬的速度，
+   * 于是「还要多久」会说出「约还需 4 秒」这种话。只有这一段里新算完的块才能当样本。
+   */
+  current:
+    | (AlignTask & {
+        progress: AlignProgress;
+        startedAt: number;
+        inferStartedAt?: number;
+        inferStartedChunk?: number;
+      })
+    | null;
   queue: AlignTask[];
   lastDone: AlignDone | null;
   lastError: (AlignTask & { message: string }) | null;
@@ -89,13 +115,18 @@ export const useAlignStore = create<AlignState>((set, get) => ({
     if (!lesson) return;
     if (!options.manual) {
       if (get().blocked) return;
+      // 手机上不自动跑（变更 33）。**这个判断必须是设备本地的** ——
+      // autoAlignOnImport 是同步项（sync/docs.ts），把它设成 false 会传染到桌面，
+      // 而桌面上一课 26 秒，那里自动跑是完全对的。
+      // 课程页会明确说「这一课还没有时间戳」并给出两个出路（AlignStatus）。
+      if (get().native) return;
       // FR-15 的那个开关还在（设置页）。默认开 —— 「下载完就能直接练」是这个功能的全部意义。
       if (!useSettingsStore.getState().settings.autoAlignOnImport) return;
     }
     const { current, queue } = get();
     if (current?.lessonId === lessonId || queue.some((t) => t.lessonId === lessonId)) return;
     set({
-      queue: [...queue, { lessonId, title: lesson.title }],
+      queue: [...queue, { lessonId, title: lesson.title, manual: options.manual }],
       lastError: null,
     });
     void drain();
@@ -126,6 +157,14 @@ async function drain(): Promise<void> {
       continue;
     }
 
+    // 手机那道闸门在这里**再问一次**。enqueue 里问的是 store 里的 `native`，
+    // 而它由 init() 异步填（要过一次原生桥）—— 启动后立刻导入的话那一位可能还是 false。
+    // 这里问的是真身，且它有缓存，所以不花钱。
+    if (!task.manual && (await nativeEmissionsAvailable())) {
+      useAlignStore.setState({ queue: rest, native: true });
+      continue;
+    }
+
     const startedAt = Date.now();
     useAlignStore.setState({
       queue: rest,
@@ -137,7 +176,17 @@ async function drain(): Promise<void> {
       const result = await alignLesson(lesson, (progress) => {
         const { current } = useAlignStore.getState();
         if (current?.lessonId === task.lessonId) {
-          useAlignStore.setState({ current: { ...current, progress } });
+          // 第一条 infer 事件报的是「已经算完几块」（分母已知、这一块还没算），
+          // 正好是计时起点。续算时它是 13 而不是 0，所以基线要连块号一起记。
+          const first = progress.stage === 'infer' && current.inferStartedAt === undefined;
+          useAlignStore.setState({
+            current: {
+              ...current,
+              progress,
+              inferStartedAt: first ? Date.now() : current.inferStartedAt,
+              inferStartedChunk: first ? (progress.chunk ?? 0) : current.inferStartedChunk,
+            },
+          });
         }
       });
       useAlignStore.setState({

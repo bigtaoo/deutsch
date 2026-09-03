@@ -26,6 +26,9 @@ export interface AlignProgress {
   /** model 阶段的下载进度 */
   loaded?: number;
   total?: number;
+  /** infer 阶段：已算完第几块 / 一共几块。理由见 EmissionsProgress 上那段 */
+  chunk?: number;
+  chunks?: number;
 }
 
 export interface AlignOutcome extends Timings {

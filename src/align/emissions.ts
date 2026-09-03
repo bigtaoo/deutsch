@@ -152,6 +152,10 @@ export const computeEmissions: EmissionsProvider = async (
   const chunks = planChunks(audio.length, config.sampleRate, config.frameStride);
   const prepare = processor as (a: Float32Array) => Promise<Record<string, Tensor>>;
 
+  // 第一块算完之前先把**分母**报出去。手机上一块要几十秒，界面在那之前
+  // 只能显示上一个阶段 —— 而「模型加载完了没有」正是那几分钟里唯一想知道的事。
+  onProgress?.({ stage: 'infer', fraction: 0, chunk: 0, chunks: chunks.length });
+
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
     const slice = audio.subarray(chunk.sampleStart, chunk.sampleEnd);
@@ -174,7 +178,12 @@ export const computeEmissions: EmissionsProvider = async (
         g * vocabSize,
       );
     }
-    onProgress?.({ stage: 'infer', fraction: (i + 1) / chunks.length });
+    onProgress?.({
+      stage: 'infer',
+      fraction: (i + 1) / chunks.length,
+      chunk: i + 1,
+      chunks: chunks.length,
+    });
   }
 
   return {

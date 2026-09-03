@@ -13,7 +13,7 @@ import { Banner, Button } from '@/components/ui';
 import type { Lesson } from '@/types/models';
 
 export function AlignStatus({ lesson }: { lesson: Lesson }) {
-  const { current, queue, blocked, enqueue } = useAlignStore();
+  const { current, queue, blocked, native, enqueue } = useAlignStore();
 
   const hasAudio = lesson.audioDuration !== undefined;
   const usable = lesson.sentences.filter((s) => !s.excluded);
@@ -34,13 +34,35 @@ export function AlignStatus({ lesson }: { lesson: Lesson }) {
         {!hasAudio && <span className="text-neutral-400">这一课还没有音频</span>}
         {hasAudio && !busy && !queued && (
           <Button
-            variant={timed.length === 0 ? 'primary' : 'ghost'}
+            // 手机上这个按钮不再是 primary：主路径是「桌面算完同步过来」，
+            // 在这台手机上跑是那条要付十几分钟的备用路。按钮的显眼程度要跟这件事一致。
+            variant={timed.length === 0 && !native ? 'primary' : 'ghost'}
             onClick={() => enqueue(lesson.id, { manual: true })}
           >
-            {timed.length === 0 ? '自动对齐' : '重新对齐'}
+            {native
+              ? timed.length === 0
+                ? '在这台手机上对齐（约十几分钟）'
+                : '在这台手机上重对（约十几分钟）'
+              : timed.length === 0
+                ? '自动对齐'
+                : '重新对齐'}
           </Button>
         )}
       </div>
+
+      {/*
+        手机上「还没有时间戳」是个**正常状态**，不是故障 —— 主路径是桌面算完同步过来。
+        这条必须说清楚，否则用户看到的是「导入完了什么也没发生」，
+        而那和 §7.10 那次「进程被系统杀掉」在界面上又是同一个样子。
+      */}
+      {native && hasAudio && timed.length === 0 && !busy && !queued && (
+        <Banner tone="info">
+          这一课还没有时间戳。手机上导入后<strong>不会</strong>自动对齐 —— 一课要十几分钟满载，
+          而且必须一直亮屏、别切出去（iOS 会把后台进程挂起）。
+          在桌面上对齐一次，句级和词级时间戳都会跟着同步回来，这台手机上直接就能练。
+          真的只有手机的时候，点上面那个按钮 —— 它一块一块算，中途被打断下次接着算。
+        </Banner>
+      )}
 
       {blocked && hasAudio && (
         <Banner tone="warn">

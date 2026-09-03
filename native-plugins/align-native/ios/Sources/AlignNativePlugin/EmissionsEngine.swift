@@ -4,11 +4,14 @@ import OnnxRuntimeBindings
 enum EmissionsError: LocalizedError {
     case vocabMismatch(expected: Int, got: Int)
     case badOutput(String)
+    /// 用户按了「停止」。已经算完的块留在断点里，下一次接着算。
+    case cancelled
 
     var errorDescription: String? {
         switch self {
         case .vocabMismatch(let expected, let got): return "模型词表大小是 \(got)，配置写的是 \(expected)"
         case .badOutput(let what): return "模型输出不对：\(what)"
+        case .cancelled: return "已取消"
         }
     }
 }
@@ -33,6 +36,17 @@ final class EmissionsEngine {
         let frameStride: Int
         let chunkSeconds: Double
         let overlapSeconds: Double
+        /**
+         断点续算的键，一般是 lesson id。`nil` = 不做断点。
+
+         为什么可以为 nil：断点是**手机上才需要**的东西（变更 33），
+         而这个引擎将来也可能被别处调用。nil 时行为与 0.2.1 完全一样。
+         */
+        let checkpointKey: String?
+        /// 进指纹用：桥上收到的音频字节数。
+        let audioBytes: Int
+        /// 进指纹用：权重文件名。换了 dtype 中间态必须作废。
+        let modelName: String
     }
 
     struct Result {
@@ -72,13 +86,66 @@ final class EmissionsEngine {
         self.session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: sessionOptions)
     }
 
-    func run(samples: [Float], onProgress: (Double) -> Void) throws -> Result {
+    /// `onProgress(done, total)` —— **块数而不是比例**，而且第 0 块之前就先报一次。
+    ///
+    /// 两处都是 2026-09-03 那次真机症状逼出来的：iPhone 上「开始之后好几分钟一动不动」。
+    /// 原因不是卡住，是这条路上**从头到尾只有一种事件**（每块算完报一个比例），
+    /// 而在手机上「加载 230MB 权重 + 算完第一块」本身就要好几分钟 ——
+    /// 于是最需要耐心的那一段恰好是唯一没有任何反馈的一段，和真的卡死长得一模一样。
+    /// 现在 total 一出来就先报 (0, total)：进度条从此刻起就能说出「第 0/27 块」，
+    /// 「模型加载完了没有」也因此变成界面上看得见的事。
+    func run(
+        samples: [Float],
+        onProgress: (Int, Int) -> Void,
+        isCancelled: () -> Bool = { false }
+    ) throws -> Result {
         let totalFrames = samples.count / options.frameStride
         var logProbs = [Float](repeating: Float(log(1.0 / Double(options.vocabSize))),
                                count: totalFrames * options.vocabSize)
 
         let chunks = planChunks(totalSamples: samples.count)
-        for (index, chunk) in chunks.enumerated() {
+
+        // ── 断点续算（变更 33）──
+        // 手机上一课十几分钟，而切走 App、被 jetsam 杀、按停止这三件事随时会打断它。
+        // 块是顺序算的，所以「算到哪儿了」就是一个数字，续算 = 从那一块开始。
+        let checkpoint = options.checkpointKey.flatMap {
+            EmissionsCheckpoint(
+                key: $0,
+                fingerprint: EmissionsCheckpoint.Fingerprint(
+                    samples: samples.count,
+                    audioBytes: options.audioBytes,
+                    vocabSize: options.vocabSize,
+                    frameStride: options.frameStride,
+                    chunkSeconds: options.chunkSeconds,
+                    overlapSeconds: options.overlapSeconds,
+                    chunks: chunks.count,
+                    model: options.modelName
+                )
+            )
+        }
+        var start = 0
+        if let resumed = checkpoint?.load() {
+            logProbs = resumed.values
+            start = resumed.done
+        }
+
+        // 一课要分多少块，这是**推理开始前**唯一能报出来的量。报了它，界面才有分母；
+        // 续算时它同时也是「上次算到哪儿」—— 进度条一上来就停在第 13/27 块，
+        // 而不是从 0 开始让人以为白算了。
+        onProgress(start, chunks.count)
+
+        // 全部块都在断点里（上次算完了但没能把结果交回 JS：比如死在回程那 4MB 上）。
+        // 这时候连一次推理都不用做。**代价是这一趟仍然白加载了一次权重** ——
+        // 要省掉它就得把 planChunks 挪到 session 之前，那是另一次重构，而这条路很窄。
+        if start >= chunks.count {
+            return result(logProbs: logProbs, totalFrames: totalFrames, samples: samples.count)
+        }
+
+        for index in start..<chunks.count {
+            // 只在**块边界**检查取消。块内没有检查点：一次 session.run 是原子的,
+            // 而它本身就是这里的时间粒度（几十秒）。
+            if isCancelled() { throw EmissionsError.cancelled }
+            let chunk = chunks[index]
             let normalized = normalize(Array(samples[chunk.sampleStart..<chunk.sampleEnd]))
             let (local, chunkFrames) = try infer(normalized)
 
@@ -92,17 +159,22 @@ final class EmissionsEngine {
                     logProbs[g * options.vocabSize + v] = local[localFrame * options.vocabSize + v]
                 }
             }
-            onProgress(Double(index + 1) / Double(chunks.count))
+            // 先落盘再报进度：界面上说「第 13 块好了」的时候，磁盘上就真的有 13 块。
+            checkpoint?.save(values: logProbs, done: index + 1)
+            onProgress(index + 1, chunks.count)
         }
 
-        let data = logProbs.withUnsafeBufferPointer {
-            Data(buffer: $0)
-        }
-        return Result(
-            logProbs: data,
+        // 算完了就把中间态扔掉。**只有这一条路上能扔** —— 取消和抛错都要留着它。
+        checkpoint?.discard()
+        return result(logProbs: logProbs, totalFrames: totalFrames, samples: samples.count)
+    }
+
+    private func result(logProbs: [Float], totalFrames: Int, samples: Int) -> Result {
+        Result(
+            logProbs: logProbs.withUnsafeBufferPointer { Data(buffer: $0) },
             frames: totalFrames,
             vocabSize: options.vocabSize,
-            duration: Double(samples.count) / options.sampleRate
+            duration: Double(samples) / options.sampleRate
         )
     }
 

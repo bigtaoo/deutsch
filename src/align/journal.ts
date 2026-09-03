@@ -46,6 +46,12 @@ export interface AlignRunRecord {
   loaded?: number;
   total?: number;
   fraction?: number;
+  /**
+   * 死在第几块。比 `fraction` 有用得多：它能区分「一块都没算完就死了」
+   * （= 死在加载权重那一步）和「算到一半死了」，而这两种情况的下一步不一样。
+   */
+  chunk?: number;
+  chunks?: number;
   /** Chromium 才有 performance.memory；Safari 没有，这里就是 undefined */
   heapMB?: number;
   status: 'running' | 'done' | 'error' | 'crashed';

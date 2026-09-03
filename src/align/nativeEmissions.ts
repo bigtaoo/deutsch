@@ -45,11 +45,32 @@ interface AlignNativePlugin {
     frameStride: number;
     chunkSeconds: number;
     overlapSeconds: number;
+    /**
+     * 断点续算的键（用 lesson id）。原生侧按它在 Caches 里存「已经算完的块」，
+     * 下一次同一个键 + 同一份音频就从那儿接着算。见插件里的 Checkpoint.swift。
+     */
+    checkpointKey?: string;
   }): Promise<NativeEmissionsResult>;
+  /** 在下一个块边界停下。已经算完的块留在断点里 —— 这才是手机上「停止」敢做的事。 */
+  cancelEmissions(): Promise<void>;
   addListener(
     event: 'emissionsProgress',
-    handler: (data: { fraction: number }) => void,
+    handler: (data: NativeProgressEvent) => void,
   ): Promise<{ remove: () => Promise<void> }>;
+}
+
+/**
+ * 插件报进度的形状。**每个阶段都报一次，哪怕那个阶段给不出比例** ——
+ * 见下面 `computeNativeEmissions` 里那段关于「静默窗口」的注释。
+ *
+ * 每一项都是可选的：这条事件的解析必须能容忍旧壳。应用壳会自己更新（变更 30），
+ * 但更新是异步的，中间必然存在「新 JS + 旧壳」的一小段时间，那时只有 `fraction`。
+ */
+interface NativeProgressEvent {
+  phase?: 'decode' | 'model' | 'infer';
+  fraction?: number;
+  chunk?: number;
+  chunks?: number;
 }
 
 /**
@@ -131,6 +152,36 @@ function decodeFloat32(base64: string): Float32Array {
 }
 
 /**
+ * 停掉正在跑的那一课。**不清断点** —— 下一次点「接着算」从上次那一块继续。
+ *
+ * 只在块边界生效（一块几十秒），所以按下去之后不会立刻停。旧壳上没有这个方法，
+ * 桥会回一个 rejection，这里咽掉：取消失败不该在界面上变成一条错误。
+ */
+export async function cancelNativeEmissions(): Promise<void> {
+  try {
+    await (await plugin()).cancelEmissions();
+  } catch {
+    // 旧壳（0.2.1）没有 cancelEmissions。那台机器上「停止」照旧是不生效的。
+  }
+}
+
+/**
+ * 插件的事件 → 那道缝的进度形状。
+ *
+ * 没有 `phase` 的事件当成 infer：那是旧壳（0.2.1）的形状，它只报比例。
+ */
+function toProgress(event: NativeProgressEvent): EmissionsProgress {
+  if (event.phase === 'decode') return { stage: 'decode' };
+  if (event.phase === 'model') return { stage: 'model' };
+  return {
+    stage: 'infer',
+    fraction: event.fraction ?? 0,
+    chunk: event.chunk,
+    chunks: event.chunks,
+  };
+}
+
+/**
  * 原生 provider。签名跟 `EmissionsProvider` 差在第一个参数（Blob 而不是波形）——
  * 那道缝的契约管的是**产物**，不是入口；解码在哪一侧做是这两个实现各自的自由。
  */
@@ -138,12 +189,26 @@ export async function computeNativeEmissions(
   audio: Blob,
   config: AlignModelConfig = MMS_FA,
   onProgress?: (p: EmissionsProgress) => void,
+  /** 断点续算的键。给 lesson id；不给就每次从头算 */
+  checkpointKey?: string,
 ): Promise<EmissionMatrix> {
   const api = await plugin();
-  onProgress?.({ stage: 'model' });
+  // ── 这一段为什么这么啰嗦 ──
+  // 2026-09-03 真机（iPhone 13、iOS 0.2.1，第一个带这个插件的包）上的症状是
+  // 「自动对齐一开始就卡住，好几分钟没有进展」。真正的问题不是慢，是**静默**：
+  // 这条路上原来只有一种事件（每块算完报一个比例），而在它之前排着三件在手机上
+  // 都要几十秒到几分钟的事 ——
+  //   ① 7MB mp3 → 9MB base64 → 过 WKWebView 的消息桥
+  //   ② 原生侧 AVAudioFile 解码
+  //   ③ ORTSession 加载 230MB 的 q4 权重（读文件 + 解 protobuf + 预打包）
+  // 加上第一块推理本身（20 秒音频，iPhone CPU 上几十秒），第一个事件要到
+  // 开始后好几分钟才可能出现。那几分钟里进度条停在「加载对齐模型 …」5%，
+  // 与「进程卡死」在界面上**完全无法区分** —— 而这个功能真实的历史故障
+  // （2026-09-01，进程被 jetsam 杀掉）恰好就长这样。所以现在每一步都要出声。
+  onProgress?.({ stage: 'decode' });
 
   const listener = await api
-    .addListener('emissionsProgress', ({ fraction }) => onProgress?.({ stage: 'infer', fraction }))
+    .addListener('emissionsProgress', (event) => onProgress?.(toProgress(event)))
     .catch(() => null);
 
   try {
@@ -160,6 +225,7 @@ export async function computeNativeEmissions(
       // 要能互换，而块边界策略会改变边界那几帧的后验。
       chunkSeconds: 20,
       overlapSeconds: 2,
+      checkpointKey,
     });
 
     if (result.vocabSize !== config.vocabSize) {
