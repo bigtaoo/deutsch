@@ -182,44 +182,51 @@ export function SentencesTab({ lesson, cache }: Props) {
 /**
  * 开头 N 句：排除 / 恢复。
  *
- * 默认 3 —— DW 的「标题 + 导语」块恰好切成 3 句，这也正是 FR-13.7 以前自动排掉的那几句。
- * 「恢复」是这个控件存在的主要理由，所以它排在前面。
+ * 默认 **0**，不是 3。曾经默认 3（DW 的「标题 + 导语」块恰好三句），但那是把
+ * 「上一次我想排除几句」当成了「下一次该排除几句」—— 排除范围一改就得重新对齐，
+ * 一个非零默认值加一次误点，代价是整课时间戳重算。0 时两个按钮都禁用，
+ * 想批量操作的人自己填一个数，这一步同时就是确认。
  */
 function HeadControl({ onSet }: { onSet: (n: number, excluded: boolean) => void }) {
-  const [n, setN] = useState(3);
+  const [n, setN] = useState(0);
   return (
     <div className="flex items-center gap-2 text-sm">
       <span className="text-neutral-600">开头</span>
       <input
         type="number"
-        min={1}
+        min={0}
         value={n}
-        onChange={(e) => setN(Math.max(1, Number(e.target.value) || 1))}
+        onChange={(e) => setN(Math.max(0, Number(e.target.value) || 0))}
         className="w-16 rounded border border-neutral-300 px-2 py-1"
       />
       <span className="text-neutral-600">句</span>
-      <Button onClick={() => onSet(n, false)}>恢复</Button>
-      <Button variant="ghost" onClick={() => onSet(n, true)}>
+      <Button disabled={n === 0} onClick={() => onSet(n, false)}>
+        恢复
+      </Button>
+      <Button variant="ghost" disabled={n === 0} onClick={() => onSet(n, true)}>
         排除
       </Button>
     </div>
   );
 }
 
+/** 同上，默认 0：文末那几句 Glossar 只有手动粘贴的课才有，不该由默认值替所有课猜。 */
 function ExcludeTailControl({ onExclude }: { onExclude: (n: number) => void }) {
-  const [n, setN] = useState(5);
+  const [n, setN] = useState(0);
   return (
     <div className="flex items-center gap-2 text-sm">
       <span className="text-neutral-600">批量排除文末</span>
       <input
         type="number"
-        min={1}
+        min={0}
         value={n}
-        onChange={(e) => setN(Math.max(1, Number(e.target.value) || 1))}
+        onChange={(e) => setN(Math.max(0, Number(e.target.value) || 0))}
         className="w-16 rounded border border-neutral-300 px-2 py-1"
       />
       <span className="text-neutral-600">句</span>
-      <Button onClick={() => onExclude(n)}>执行</Button>
+      <Button disabled={n === 0} onClick={() => onExclude(n)}>
+        执行
+      </Button>
     </div>
   );
 }
