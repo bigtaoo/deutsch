@@ -1097,6 +1097,27 @@ viterbi 仍在 WebView 的 Worker 里 —— 那道缝（FR-15.13）是变更 21
 **版本 0.2.0 构建号 4，IPA 400MB**（0.1.0 是 381MB —— 权重降了 72.3 MiB，
 内置词典加了 35MB，净 +19MB）。装机体积还没量。这是**第一个带同步的包**。
 
+**0.2.1 出包实测（2026-09-03，run 33750498587）**：**版本 0.2.1 构建号 7，IPA 408MB**，
+`UPLOAD SUCCEEDED`。这是**第一个带原生对齐插件的包**（变更 31 / FR-15.14）。
++8MB 全是 ONNX Runtime 那个 xcframework —— 权重一份没多（原生和 WebGPU 那档
+共用包里同样的两份），所以砍掉 `q4f16` 那 196MB 之后装机应该落到 210MB 量级。
+
+**同一个 tag 打了两次包，第一次 archive 失败（exit 65）**，唯一一条错误是
+`AVAudioConverterOutputStatus has no member 'inputRanOut'` —— 那个 case 叫
+**`inputRanDry`**。值得记的是这次失败**能有多干净**：包图全对（SwiftPM 解析到
+onnxruntime **1.24.2**，模块名 `OnnxRuntimeBindings`），另外两个 Swift 文件
+一条错都没有 —— Swift 是整个模块一起 type-check 的，所以「只报了这一条」
+等于「其余都过了」。
+
+**`ios-v0.2.1` 这个 tag 指向的是编不过的那个提交（`239c306`）**，真正被构建的是
+`b032b40`，走的是 **手动 Run**（`workflow_dispatch` 取 `package.json` 的版本号）。
+没有重打 tag：force-push 一个 `ios-v*` tag 会**再触发一次出包**，等于往 TestFlight
+多推一个同版本的重复构建。**下次遇到编译失败，正确的顺序是先修好、再打 tag。**
+
+**还没有答案的仍然是那个真正的问题**：编得过不等于跑得动。`model_q4.onnx` 靠
+`MatMulNBits`（com.microsoft 域，146 个节点），ORT 的 iOS 官方分发里有没有这个
+算子的 CPU 内核，只有真机能回答；没有的话报错是「算子找不到」，补救是换 `bnb4`。
+
 **这一次撞了一道只有装上第三方插件才会出现的坑，第一次 archive 直接失败**（exit 65）：
 `xcodebuild` 命令行上的构建设置会套到**每一个** target，包括 SPM 依赖的包 target，
 而那些包不支持描述文件 —— `Alamofire_Alamofire does not support provisioning profiles`，

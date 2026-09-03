@@ -270,9 +270,9 @@ git tag ios-v0.1.0; git push origin ios-v0.1.0
 
 第一次跑之前要在仓库 Settings → Secrets 里配好九个签名相关的 secret，
 清单和说明在 `.github/workflows/release-ios.yml` 头部。
-**包不小**：IPA 381MB、iPhone 上装机 553.6MB（其中 490MB 是对齐权重），
-超过蜂窝下载门槛，装的时候要 Wi-Fi。（第 2 档换成 q4 之后权重降到 417.9 MiB，
-装机应降到约 481MB —— 下一次出包时回写实测值。）
+**包不小**：0.2.1 的 IPA 是 **408MB**（0.2.0 是 400MB，+8MB 是 ONNX Runtime 的
+xcframework），其中 418MB 量级是对齐权重。超过蜂窝下载门槛，装的时候要 Wi-Fi。
+（原生插件跑通之后可以只带 `q4` 一份，装机应落到 210MB 量级。）
 
 **iOS 上的自动对齐走原生插件**（2026-09-03，SPEC §0 变更 31）：那 230MB 权重不进 WebView，
 所以下面这套「降档 / 停机」在 iPhone 上不再生效 —— 设置页「对齐后端」第一行会直接说
