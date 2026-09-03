@@ -79,6 +79,38 @@ export interface DevicePlan {
 }
 
 /**
+ * 原生插件那一档（SPEC §0 变更 31）。**它不在 `PLAN_LADDER` 里**，故意的：
+ * 阶梯是「这台设备的 WebView 里哪一档不会被杀」，而原生根本不在 WebView 里跑，
+ * 崩溃计数与降档规则对它都没有意义。所以 `planStep` 用 `NATIVE_PLAN_STEP`（-1）——
+ * 它永远撞不上 `crashedSteps()` 里的 0/1，也就不会污染那两档的判据。
+ *
+ * dtype 是 `q4`（230.3 MiB）而不是 WebGPU 那档的 `q4f16`：
+ * `q4f16` 要 fp16 算力，那是 WebGPU 才有的；原生走 ORT 的 CPU EP，
+ * 而 `q4` 用的 MatMulNBits 正是 ORT 自己的 4-bit 通路。
+ * 换 dtype 要三处一起改：这里、`scripts/stage-align-assets.mjs` 的文件表、
+ * 以及原生插件里那个文件名（`EmissionsEngine.swift`）。
+ */
+export interface NativePlan {
+  device: 'native';
+  dtype: Dtype;
+}
+
+/** 黑匣子与诊断里记的「用的哪套后端」。浏览器那两档 + 原生那一档。 */
+export type RunPlan = DevicePlan | NativePlan;
+
+export const NATIVE_PLAN: NativePlan = { device: 'native', dtype: 'q4' };
+export const NATIVE_PLAN_STEP = -1;
+
+/**
+ * 「第几档」这句话只对浏览器那两档成立。原生不在阶梯上，
+ * 给它编一个档号会让诊断页说出「第 0 档」这种没有意义的话。
+ */
+export function planLabel(plan: RunPlan, planStep: number): string {
+  const backend = `${plan.device}/${plan.dtype}`;
+  return plan.device === 'native' ? `${backend}（原生插件，不在阶梯上）` : `${backend}（第 ${planStep + 1} 档）`;
+}
+
+/**
  * 后端阶梯。**顺序 = 从最省内存到最能兜底**，不是从快到慢（虽然这里恰好一致）。
  *
  * 之所以是「阶梯」而不是一个函数算出来的唯一答案：手机上加载权重会把应用整个搞死

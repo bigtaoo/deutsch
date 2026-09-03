@@ -274,6 +274,10 @@ git tag ios-v0.1.0; git push origin ios-v0.1.0
 超过蜂窝下载门槛，装的时候要 Wi-Fi。（第 2 档换成 q4 之后权重降到 417.9 MiB，
 装机应降到约 481MB —— 下一次出包时回写实测值。）
 
+**iOS 上的自动对齐走原生插件**（2026-09-03，SPEC §0 变更 31）：那 230MB 权重不进 WebView，
+所以下面这套「降档 / 停机」在 iPhone 上不再生效 —— 设置页「对齐后端」第一行会直接说
+「emissions 由原生插件算」。插件源码与注意事项在 `native-plugins/align-native/README.md`。
+
 **手机上对齐被系统杀掉时**：重开应用，顶部会有一条黄条说明上次死在哪一步、用的哪套后端 ——
 这条信息来自边跑边落盘的黑匣子（`src/align/journal.ts`），设置页「对齐后端（FR-15 诊断）」里留最近几次。
 下一次会自动换一档更保守的后端（`webgpu/q4f16` → `wasm/q4`）；两档都被杀过就停掉自动对齐，
@@ -340,6 +344,11 @@ npm run stage:align
 - **手机上降档救不了。** iPhone 13 两档都在加载模型时被杀，而 `q4f16` 已经是这个模型最小的变体。
   真要在手机上跑，得换小一个数量级的模型，或者把 emissions 那一半挪出 WebView ——
   那道缝已经切好了，见 `src/align/emissionMatrix.ts`。
+  **2026-09-03 走了后者**：iOS 上 emissions 由原生插件算（`native-plugins/align-native`，
+  Swift + ONNX Runtime），viterbi 仍在 WebView 的 Worker 里，下游一行没动。
+  那个插件必须是一个装在 `package.json` 里的 npm 包（`file:native-plugins/align-native`）——
+  `ios/App/CapApp-SPM/Package.swift` 由 `cap sync` 按已装插件重写，手工加依赖会被抹掉。
+  **Swift 那半截本机编不了**（Windows 开发机），只有 CI + TestFlight 能验。
 - **权重不要一次性整取。** Capacitor 的 iOS scheme handler 对非媒体扩展名走 `Data(contentsOf:)`，
   把整份 187MB 读进原生进程的堆；transformers.js 那边还会**再把它抄一份进 Cache API**。
   加上 JS 缓冲和 ORT 自己的拷贝，峰值接近 1GB —— 实测表现是进度条走到

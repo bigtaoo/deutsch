@@ -1,0 +1,19 @@
+{
+  "name": "deutsch-align-native",
+  "version": "0.1.0",
+  "private": true,
+  "description": "帧级 log-prob（emissions）在 iOS 原生进程里算 —— 见 src/align/emissionMatrix.ts 那道缝",
+  "license": "MIT",
+  "files": [
+    "ios/Sources",
+    "Package.swift"
+  ],
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  }
+}

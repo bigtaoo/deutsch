@@ -10,7 +10,16 @@ import { ensureGoogleReady } from '@/sync/session';
 import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
 import { DictSection } from './settings/DictSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { MMS_FA, LOCAL_MODEL_PATH, PLAN_LADDER, hasLocalWeights, pickDevice } from '@/align/config';
+import {
+  MMS_FA,
+  LOCAL_MODEL_PATH,
+  NATIVE_PLAN,
+  PLAN_LADDER,
+  hasLocalWeights,
+  pickDevice,
+  planLabel,
+} from '@/align/config';
+import { nativeEmissionsAvailable } from '@/align/nativeEmissions';
 import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
 import { nativePlatform } from '@/platform/native';
 
@@ -77,8 +86,20 @@ function AlignBackendSection() {
   useEffect(() => {
     void (async () => {
       const out: string[] = [];
+      // 原生那一档要排在最前面：它一旦可用，下面关于 WebGPU / 降档 / 「下一次加载哪份权重」
+      // 的每一句话在这台设备上都不再成立 —— 权重压根不进 WebView。
+      const native = await nativeEmissionsAvailable();
+      if (native) {
+        out.push(
+          `emissions 由原生插件算：${NATIVE_PLAN.device} / ${NATIVE_PLAN.dtype} —— 权重不进 WebView，也不参与降档`,
+        );
+      }
       const plan = await pickDevice();
-      out.push(`这台设备能跑的最优后端：${plan.device} / ${plan.dtype}`);
+      out.push(
+        native
+          ? `WebView 那条路（现在不走）：${plan.device} / ${plan.dtype}`
+          : `这台设备能跑的最优后端：${plan.device} / ${plan.dtype}`,
+      );
       // 崩过就降档（journal.ts）。下面那个「实际用的是这份」的箭头要跟着降档走，
       // 不然它指的是一份下一次根本不会加载的权重 —— 而这一页存在的理由就是「砍掉没用的那份」。
       const step = nextPlanStep(PLAN_LADDER.length);
@@ -92,7 +113,7 @@ function AlignBackendSection() {
       // 手写的那份已经漂过一次（第 2 档从 int8 换成 q4 时这里还在探一份压根不带的权重)。
       for (const dtype of PLAN_LADDER.map((p) => p.dtype)) {
         const url = `${LOCAL_MODEL_PATH}${MMS_FA.modelId}/onnx/model_${dtype}.onnx`;
-        const mark = dtype === next.dtype ? ' ← 下一次实际会加载这份' : '';
+        const mark = dtype === (native ? NATIVE_PLAN.dtype : next.dtype) ? ' ← 下一次实际会加载这份' : '';
         out.push(`　model_${dtype}.onnx：${await probeSize(url)}${mark}`);
       }
       setLines(out);
@@ -134,7 +155,7 @@ function AlignBackendSection() {
               {run.stage}
               {run.total ? ` ${formatBytes(run.loaded ?? 0)}/${formatBytes(run.total)}` : ''}
               {' · '}
-              {run.plan.device}/{run.plan.dtype}（第 {run.planStep + 1} 档）{' · '}
+              {planLabel(run.plan, run.planStep)}{' · '}
               {run.platform}
               {run.weights === 'local' ? (run.ranged ? ' · 分片取权重' : ' · 整份取权重') : ' · CDN 权重'}
               {run.heapMB !== undefined ? ` · 堆 ${run.heapMB}MB` : ''}

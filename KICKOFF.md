@@ -437,7 +437,7 @@ Google 对这个值逐字符比对。第二层要修好第一层才会露出来�
   StrictMode 在开发模式下把 effect 调两遍，第二遍会用 null 把「上次被杀掉了」那条黄条覆盖掉 ——
   实测就是这样丢的，记录归档正常而界面上什么都没有
 
-接原生壳（§7.10）踩出来的五条：
+接原生壳（§7.10）踩出来的六条：
 
 - **`base` 千万不要改成 `'./'`。** 上面那句「打包要配 base: './'」只对 **Electron 的 `file://`**
   成立；Capacitor 有真正的 URL 根（iOS `capacitor://localhost/`、Android `https://localhost/`），
@@ -450,6 +450,13 @@ Google 对这个值逐字符比对。第二层要修好第一层才会露出来�
 - **Capacitor 8 的 iOS 走 SPM 不是 CocoaPods**，所以 xcodebuild 用 `-project` 而不是 `-workspace`、
   不跑 `pod install`；模板也不带共享 scheme（自动生成的那份在 gitignore 掉的 `xcuserdata/` 里），
   所以 `App.xcscheme` 手工写了一份入库。funny 停在 Capacitor 6，那边的 workflow 不能照抄
+- **自己写的原生代码必须做成一个装在 `package.json` 里的 npm 包**，不能直接往 iOS 工程里加文件。
+  `ios/App/CapApp-SPM/Package.swift` 由 `cap sync` 按已装插件整份重写（文件头就写着 DO NOT MODIFY），
+  手工加的依赖会在下一次 sync 时被抹掉 —— 而 CI 每次出包都跑 `cap sync ios`。
+  形状见 `native-plugins/align-native`（`file:` 依赖 + `capacitor.ios.src` + 根目录 `Package.swift`）。
+  **包名与 SPM 名字的对应关系是算出来的**：`deutsch-align-native` 经 CLI 的 `fixName`
+  变成 `DeutschAlignNative`，Package.swift 里的 `name:` 与库产物名必须逐字等于它，
+  否则生成的那份引用不到这个包 —— 而报错发生在 Xcode 里，不在 sync 里
 
 环境：Windows 11 + PowerShell。给我可执行命令时请用 PowerShell 语法（`curl.exe` 而非 `curl`，
 `Select-String` 而非 `grep`，`Select-Object -First N` 而非 `head`）。

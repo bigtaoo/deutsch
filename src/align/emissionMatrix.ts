@@ -28,14 +28,14 @@
 // 上到线缆时还可以压（float16 减半、gzip 再减半),但那是 provider 自己的事:
 // 这里定的是**内存里的形状**,编解码器等真的有远端 provider 时再写。
 
-import type { AlignModelConfig, DevicePlan } from './config';
+import type { AlignModelConfig, DevicePlan, NativePlan } from './config';
 
 /** 这个矩阵是谁算出来的。只给诊断和黑匣子看 —— 对齐算法不读它。 */
 export type EmissionSource =
   /** 本机 ORT（WASM/WebGPU),权重在设备上。目前唯一实现,见 emissions.ts */
   | { kind: 'local'; plan: DevicePlan }
-  /** 原生插件算的（Capacitor) */
-  | { kind: 'native'; plan: DevicePlan }
+  /** 原生插件算的（Capacitor + onnxruntime，见 native-plugins/align-native) */
+  | { kind: 'native'; plan: NativePlan }
   /** 远端算的。只记 origin,不记路径与参数 */
   | { kind: 'remote'; origin: string };
 

@@ -12,7 +12,7 @@ import {
   noteStage,
   readHistory,
 } from './journal';
-import { PLAN_LADDER } from './config';
+import { NATIVE_PLAN, NATIVE_PLAN_STEP, PLAN_LADDER, planLabel } from './config';
 
 const base = {
   lessonId: 'l1',
@@ -118,5 +118,22 @@ describe('黑匣子', () => {
     // 历史里两条都在（一条 crashed、一条 done），第 0 档仍然被跳过。
     expect(readHistory().map((r) => r.status)).toEqual(['done', 'crashed']);
     expect(nextPlanStep(PLAN_LADDER.length)).toBe(1);
+  });
+});
+
+// 原生那一档（变更 31）不在阶梯上。这两条测的就是「不在阶梯上」这句话的具体含义 ——
+// 它一旦被算进 crashedSteps()，第 0 档会被误判成崩过，桌面上的降档判据就跟着坏了。
+describe('原生那一档不参与降档', () => {
+  it('原生崩了不影响阶梯：第 0 档仍然是下一次的选择', () => {
+    beginRun({ ...base, plan: NATIVE_PLAN, planStep: NATIVE_PLAN_STEP });
+    detectCrash(); // 没收尾 = 被杀
+    expect(readHistory()[0].status).toBe('crashed');
+    expect(nextPlanStep(PLAN_LADDER.length)).toBe(0);
+    expect(allPlansCrashed(PLAN_LADDER.length)).toBe(false);
+  });
+
+  it('「第几档」这句话只对浏览器那两档说', () => {
+    expect(planLabel(PLAN_LADDER[1], 1)).toBe('wasm/q4（第 2 档）');
+    expect(planLabel(NATIVE_PLAN, NATIVE_PLAN_STEP)).toBe('native/q4（原生插件，不在阶梯上）');
   });
 });

@@ -10,6 +10,7 @@
 import { create } from 'zustand';
 import { AlignWorkerDeath, alignLesson, cancelAlignment, isAligning } from '@/align/client';
 import { PLAN_LADDER } from '@/align/config';
+import { nativeEmissionsAvailable } from '@/align/nativeEmissions';
 import { reviewQueue } from '@/align/apply';
 import { allPlansCrashed, detectCrash, type AlignRunRecord } from '@/align/journal';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -37,6 +38,12 @@ interface AlignState {
   crash: AlignRunRecord | null;
   /** 两档后端都崩过：不再自动跑，只留手动 */
   blocked: boolean;
+  /**
+   * emissions 由原生插件算（iOS，变更 31）。界面要这一位是因为
+   * **崩溃记录会比壳活得久**：黄条里那句「下一次会降一档重试」在这台设备上已经不对了，
+   * 下一次根本不进 WebView。
+   */
+  native: boolean;
 
   init: () => void;
   /**
@@ -60,6 +67,7 @@ export const useAlignStore = create<AlignState>((set, get) => ({
   lastError: null,
   crash: null,
   blocked: false,
+  native: false,
 
   init: () => {
     // **必须真的只跑一次。** detectCrash() 有副作用（把那条 running 记录归档成 crashed），
@@ -69,6 +77,11 @@ export const useAlignStore = create<AlignState>((set, get) => ({
     if (initialized) return;
     initialized = true;
     set({ crash: detectCrash(), blocked: allPlansCrashed(PLAN_LADDER.length) });
+    // 原生那一档不在阶梯上，所以「阶梯全崩过」不该拦它 —— 否则这台 iPhone 上
+    // 自动对齐会因为几条旧壳留下的崩溃记录永远不再启动。
+    void nativeEmissionsAvailable().then((native) => {
+      if (native) set({ native: true, blocked: false });
+    });
   },
 
   enqueue: (lessonId, options = {}) => {

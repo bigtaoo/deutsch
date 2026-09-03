@@ -9,9 +9,19 @@ import { nativePlatform } from '@/platform/native';
 import type { Lesson } from '@/types/models';
 import { applyTimings, type ApplyResult } from './apply';
 import { decodeToMono16k } from './decode';
-import { LOCAL_MODEL_PATH, MMS_FA, PLAN_LADDER, hasLocalWeights, pickPlan } from './config';
+import {
+  LOCAL_MODEL_PATH,
+  MMS_FA,
+  NATIVE_PLAN,
+  NATIVE_PLAN_STEP,
+  PLAN_LADDER,
+  hasLocalWeights,
+  pickPlan,
+} from './config';
 import { emissionTransferables } from './emissionMatrix';
+import { computeNativeEmissions, nativeEmissionsAvailable } from './nativeEmissions';
 import { probeRanged } from './rangedFetch';
+import { buildTarget } from './target';
 import { beginRun, finishRun, nextPlanStep, noteStage } from './journal';
 import type { AlignOutcome, AlignProgress } from './align';
 import type { AlignWorkerInput, AlignWorkerRequest, AlignWorkerResponse } from './worker';
@@ -148,6 +158,11 @@ export async function alignLesson(
   const blob = await getAudioBlob(lesson.id);
   if (!blob) throw new Error('本机没有这一课的音频，先去「素材」里下载');
 
+  // ── 原生那一条（SPEC §0 变更 31）──
+  // iOS 原生壳里 emissions 整块挪出 WebView，走 native-plugins/align-native。
+  // 它不在后端阶梯上：不 pickPlan、不探分片、也不参与降档（见 config.NATIVE_PLAN）。
+  if (await nativeEmissionsAvailable()) return alignLessonNative(lesson, blob, onProgress, options);
+
   // 后端与「随包还是 CDN」都在主线程定：黑匣子在 localStorage 里，Worker 读不到。
   const { plan, step } = await pickPlan(nextPlanStep(PLAN_LADDER.length));
   const platform = await nativePlatform();
@@ -185,22 +200,7 @@ export async function alignLesson(
       release,
     );
 
-    report({ stage: 'apply' });
-    const applied = applyTimings(lesson.sentences, outcome.sentences, {
-      audioDuration: outcome.duration,
-      overwriteManual: options.overwriteManual,
-      words: outcome.words,
-    });
-
-    // 一次写完：句级 + 词级都在 sentences 里，所以只有这一次落库。
-    // saveLesson 自己会更新内存 store 并触发同步，不要在这里重复触发。
-    await useLessonStore.getState().saveLesson({
-      ...lesson,
-      sentences: applied.sentences,
-      // 解码出来的时长比 DW 页面上写的可靠，顺手校正。
-      audioDuration: outcome.duration,
-    });
-
+    const applied = await saveOutcome(lesson, outcome, options, report);
     finishRun('done');
     if (release) terminateAlignWorker();
     return { ...applied, outcome };
@@ -212,6 +212,91 @@ export async function alignLesson(
       err instanceof Error ? err.message : String(err),
     );
     if (release) terminateAlignWorker();
+    throw err;
+  }
+}
+
+/**
+ * 两条路共用的收尾：写回时间戳 → 落库 → 触发同步。
+ *
+ * 抽出来是因为**它必须两条路逐字相同**：这一段决定了「一次对齐的产出有哪些」
+ * （句级 + 词级都进标注层，见变更 26），原生那条路上任何一项漏掉，
+ * 失败方式都是静默的 —— 界面照样说「对齐完成」，只是词级高亮不动。
+ */
+async function saveOutcome(
+  lesson: Lesson,
+  outcome: AlignOutcome,
+  options: { overwriteManual?: boolean },
+  report: (p: AlignProgress) => void,
+): Promise<ApplyResult> {
+  report({ stage: 'apply' });
+  const applied = applyTimings(lesson.sentences, outcome.sentences, {
+    audioDuration: outcome.duration,
+    overwriteManual: options.overwriteManual,
+    words: outcome.words,
+  });
+
+  // 一次写完：句级 + 词级都在 sentences 里，所以只有这一次落库。
+  // saveLesson 自己会更新内存 store 并触发同步，不要在这里重复触发。
+  await useLessonStore.getState().saveLesson({
+    ...lesson,
+    sentences: applied.sentences,
+    // 解码出来的时长比 DW 页面上写的可靠，顺手校正。
+    audioDuration: outcome.duration,
+  });
+  return applied;
+}
+
+/**
+ * 原生那一条（iOS）。与上面那条的差别只有前半截：
+ *
+ *   · **不解码**。mp3 原样交给插件，`AVAudioFile` 在原生侧解 —— 桥上过 9MB 而不是 41MB，
+ *     理由写在 nativeEmissions.ts 顶部。所以这条路上压根没有 `decode` 阶段。
+ *   · **不选后端、不探分片、不降档**。planStep 记 `NATIVE_PLAN_STEP`（-1），
+ *     它撞不上阶梯里的 0/1，`crashedSteps()` 因此不会把原生的失败算到那两档头上。
+ *   · Worker 只跑 viterbi（`input: 'emissions'`），所以 `release` 没有意义 ——
+ *     那 230MB 从来没进过 WebView。
+ *
+ * 后半截（viterbi → applyTimings → 落库 → 同步）与浏览器那条完全一样，走 saveOutcome。
+ * 黑匣子照记：原生进程也会被 jetsam 杀，只是那条线高得多。
+ */
+async function alignLessonNative(
+  lesson: Lesson,
+  blob: Blob,
+  onProgress?: (p: AlignProgress) => void,
+  options: { overwriteManual?: boolean } = {},
+): Promise<AlignLessonResult> {
+  beginRun({
+    lessonId: lesson.id,
+    title: lesson.title,
+    plan: NATIVE_PLAN,
+    planStep: NATIVE_PLAN_STEP,
+    platform: 'ios',
+    // 原生只可能读包里那份 —— 插件是从 Bundle.main 里按路径打开文件的，
+    // 没有「退到 CDN」这回事（那也正是它离线可用的原因）。
+    weights: 'local',
+  });
+  const report = (p: AlignProgress) => {
+    noteStage(p);
+    onProgress?.(p);
+  };
+
+  try {
+    // **必须在算 emissions 之前挡这一下。** 浏览器那条路上这件事由 Worker 里的
+    // `assertAlignable()` 做，而原生这条路是「先算完矩阵再进 Worker」——
+    // 不挡的话，一整课全被标成排除时会先在手机上白算几分钟再报「无事可做」。
+    // 这里不 import align.ts 的 assertAlignable：那个文件静态连着 emissions.ts
+    // → transformers.js，主线程一 import 主包就涨 500KB（README「已知的坑」那条）。
+    if (buildTarget(lesson.sentences).ids.length === 0) {
+      throw new Error('没有可对齐的句子：要么全被标成了非朗读内容，要么正文里没有字母');
+    }
+    const emissions = await computeNativeEmissions(blob, MMS_FA, report);
+    const outcome = await runAlignment({ input: 'emissions', emissions }, lesson.sentences, report);
+    const applied = await saveOutcome(lesson, outcome, options, report);
+    finishRun('done');
+    return { ...applied, outcome };
+  } catch (err) {
+    finishRun('error', err instanceof Error ? err.message : String(err));
     throw err;
   }
 }

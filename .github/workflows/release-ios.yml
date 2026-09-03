@@ -15,6 +15,12 @@ name: release-ios
 #     的理由之一就是这个），所以构建前必须把权重放进 public/。这一步走 actions/cache，
 #     否则每次 run 都要从 HF 拉 200MB。
 #
+# 2026-09-03 起多了一条隐含依赖：`cap sync ios` 会把 `deutsch-align-native`
+# （native-plugins/align-native，SPEC §0 变更 31）写进 CapApp-SPM/Package.swift，
+# 而它依赖 ONNX Runtime 官方的 SPM 分发 —— 那是一个 **binaryTarget**，
+# SwiftPM 在 resolve 阶段要联网下载一份 xcframework。所以这条流水线现在会因为
+# 「SwiftPM 拉不到那个 zip」失败，症状出现在 xcodebuild 而不在 npm 那几步。
+#
 # 触发：推 tag `ios-v*`（如 ios-v0.1.0），或手动 Run。
 #
 # 需要在仓库 Settings → Secrets and variables → Actions 配置：

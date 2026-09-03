@@ -4,6 +4,7 @@
 // 进度只画在某一页上，等于「切走就看不见了」——那和卡死无法区分，
 // 而这个功能上一次的真实故障（进程被系统杀掉）恰恰长得就像卡死。
 
+import { planLabel } from '@/align/config';
 import { formatBytes } from '@/components/ui';
 import { stageLabel, useAlignStore } from '@/state/useAlignStore';
 import type { AlignProgress } from '@/align/align';
@@ -102,7 +103,7 @@ export function AlignBar() {
  * 放在应用外壳而不是某一页：崩溃之后你会落在哪一页是不确定的。
  */
 export function AlignCrashBanner() {
-  const { crash, blocked, dismiss, enqueue } = useAlignStore();
+  const { crash, blocked, native, dismiss, enqueue } = useAlignStore();
   if (!crash) return null;
 
   const elapsed = Math.round((crash.updatedAt - crash.startedAt) / 1000);
@@ -116,14 +117,16 @@ export function AlignCrashBanner() {
       <p className="font-medium">上次自动对齐没跑完 —— 进程被系统终止了。</p>
       <p className="mt-1">
         《{crash.title}》· 死在「{where}」· 已经跑了 {elapsed} 秒 ·
-        {crash.plan.device}/{crash.plan.dtype}（第 {crash.planStep + 1} 档）· {crash.platform} ·
+        {planLabel(crash.plan, crash.planStep)} · {crash.platform} ·
         权重{crash.weights === 'local' ? (crash.ranged ? '随包·分片取' : '随包·整份取') : '来自 CDN'}
         {crash.heapMB !== undefined && ` · JS 堆 ${crash.heapMB} MB`}
       </p>
       <p className="mt-1">
-        {blocked
-          ? '两档后端都被杀过了 —— 这台设备跑不动这个模型。自动对齐已停掉，请在桌面上对齐，句级时间戳会跟着备份同步回来。'
-          : '下一次会自动换一档更保守的后端重试（同一档不会连试两次）。'}
+        {native
+          ? '这台设备现在走原生插件算 emissions —— 那 230MB 权重不再进 WebView，下一次会用它重试。上面这条记录来自旧的路径。'
+          : blocked
+            ? '两档后端都被杀过了 —— 这台设备跑不动这个模型。自动对齐已停掉，请在桌面上对齐，句级时间戳会跟着备份同步回来。'
+            : '下一次会自动换一档更保守的后端重试（同一档不会连试两次）。'}
       </p>
       {/*
         重试是手动的，不是自动的：崩掉的那一课在启动时自动重跑，等于「一开应用就再被杀一次」，
@@ -137,7 +140,7 @@ export function AlignCrashBanner() {
             dismiss();
           }}
         >
-          再试一次（用降档后的后端）
+          {native ? '再试一次（用原生插件）' : '再试一次（用降档后的后端）'}
         </button>
         <button className="underline" onClick={dismiss}>
           知道了

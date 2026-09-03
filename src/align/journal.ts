@@ -15,7 +15,7 @@
 // 代价是它只在主线程存在（Worker 里没有 localStorage），所以打点必须在主线程做，
 // 对齐后端的选择也因此挪到主线程（见 client.ts 把 plan 传进 Worker 的那段）。
 
-import type { DevicePlan } from './config';
+import type { RunPlan } from './config';
 
 const KEY = 'align:journal';
 const HISTORY_LIMIT = 6;
@@ -27,8 +27,11 @@ export interface AlignRunRecord {
   title: string;
   startedAt: number;
   updatedAt: number;
-  plan: DevicePlan;
-  /** PLAN_LADDER 里的第几档 —— 崩溃后降档要靠它 */
+  plan: RunPlan;
+  /**
+   * PLAN_LADDER 里的第几档 —— 崩溃后降档要靠它。
+   * 原生那一档是 `NATIVE_PLAN_STEP`（-1）：它不在阶梯上，也就不参与降档。
+   */
   planStep: number;
   platform: string;
   weights: 'local' | 'cdn';
@@ -87,7 +90,7 @@ let lastWriteAt = 0;
 export function beginRun(info: {
   lessonId: string;
   title: string;
-  plan: DevicePlan;
+  plan: RunPlan;
   planStep: number;
   platform: string;
   weights: 'local' | 'cdn';
