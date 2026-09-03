@@ -488,6 +488,26 @@ ShareablePackage = f(Lesson)   // 纯函数，白名单式构造
 | FR-11.2 | 登录后显示账号邮箱与服务器地址；可退出 | 退出只清本机会话与版本号，服务器上的数据一个字节不动 |
 | FR-11.3 | 服务器只认白名单邮箱，被拒时给出**明确原因**（不是白屏、不是「登录成功但同步不动」） | 白名单为空 → 服务器拒绝启动（§2.6.7）。令牌被撤销后，下一次请求即失效，界面切回未登录并提示 |
 
+> **web 版的登录是「弹窗 + 完整 OAuth 重定向」，不是 One Tap**（2026-09-03 查清）。
+> `@capgo/capacitor-social-login` 的 web 实现只有这一条路：`window.open` 一个
+> `accounts.google.com/o/oauth2/v2/auth?response_type=token id_token`，Google 把令牌拼在
+> fragment 里重定向回来。由此有两件事必须知道 ——
+>
+> ① **`redirect_uri` 要一字不差地登记在控制台**（deploy/README.md ② 那一条）。插件的默认值是
+> `origin + pathname`，末尾带一条斜杠；`src/sync/session.ts` 的 `oauthRedirectUrl()` 把它写死成
+> 裸 `location.origin`，跟部署路径与路由脱钩，只剩一个值要登记。实测三种写法的区别就是全部：
+> `https://d.gamestao.com` → 正常登录页，`https://d.gamestao.com/` → `错误 400:
+> redirect_uri_mismatch`。**Google 对这个值是逐字符比对的**，「已获授权的 JavaScript 来源」
+> 填了不算，那是另一栏。
+>
+> ② **弹窗跳回来落在本站首页，那个窗口会再启动一遍整个 App**。收尾（postMessage 回主窗口 +
+> `window.close()`）挂在插件模块的 import 副作用上，而这个 App 是懒加载插件的 —— 弹窗里没人
+> import 它，主窗口就一直等到 5 分钟超时。`src/main.tsx` 因此先认「我是不是弹窗跳回来的」
+> （`isOAuthPopupReturn()`），是就只 import 插件、**不启动 App**。这条与 ① 是叠在一起的两个 bug，
+> 修好 ① 才会看到 ②。
+>
+> 原生壳不经过这一段：iOS/Android 用系统 Google 账号，源码里根本不读 `google.redirectUrl`。
+
 **自动备份（主方案）**
 
 | 编号 | 需求 | 验收 |

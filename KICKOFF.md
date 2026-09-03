@@ -285,6 +285,25 @@ SPEC §7.10 与 `.github/workflows/release-ios.yml` 的 archive 步注释里。
 上传成功之后还有两道不在 CI 里：ASC 处理十几分钟转 `VALID`（出口合规自动过），
 以及内部测试组必须存在（0.1.0 那次已建，这次不用再建）。
 
+**web 版 Google 登录进不去，是两个叠在一起的 bug（2026-09-03，已修未部署）**：他截图里是弹窗中的
+`错误 400: redirect_uri_mismatch`。第一层：`@capgo/capacitor-social-login` 的 **web 实现不是 One Tap**，
+只有「弹窗 + 完整 OAuth 重定向」一条路（`window.open` → `accounts.google.com/o/oauth2/v2/auth`
+带 `response_type=token id_token`），`redirect_uri` 默认取 `origin + pathname`，**末尾带一条斜杠**；
+而 `deploy/README.md` ② 当初让他登记的是裸域名，还附了一句「GIS 用不到重定向，填上无害」—— 那句话是错的。
+Google 对这个值逐字符比对。第二层要修好第一层才会露出来：弹窗跳回的是本站首页，
+那个窗口会**再启动一遍整个 App**，而「postMessage 回主窗口 + `window.close()`」挂在插件模块 import 的副作用上，
+我们又是懒加载插件 —— 弹窗里没人 import 它，主窗口就一直等到 5 分钟超时（界面停在「登录中…」）。
+修法：`src/sync/session.ts` 的 `oauthRedirectUrl()` 把地址写死成裸 `location.origin`（跟部署路径与 hash 路由脱钩，
+只剩一个值要登记），`src/main.tsx` 先用 `isOAuthPopupReturn()` 认出弹窗、只 import 插件不启动 App。
+论证写进 SPEC 的 FR-11.3 下面那段引文与 `deploy/README.md` ②。
+**测法值得复用**：不用真账号也能验 OAuth 配置 —— 把 `window.open` 换成假的截下前端拼的授权 URL，
+再把那个 URL 直接喂给浏览器，`redirect_uri` 校验发生在输密码**之前**。实测三行就是全部结论：
+`http://localhost:5173` → 正常登录页，`https://d.gamestao.com` → 正常登录页，
+`https://d.gamestao.com/`（带斜杠）→ `错误 400: redirect_uri_mismatch`。他已把两条裸地址登记进控制台。
+**代码还没部署**，所以线上仍是带斜杠的旧包，在 d.gamestao.com 上点还是同样的 400。
+另外这次用的是 `.env.local` 里的 Web 客户端 ID；线上是仓库 Variables 里的 `GOOGLE_WEB_CLIENT_ID`，
+两者若不是同一个，结论要重验。
+
 ## 下一步建议（按价值排序）
 
 0. **新复习流程还差 iPhone 真机那一关**（桌面浏览器已经点过一轮，见上面）。三件事只有真机能答：
@@ -295,10 +314,10 @@ SPEC §7.10 与 `.github/workflows/release-ios.yml` 的 archive 步注释里。
    答错态不用滚动；375px 与真手指还没验），以及辨义题的释义在那个宽度下读不读得下去。
    ③ **报名第 4 档之后连着用三天**，确认每天真的只发 `newPerDay` 张、且课上标的词占额度。
    （单测覆盖了这条规则，但「跨天」这件事只有真的过一夜才算验过。）
-1. **真的用 Google 登录跑一遍，然后走完 §10 里标 ❌ 的那一串**，尤其是**恢复演练** ——
-   文档里写了「不做完不算验收通过」。链路本身已经全部接通（DNS、两个客户端 ID、Caddy、CI，
-   见上面「大窟窿一」），**三件配置都不用做了**；剩下的只有登录这一下和跨设备恢复，
-   而登录要在弹窗里输密码，只能他做。判据很直接：`sync.gamestao.com/v1/healthz` 现在还是
+1. **先部署一次（web 登录的修复还在工作区外面没上线），再真的用 Google 登录跑一遍，然后走完 §10 里标 ❌ 的那一串**，
+   尤其是**恢复演练** —— 文档里写了「不做完不算验收通过」。链路本身已经全部接通（DNS、两个客户端 ID、Caddy、CI，
+   见上面「大窟窿一」），**三件配置都不用做了**，控制台的重定向 URI 也已经补齐（见上面那段）；
+   剩下的只有部署 + 登录这一下和跨设备恢复，而登录要在弹窗里输密码，只能他做。判据很直接：`sync.gamestao.com/v1/healthz` 现在还是
    `users:0`，登录成功它就不是 0 了。排错与验收清单在 `deploy/README.md`。
    附录 B.2 那三个 GitHub 待确认项**不用填了**，它们随 PAT 一起作废。
 2. **实际用两周**，然后再回来改。§10 里标 🧪 的几条（跟读循环、多区间挖空）代码路径有测试，

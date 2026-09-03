@@ -36,7 +36,12 @@ Google Cloud Console → 新建项目（或用已有的）→ **API 和服务 �
    `email` / `profile` 这两个 scope 不需要审核。
 2. 建 **Web 应用** 类型的客户端：
    - 已获授权的 JavaScript 来源：`https://d.gamestao.com`、`http://localhost:5173`
-   - 已获授权的重定向 URI：同上（Google Identity Services 用不到重定向，填上无害）
+   - 已获授权的重定向 URI：`https://d.gamestao.com`、`http://localhost:5173`
+     —— **这一条是必填的，而且要一字不差**。插件在浏览器里走的是「弹窗 + 完整 OAuth
+     重定向」而不是 One Tap，前端送上去的 `redirect_uri` 就是这个裸 origin
+     （src/sync/session.ts 的 `oauthRedirectUrl()` 写死成 `location.origin`）。
+     多一条结尾斜杠、或者只填了「JavaScript 来源」没填这一栏，弹窗里就是
+     `错误 400: redirect_uri_mismatch`。本机调试端口不是 5173 时同理要补一条。
    - → 得到 `VITE_GOOGLE_WEB_CLIENT_ID`，**Android 也用这个**
 3. 建 **iOS** 类型的客户端：Bundle ID 填 `com.gamestao.deutsch`
    - → 得到 `VITE_GOOGLE_IOS_CLIENT_ID`

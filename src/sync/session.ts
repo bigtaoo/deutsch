@@ -4,8 +4,9 @@
 // 会话令牌（90 天）→ 之后所有同步请求带着它。ID token 用完即弃，不落库。
 //
 // 三个平台走的是**同一个调用**：@capgo/capacitor-social-login 在 iOS/Android 用系统的
-// Google 账号，在 web 注入 Google Identity Services。业务代码不判平台 —— 这条规矩来自
-// src/platform/native.ts 顶部那段，这里照办。
+// Google 账号，在 web 开一个弹窗走完整的 OAuth 重定向（不是 One Tap —— 插件的 web 实现
+// 只有这一条路，所以重定向地址必须登记，见 oauthRedirectUrl()）。业务代码不判平台 ——
+// 这条规矩来自 src/platform/native.ts 顶部那段，这里照办。
 //
 // 插件是动态 import 的：web 版首屏不该为一个「大多数会话都用不到」的登录 SDK 付包体。
 
@@ -56,11 +57,52 @@ export async function ensureGoogleReady(): Promise<void> {
         iOSClientId: GOOGLE_IOS_CLIENT_ID || undefined,
         iOSServerClientId: GOOGLE_WEB_CLIENT_ID,
         mode: 'online',
+        redirectUrl: oauthRedirectUrl(),
       },
     });
     await waitForGoogleScript();
   })();
   return initialized;
+}
+
+/**
+ * web 版的 OAuth 重定向地址。
+ *
+ * 插件在浏览器里走的是「弹窗 + 完整 OAuth 重定向」，不是 One Tap —— 所以这个地址必须
+ * **一字不差**地登记在 Google 控制台的「已获授权的重定向 URI」里，否则弹窗里只会看到
+ * `错误 400: redirect_uri_mismatch`。
+ *
+ * 为什么要自己给而不用插件的默认值：它的默认值是 `origin + pathname`，末尾带一条斜杠
+ * （`https://d.gamestao.com/`），而控制台里登记的是裸域名。Google 对这个值是逐字符比对的，
+ * 多一条斜杠就是另一个地址。写死成 origin 之后它跟部署路径、路由都无关，只有一个值要登记。
+ *
+ * 原生壳里这个字段是死的（iOS/Android 用系统账号，源码里根本不读 google.redirectUrl），
+ * 所以照 src/platform/native.ts 的规矩：不判平台，无条件给。
+ */
+function oauthRedirectUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return window.location.origin;
+}
+
+/** 插件用来标记「有一次登录正在进行」的 localStorage 键。它没有导出，只能照抄。 */
+const OAUTH_PENDING_KEY = 'social_login_oauth_pending';
+
+/**
+ * 「我是不是登录弹窗跳回来的那个窗口」。
+ *
+ * Google 把令牌拼在 fragment 里重定向回 `oauthRedirectUrl()`，也就是本站首页 —— 于是弹窗里
+ * 会**再启动一遍整个 App**。收尾（postMessage 回主窗口 + 关掉自己）挂在插件模块的 import
+ * 副作用上，而这个 App 平时是懒加载插件的：弹窗里没人 import 它，主窗口就永远等不到结果。
+ * main.tsx 用这个判断在弹窗里只 import 插件、不启动 App。
+ */
+export function isOAuthPopupReturn(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!window.localStorage.getItem(OAUTH_PENDING_KEY)) return false;
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const search = new URLSearchParams(window.location.search);
+  return (
+    hash.has('access_token') || hash.has('id_token') || hash.has('error') || search.has('code')
+  );
 }
 
 async function waitForGoogleScript(timeoutMs = 8000): Promise<void> {
