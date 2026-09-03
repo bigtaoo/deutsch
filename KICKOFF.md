@@ -276,8 +276,12 @@ SW 压根不装，这类行为只能在 preview 上验。
 **第一次 archive 挂了**（exit 65）：命令行上的 `PROVISIONING_PROFILE_SPECIFIER` 会套到每一个
 target，包括 Google 登录插件带进来的那一大片 SPM 包，而它们不支持描述文件。修法与形状写在
 SPEC §7.10 与 `.github/workflows/release-ios.yml` 的 archive 步注释里。
-**重跑走的是 `workflow_dispatch`（`--ref main`）而不是新 tag** —— `ios-v0.2.0` 那个 tag 打在了
-修复之前的提交上，**它现在指向一个建不出来的版本**，还没处理（要删远端 tag，等他定）。
+**重跑走的是 `workflow_dispatch`（`--ref main`）而不是新 tag** —— `ios-v0.2.0` 原本打在了
+修复之前的提交上。那个 tag 已删并重打到真正被构建的提交 `83e67b2`（2026-09-03），
+所以**这个 tag 名下没有 run**，查构建记录要去 run 33661964392。
+顺带一条：**推 `ios-v*` 会触发一次完整出包**，重打旧 tag 时要么先
+`gh workflow disable release-ios.yml`，要么推完立刻 `gh run cancel` ——
+否则白跑 7 分钟并在 TestFlight 里多一个内容相同的构建。
 上传成功之后还有两道不在 CI 里：ASC 处理十几分钟转 `VALID`（出口合规自动过），
 以及内部测试组必须存在（0.1.0 那次已建，这次不用再建）。
 
