@@ -15,6 +15,8 @@ import {
   NATIVE_PLAN,
   NATIVE_PLAN_STEP,
   PLAN_LADDER,
+  REMOTE_PLAN,
+  REMOTE_PLAN_STEP,
   hasLocalWeights,
   pickPlan,
 } from './config';
@@ -24,6 +26,7 @@ import {
   computeNativeEmissions,
   nativeEmissionsAvailable,
 } from './nativeEmissions';
+import { computeRemoteEmissions, remoteEmissionsAvailable } from './remoteEmissions';
 import { probeRanged } from './rangedFetch';
 import { buildTarget } from './target';
 import { beginRun, finishRun, nextPlanStep, noteStage } from './journal';
@@ -57,6 +60,12 @@ let running = false;
  * 所以「停止」要靠这一位才知道该往插件那边递取消（见 cancelAlignment）。
  */
 let nativeRunning = false;
+/**
+ * 远端那条路正在跑。和 `nativeRunning` 同一个道理：那一两分钟里 Worker 还没起，
+ * `running` 是 false，所以「停止」要靠这一位才知道该去 abort 那次轮询
+ * （顺带让 remoteEmissions 把服务器上那个任务 DELETE 掉）。
+ */
+let remoteAbort: AbortController | null = null;
 /** 取消要靠它把挂着的 Promise 拒掉 —— terminate() 之后 Worker 不会再回任何消息。 */
 let cancelCurrent: ((reason: Error) => void) | null = null;
 
@@ -90,6 +99,7 @@ export function isAligning(): boolean {
  */
 export function cancelAlignment(): void {
   if (nativeRunning) void cancelNativeEmissions();
+  remoteAbort?.abort();
   if (!running) return;
   const reject = cancelCurrent;
   terminateAlignWorker();
@@ -169,18 +179,43 @@ export interface AlignLessonResult extends ApplyResult {
  *
  * 全程往 journal.ts 记面包屑：这一步是**唯一**能在「进程被系统杀掉」之后还留下证据的机制。
  */
+export interface AlignLessonOptions {
+  overwriteManual?: boolean;
+  /**
+   * 在哪儿算。`auto`（默认）按设备判：手机上有服务器就用服务器，桌面用本机。
+   * `remote` / `local` 是人在课程页上显式选的那两条 —— 服务器挂了要能自己上，
+   * 桌面想验一下服务器算得对不对也要能。
+   */
+  backend?: 'auto' | 'remote' | 'local';
+}
+
 export async function alignLesson(
   lesson: Lesson,
   onProgress?: (p: AlignProgress) => void,
-  options: { overwriteManual?: boolean } = {},
+  options: AlignLessonOptions = {},
 ): Promise<AlignLessonResult> {
   const blob = await getAudioBlob(lesson.id);
   if (!blob) throw new Error('本机没有这一课的音频，先去「素材」里下载');
 
-  // ── 原生那一条（SPEC §0 变更 31）──
-  // iOS 原生壳里 emissions 整块挪出 WebView，走 native-plugins/align-native。
-  // 它不在后端阶梯上：不 pickPlan、不探分片、也不参与降档（见 config.NATIVE_PLAN）。
-  if (await nativeEmissionsAvailable()) return alignLessonNative(lesson, blob, onProgress, options);
+  // ── 选在哪儿算 ──
+  // 三条路，判据只有两条（SPEC §0 变更 35 / FR-15.18）：
+  //
+  //   · 手机（原生壳）+ 登录了 → **服务器**。手机本地要十几分钟且必须一直亮屏，
+  //     服务器一两分钟且手机可以锁屏；桌面则相反 —— 26 秒的事没理由上传 7MB。
+  //   · 手机 + 没登录 / 服务器不做对齐 → 原生插件（变更 33 起只在手动那一次跑）。
+  //   · 其余（桌面浏览器）→ 本机 WebView。
+  //
+  // `backend` 显式指定时压过上面全部：课程页那两个按钮就是拿它把选择交回给人
+  // （「在这台手机上算」/「送到服务器算」）。
+  const backend = options.backend ?? 'auto';
+  const native = await nativeEmissionsAvailable();
+  const useRemote =
+    backend === 'remote' || (backend === 'auto' && native && (await remoteEmissionsAvailable()));
+  if (useRemote) return alignLessonRemote(lesson, blob, onProgress, options);
+  // `local` 在**这台设备上**的意思是「原生插件」，不是「WebView」——
+  // iPhone 的 WebView 里两档都会被系统杀掉（变更 21/31），把 local 解释成 WebView
+  // 等于给那个按钮接了一条必死的路。
+  if (native) return alignLessonNative(lesson, blob, onProgress, options);
 
   // 后端与「随包还是 CDN」都在主线程定：黑匣子在 localStorage 里，Worker 读不到。
   const { plan, step } = await pickPlan(nextPlanStep(PLAN_LADDER.length));
@@ -245,7 +280,7 @@ export async function alignLesson(
 async function saveOutcome(
   lesson: Lesson,
   outcome: AlignOutcome,
-  options: { overwriteManual?: boolean },
+  options: AlignLessonOptions,
   report: (p: AlignProgress) => void,
 ): Promise<ApplyResult> {
   report({ stage: 'apply' });
@@ -283,7 +318,7 @@ async function alignLessonNative(
   lesson: Lesson,
   blob: Blob,
   onProgress?: (p: AlignProgress) => void,
-  options: { overwriteManual?: boolean } = {},
+  options: AlignLessonOptions = {},
 ): Promise<AlignLessonResult> {
   beginRun({
     lessonId: lesson.id,
@@ -315,6 +350,69 @@ async function alignLessonNative(
     const emissions = await computeNativeEmissions(blob, MMS_FA, report, lesson.id).finally(() => {
       nativeRunning = false;
     });
+    const outcome = await runAlignment({ input: 'emissions', emissions }, lesson.sentences, report);
+    const applied = await saveOutcome(lesson, outcome, options, report);
+    finishRun('done');
+    return { ...applied, outcome };
+  } catch (err) {
+    finishRun('error', err instanceof Error ? err.message : String(err));
+    throw err;
+  }
+}
+
+/**
+ * 服务器那一条（FR-15.17）。前半截与原生那条几乎一样，差别只有三处：
+ *
+ *   · **不解码**。mp3 原样 POST 上去，ffmpeg 在服务器上解 —— 上行 7MB 而不是 30MB
+ *     的波形（与原生那条选择 mp3 过桥是同一笔账，见 remoteEmissions.ts 顶部）。
+ *   · **可以中断而不白费**：计算在服务器上跑，手机锁屏、切走、甚至退出 App 都不影响
+ *     那一两分钟。这正是本地那条路在手机上跑不完的原因（变更 33）。
+ *   · 黑匣子记 `remote/q4` + planStep -1。它不在阶梯上，理由与原生同一条。
+ *     黑匣子照记不是为了防崩溃（服务器崩不了这台设备），而是为了让「这一课的时间戳
+ *     是哪儿算的」在诊断页上查得到 —— 三条路算出来的东西应该一样，而
+ *     「应该一样」的事情最需要留证据。
+ *
+ * 后半截（viterbi → applyTimings → 落库 → 同步）与另外两条完全一样，走 saveOutcome。
+ */
+async function alignLessonRemote(
+  lesson: Lesson,
+  blob: Blob,
+  onProgress?: (p: AlignProgress) => void,
+  options: AlignLessonOptions = {},
+): Promise<AlignLessonResult> {
+  const platform = await nativePlatform();
+  beginRun({
+    lessonId: lesson.id,
+    title: lesson.title,
+    plan: REMOTE_PLAN,
+    planStep: REMOTE_PLAN_STEP,
+    platform,
+    // 权重在服务器上，这台设备一个字节都不需要。'local' / 'cdn' 两个值在这条路上
+    // 都不成立，所以记 'remote' —— 诊断页上「随包还是 CDN」那一栏因此说得出真话。
+    weights: 'remote',
+  });
+  const report = (p: AlignProgress) => {
+    noteStage(p);
+    onProgress?.(p);
+  };
+
+  try {
+    // 与原生那条同一个理由：**先挡「没有可对齐的句子」**，否则一整课全被排除时
+    // 会先白传 7MB、让服务器白算一两分钟，最后才报「无事可做」。
+    if (buildTarget(lesson.sentences).ids.length === 0) {
+      throw new Error('没有可对齐的句子：要么全被标成了非朗读内容，要么正文里没有字母');
+    }
+
+    remoteAbort = new AbortController();
+    const emissions = await computeRemoteEmissions(blob, MMS_FA, {
+      signal: remoteAbort.signal,
+      // 阶段名带上 where，界面才不会说「加载对齐模型」——
+      // 那句话在这条路上是假的（见 AlignProgress.where）。
+      onProgress: (p) => report({ ...p, where: 'remote' }),
+    }).finally(() => {
+      remoteAbort = null;
+    });
+
     const outcome = await runAlignment({ input: 'emissions', emissions }, lesson.sentences, report);
     const applied = await saveOutcome(lesson, outcome, options, report);
     finishRun('done');

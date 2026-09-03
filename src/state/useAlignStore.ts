@@ -8,9 +8,16 @@
 // 队列只有一条并发：两个对齐同时跑各自要一份 187MB 权重，手机上必死。
 
 import { create } from 'zustand';
-import { AlignWorkerDeath, alignLesson, cancelAlignment, isAligning } from '@/align/client';
+import {
+  AlignWorkerDeath,
+  alignLesson,
+  cancelAlignment,
+  isAligning,
+  type AlignLessonOptions,
+} from '@/align/client';
 import { PLAN_LADDER } from '@/align/config';
 import { nativeEmissionsAvailable } from '@/align/nativeEmissions';
+import { remoteEmissionsAvailable } from '@/align/remoteEmissions';
 import { reviewQueue } from '@/align/apply';
 import { allPlansCrashed, detectCrash, type AlignRunRecord } from '@/align/journal';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -30,6 +37,12 @@ export interface AlignTask {
    * 也就是说自动跑在手机上十有八九跑不完，只是白热一台机器。
    */
   manual?: boolean;
+  /**
+   * 在哪儿算。不填 = 交给 `alignLesson` 按设备判（手机有服务器就用服务器）。
+   * 课程页那两个按钮会显式填 —— 「服务器挂了我自己算」和「我想让服务器算」
+   * 这两件事都必须是人能直接表达的。
+   */
+  backend?: AlignLessonOptions['backend'];
 }
 
 export interface AlignDone extends AlignTask {
@@ -70,6 +83,14 @@ interface AlignState {
    * 下一次根本不进 WebView。
    */
   native: boolean;
+  /**
+   * 服务器能算（登录了 + 那台服务器开着对齐，变更 35 / FR-15.17）。
+   *
+   * 它**重新打开了手机上的自动对齐**：变更 33 关掉自动跑的理由是「一课十几分钟，
+   * 而手机十有八九跑不完」，那条理由对服务器不成立（一两分钟，且手机可以锁屏）。
+   * 所以手机上的闸门现在问的是「有没有服务器」，不是「是不是手机」。
+   */
+  remote: boolean;
 
   init: () => void;
   /**
@@ -78,7 +99,7 @@ interface AlignState {
    * manual = 用户自己点的按钮：无视「导入后自动对齐」这个开关，也无视 blocked
    * （两档都崩过之后自动跑会停，但人非要试一次是他的权利）。
    */
-  enqueue: (lessonId: string, options?: { manual?: boolean }) => void;
+  enqueue: (lessonId: string, options?: { manual?: boolean; backend?: AlignLessonOptions['backend'] }) => void;
   cancel: () => void;
   dismiss: () => void;
 }
@@ -94,6 +115,7 @@ export const useAlignStore = create<AlignState>((set, get) => ({
   crash: null,
   blocked: false,
   native: false,
+  remote: false,
 
   init: () => {
     // **必须真的只跑一次。** detectCrash() 有副作用（把那条 running 记录归档成 crashed），
@@ -108,6 +130,11 @@ export const useAlignStore = create<AlignState>((set, get) => ({
     void nativeEmissionsAvailable().then((native) => {
       if (native) set({ native: true, blocked: false });
     });
+    // 登录状态是异步读回来的（useSyncStore.hydrate），所以这一位可能在启动后
+    // 才变成 true。enqueue 里会再问一次真身，不依赖这份缓存。
+    void remoteEmissionsAvailable().then((remote) => {
+      if (remote) set({ remote: true });
+    });
   },
 
   enqueue: (lessonId, options = {}) => {
@@ -115,18 +142,24 @@ export const useAlignStore = create<AlignState>((set, get) => ({
     if (!lesson) return;
     if (!options.manual) {
       if (get().blocked) return;
-      // 手机上不自动跑（变更 33）。**这个判断必须是设备本地的** ——
-      // autoAlignOnImport 是同步项（sync/docs.ts），把它设成 false 会传染到桌面，
-      // 而桌面上一课 26 秒，那里自动跑是完全对的。
-      // 课程页会明确说「这一课还没有时间戳」并给出两个出路（AlignStatus）。
-      if (get().native) return;
+      // 手机上不自动跑（变更 33）—— **除非有服务器**（变更 35）。
+      // 变更 33 关掉它的理由是时长：一课十几分钟，而 iOS 三十秒就锁屏、
+      // 锁屏即挂起。那条理由对服务器整个不成立：一两分钟，而且那一两分钟里
+      // 这台手机可以锁屏、可以退出 App，回来再取结果。
+      //
+      // **这个判断必须是设备本地的** —— autoAlignOnImport 是同步项（sync/docs.ts），
+      // 把它设成 false 会传染到桌面，而桌面上一课 26 秒，那里自动跑是完全对的。
+      if (get().native && !get().remote) return;
       // FR-15 的那个开关还在（设置页）。默认开 —— 「下载完就能直接练」是这个功能的全部意义。
       if (!useSettingsStore.getState().settings.autoAlignOnImport) return;
     }
     const { current, queue } = get();
     if (current?.lessonId === lessonId || queue.some((t) => t.lessonId === lessonId)) return;
     set({
-      queue: [...queue, { lessonId, title: lesson.title, manual: options.manual }],
+      queue: [
+        ...queue,
+        { lessonId, title: lesson.title, manual: options.manual, backend: options.backend },
+      ],
       lastError: null,
     });
     void drain();
@@ -157,12 +190,17 @@ async function drain(): Promise<void> {
       continue;
     }
 
-    // 手机那道闸门在这里**再问一次**。enqueue 里问的是 store 里的 `native`，
-    // 而它由 init() 异步填（要过一次原生桥）—— 启动后立刻导入的话那一位可能还是 false。
-    // 这里问的是真身，且它有缓存，所以不花钱。
+    // 手机那道闸门在这里**再问一次**。enqueue 里问的是 store 里的 `native`/`remote`，
+    // 而它们由 init() 异步填（一次原生桥 + 一次读会话令牌）—— 启动后立刻导入的话
+    // 那两位可能都还是 false。这里问的是真身，两个都有缓存，所以不花钱。
     if (!task.manual && (await nativeEmissionsAvailable())) {
-      useAlignStore.setState({ queue: rest, native: true });
-      continue;
+      const remote = await remoteEmissionsAvailable();
+      useAlignStore.setState({ native: true, remote });
+      // 有服务器就照常往下跑（alignLesson 自己会选服务器那条路）；没有就跳过这一课。
+      if (!remote) {
+        useAlignStore.setState({ queue: rest });
+        continue;
+      }
     }
 
     const startedAt = Date.now();
@@ -173,22 +211,26 @@ async function drain(): Promise<void> {
     });
 
     try {
-      const result = await alignLesson(lesson, (progress) => {
-        const { current } = useAlignStore.getState();
-        if (current?.lessonId === task.lessonId) {
-          // 第一条 infer 事件报的是「已经算完几块」（分母已知、这一块还没算），
-          // 正好是计时起点。续算时它是 13 而不是 0，所以基线要连块号一起记。
-          const first = progress.stage === 'infer' && current.inferStartedAt === undefined;
-          useAlignStore.setState({
-            current: {
-              ...current,
-              progress,
-              inferStartedAt: first ? Date.now() : current.inferStartedAt,
-              inferStartedChunk: first ? (progress.chunk ?? 0) : current.inferStartedChunk,
-            },
-          });
-        }
-      });
+      const result = await alignLesson(
+        lesson,
+        (progress) => {
+          const { current } = useAlignStore.getState();
+          if (current?.lessonId === task.lessonId) {
+            // 第一条 infer 事件报的是「已经算完几块」（分母已知、这一块还没算），
+            // 正好是计时起点。续算时它是 13 而不是 0，所以基线要连块号一起记。
+            const first = progress.stage === 'infer' && current.inferStartedAt === undefined;
+            useAlignStore.setState({
+              current: {
+                ...current,
+                progress,
+                inferStartedAt: first ? Date.now() : current.inferStartedAt,
+                inferStartedChunk: first ? (progress.chunk ?? 0) : current.inferStartedChunk,
+              },
+            });
+          }
+        },
+        { backend: task.backend },
+      );
       useAlignStore.setState({
         current: null,
         lastDone: {
@@ -221,6 +263,22 @@ async function drain(): Promise<void> {
 
 /** 界面文案：现在到哪一步了。 */
 export function stageLabel(progress: AlignProgress): string {
+  // 服务器那条路要单独一套措辞：这台设备既不解码也不加载模型，
+  // 照原样说「加载对齐模型」是在描述一件此刻没有发生的事。
+  if (progress.where === 'remote') {
+    switch (progress.stage) {
+      case 'decode':
+        return '上传音频到服务器';
+      case 'model':
+        return '服务器准备中';
+      case 'infer':
+        return '服务器识别音频';
+      case 'align':
+        return '对齐文本';
+      case 'apply':
+        return '写入时间戳';
+    }
+  }
   switch (progress.stage) {
     case 'decode':
       return '解码音频';

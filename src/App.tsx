@@ -4,7 +4,7 @@ import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useSyncStore } from '@/state/useSyncStore';
-import { drainSyncQueue, setSyncHooks, startSyncAutoRetry } from '@/sync/trigger';
+import { setSyncHooks, startSyncAutoRetry, syncNow } from '@/sync/trigger';
 import { audioPlayer } from '@/audio/player';
 import { hideNativeSplash } from '@/platform/native';
 import { useAlignStore } from '@/state/useAlignStore';
@@ -42,7 +42,13 @@ function App() {
     // 原生壳的启动图等这四张表读完再关（capacitor.config.ts 里 launchAutoHide: false）。
     // allSettled 而不是 all：某张表读挂了也得关，否则用户对着启动图干等。
     // 浏览器里这是空操作。
-    void ready.then(() => hideNativeSplash());
+    void ready.then(() => {
+      hideNativeSplash();
+      // FR-11.19：启动时同步一次 —— 先把排队的推出去，再把别的设备改过的拉回来。
+      // **必须等这四张表读完**：拉取会往库里写，写完由 onRemoteDataWritten 让 store 重读，
+      // 而初次 load() 如果晚于那次重读，界面就退回到拉取之前的旧值了。
+      void syncNow();
+    });
 
     // FR-15：启动时问一次黑匣子「上次自动对齐是不是被系统杀掉的」。
     // 必须在这里、而且只做一次 —— detectCrash() 会把那条记录归档，第二次调用就看不到了。
@@ -53,7 +59,7 @@ function App() {
     // 得重读一遍 —— 否则界面上还是合并前的旧值，而用户什么提示都没有。
     // 设置也在其中（§0 变更 28）：它同步之后，「另一台设备改的值」同样会走这条路进来。
     setSyncHooks({
-      onChange: () => void useSyncStore.getState().refreshPendingCount(),
+      onChange: () => void useSyncStore.getState().refreshStatus(),
       onRemoteDataWritten: () => {
         void useLessonStore.getState().load();
         void useVocabStore.getState().load();
@@ -61,7 +67,6 @@ function App() {
       },
       onSessionExpired: () => useSyncStore.getState().markSessionExpired(),
     });
-    void drainSyncQueue();
     const stopRetry = startSyncAutoRetry();
 
     return () => {

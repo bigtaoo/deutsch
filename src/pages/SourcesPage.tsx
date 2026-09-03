@@ -13,6 +13,7 @@ import { acceptNewManuscript, importFromDw, rehydrateLesson, type ImportProgress
 import { backfillRecent, BACKFILL_LIMITS, type BackfillProgress } from '@/sources/backfill';
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
+import { hasTimings } from '@/align/apply';
 import { Banner, Button, EmptyState, Hint, Section, formatBytes } from '@/components/ui';
 import type { Lesson } from '@/types/models';
 import type { DwLesson } from '@/sources/dw/adapter';
@@ -233,6 +234,7 @@ function ManualIdSection() {
 function RehydratePanel() {
   const { lessons, caches } = useLessonStore();
   const enqueueAlign = useAlignStore((s) => s.enqueue);
+  const native = useAlignStore((s) => s.native);
   const missing = lessons.filter((l) => l.source.type === 'dw' && isMaterialMissing(caches[l.id]));
   const [busyId, setBusyId] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{ lesson: Lesson; dw: DwLesson } | null>(null);
@@ -249,10 +251,20 @@ function RehydratePanel() {
         setConflict({ lesson, dw: outcome.fresh.dw });
       } else if (outcome.audioError) {
         setMessage(`《${lesson.title}》的音频没抓到：${outcome.audioError}`);
-      } else {
-        // 补齐等于「刚下载完」：时间戳可能因为换过音频而全部作废，重对一遍最省心。
+      } else if (!hasTimings(lesson.sentences) || outcome.audioDurationChanged) {
+        // **不再无条件重对**（§0 变更 34）。以前这里的理由是「补齐等于刚下载完，
+        // 时间戳可能因为换过音频而全部作废，重对一遍最省心」—— 那条理由在同步落地之后
+        // 站不住了：常态是「桌面算完 → 手机补齐素材」，标注层里那份时间戳正是桌面刚算出来的，
+        // 而在手机上重算一遍要十几分钟，算完还盖回同样的值（iOS 原生壳上被闸门挡住，
+        // web 和 Android 上会真跑）。真会让时间戳作废的是音频变了，那件事有时长可比。
         enqueueAlign(lesson.id);
-        setMessage(`《${lesson.title}》素材已补齐，正在自动对齐（进度在页面底部）。`);
+        setMessage(
+          native
+            ? `《${lesson.title}》素材已补齐。这一课还没有时间戳 —— 手机上不自动对齐，在桌面上对一次会同步回来。`
+            : `《${lesson.title}》素材已补齐，正在自动对齐（进度在页面底部）。`,
+        );
+      } else {
+        setMessage(`《${lesson.title}》素材已补齐。时间戳是同步来的，不用重对。`);
       }
     } catch (err) {
       setMessage(`补齐失败：${err instanceof Error ? err.message : err}`);

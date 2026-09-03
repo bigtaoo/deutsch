@@ -7,6 +7,9 @@ import type { Store } from './db.ts';
 import type { Config } from './config.ts';
 import { type GoogleVerifier, GoogleTokenError } from './googleToken.ts';
 import { signSession, verifySession } from './session.ts';
+import { extensionOf, type Engine } from './align/engine.ts';
+import type { JobQueue } from './align/jobs.ts';
+import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
 
 /** 文档 id 直接进 URL 路径，字符集收紧到「课程 id 用得到的那些」。 */
 const DOC_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -18,6 +21,12 @@ export interface AppDeps {
   store: Store;
   config: Config;
   verifyGoogleIdToken: GoogleVerifier;
+  /**
+   * 对齐那一半（FR-15.17）。**可以整块缺席** —— 它是搭在备份服务上的第二个用途，
+   * `onnxruntime-node` 装不上、或 `ALIGN_ENABLED=false` 时这里是 undefined，
+   * 路由回 503 并说清原因，而同步照常工作。备份是本职，不能被它拖下水。
+   */
+  align?: { engine: Engine; queue: JobQueue; maxAudioBytes: number };
   /** 测试里可以拨快时钟。 */
   now?: () => number;
 }
@@ -56,7 +65,21 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     }),
   );
 
-  app.get('/v1/healthz', (c) => c.json({ ok: true, ...store.stats() }));
+  app.get('/v1/healthz', (c) =>
+    c.json({
+      ok: true,
+      ...store.stats(),
+      // 对齐那一半的状态也摆在这里：它会因为「权重下不下来」「ORT 装不上」而单独坏掉，
+      // 而那种坏法从同步这一侧完全看不出来。
+      align: deps.align
+        ? {
+            status: deps.align.engine.status(),
+            message: deps.align.engine.statusMessage(),
+            ...deps.align.queue.stats(),
+          }
+        : { status: 'off' },
+    }),
+  );
 
   // ── 登录 ──────────────────────────────────────────────────────────────
   app.post('/v1/auth/google', async (c) => {
@@ -186,6 +209,74 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     if (!DOC_ID_RE.test(docId)) return c.json({ error: '非法的文档 id' }, 400);
     const deleted = store.deleteDoc(c.get('userId'), docId);
     return c.json({ deleted });
+  });
+
+  // ── 对齐（FR-15.17：emissions 那一半挪到服务器上）────────────────────
+  //
+  // 上行 mp3、下行 log-prob 矩阵，**文稿一个字都不上来** —— 那道缝
+  // （src/align/emissionMatrix.ts）就是为这一刻切的，CTC 前向压根不看文本。
+  // 所以 §3.1 里关于德语正文的那一整套约束不受影响，要认的只有「音频经手」一条。
+  const align = deps.align;
+  /** 对齐整块缺席时的回复。`code` 让客户端能一次判定「这台服务器不提供对齐」并退回本地。 */
+  const ALIGN_OFF = {
+    error: '这台服务器没有开对齐（ALIGN_ENABLED=false，或 onnxruntime-node 没装上）',
+    code: 'align_off',
+  } as const;
+
+  app.post('/v1/align/jobs', async (c) => {
+    if (!align) return c.json(ALIGN_OFF, 503);
+    // 先看 Content-Length：不看的话一次误传能让进程把整个请求体读进内存。
+    const declared = Number(c.req.header('content-length') ?? '0');
+    if (declared > align.maxAudioBytes) {
+      return c.json({ error: `音频超过 ${align.maxAudioBytes} 字节上限` }, 413);
+    }
+    const body = new Uint8Array(await c.req.arrayBuffer());
+    if (body.byteLength === 0) return c.json({ error: '请求体是空的' }, 400);
+    if (body.byteLength > align.maxAudioBytes) {
+      return c.json({ error: `音频超过 ${align.maxAudioBytes} 字节上限` }, 413);
+    }
+
+    const extension = extensionOf(c.req.header('content-type'));
+    const submitted = align.queue.submit(c.get('userId'), body, extension);
+    if ('error' in submitted) return c.json({ error: submitted.error }, 429);
+    return c.json(align.queue.view(c.get('userId'), submitted.id), 202);
+  });
+
+  app.get('/v1/align/jobs/:id', (c) => {
+    if (!align) return c.json(ALIGN_OFF, 503);
+    const view = align.queue.view(c.get('userId'), c.req.param('id'));
+    if (!view) return c.json({ error: '没有这个对齐任务（可能已过期）' }, 404);
+    return c.json(view);
+  });
+
+  app.get('/v1/align/jobs/:id/result', (c) => {
+    if (!align) return c.json(ALIGN_OFF, 503);
+    const id = c.req.param('id');
+    const view = align.queue.view(c.get('userId'), id);
+    if (!view) return c.json({ error: '没有这个对齐任务（可能已过期）' }, 404);
+    // 还没跑完时**不要**回 404：客户端要能分清「还在算」和「任务没了」，
+    // 前者继续轮询，后者必须重新提交（而重新提交要再上传 7MB）。
+    if (view.status !== 'done') return c.json(view, 409);
+
+    const result = align.queue.takeResult(c.get('userId'), id);
+    if (!result) return c.json({ error: '结果已经被取走了' }, 410);
+    const bytes = encodeMatrix(
+      { frames: result.frames, vocabSize: result.vocabSize, duration: result.duration },
+      result.logProbs,
+    );
+    // `bytes.buffer` 而不是 `bytes`：Hono 的 body() 收 ArrayBuffer。
+    // encodeMatrix 给的是一个刚好这么大的新数组，所以整份 buffer 就是它本身。
+    return c.body(bytes.buffer as ArrayBuffer, 200, {
+      'content-type': MATRIX_CONTENT_TYPE,
+      'content-length': String(bytes.byteLength),
+    });
+  });
+
+  app.delete('/v1/align/jobs/:id', (c) => {
+    if (!align) return c.json(ALIGN_OFF, 503);
+    const cancelled = align.queue.cancel(c.get('userId'), c.req.param('id'));
+    if (!cancelled) return c.json({ error: '没有这个对齐任务' }, 404);
+    return c.json({ cancelled: true });
   });
 
   // ── 历史版本（GitHub 方案里「git 历史可回滚」的替代物）────────────────

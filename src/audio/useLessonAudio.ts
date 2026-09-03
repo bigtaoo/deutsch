@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from 'react';
 import { getAudioBlob } from '@/db/cache';
+import { useLessonStore } from '@/state/useLessonStore';
 import { audioPlayer } from './player';
 
 export interface LessonAudioState {
@@ -13,8 +14,16 @@ export interface LessonAudioState {
   duration: number;
 }
 
+/**
+ * `hasAudio` 进依赖数组（§0 变更 34）：这个 hook 原来只在挂载时读一次 Blob，
+ * 于是「素材是在这一页上补齐的」这条路走不通 —— FR-3.5a 让打开一课就自动补齐，
+ * 音频到位时这一页早就挂载完了，播放条会一直停在「素材未下载」，
+ * 要切走再切回来才活。同一个陈旧读也发生在启动那一下：store 还没读完 caches 时
+ * 挂载的话，第一次读 Blob 可能空手而归。
+ */
 export function useLessonAudio(lessonId: string): LessonAudioState {
   const [state, setState] = useState<LessonAudioState>({ status: 'loading', error: null, duration: 0 });
+  const hasAudio = useLessonStore((s) => Boolean(s.caches[lessonId]?.hasAudio));
 
   useEffect(() => {
     let cancelled = false;
@@ -41,7 +50,7 @@ export function useLessonAudio(lessonId: string): LessonAudioState {
       cancelled = true;
       audioPlayer.pause();
     };
-  }, [lessonId]);
+  }, [lessonId, hasAudio]);
 
   return state;
 }

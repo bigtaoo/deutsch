@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyTimings, isManual, LEAD_SECONDS, reviewQueue, TAIL_SECONDS } from './apply';
+import { applyTimings, hasTimings, isManual, LEAD_SECONDS, reviewQueue, TAIL_SECONDS } from './apply';
 import type { Sentence } from '@/types/models';
 import type { SentenceTiming, WordTiming } from './target';
 
@@ -234,5 +234,22 @@ describe('isManual（FR-15 之前的老数据兼容）', () => {
     });
     expect(skippedManual).toBe(1);
     expect(sentences[0].startTime).toBe(12.3);
+  });
+});
+
+// 这个判断决定「补齐素材之后要不要在这台设备上跑十几分钟的对齐」（§0 变更 34）。
+// 判错的方向很不对称：漏判只是白算一遍（还会把同步来的值盖成同样的值），
+// 而错判成「有时间戳」会让一门真的没打过点的课在手机上悄悄没有出路。
+describe('hasTimings（补齐之后要不要重对，§0 变更 34）', () => {
+  it('一句都没有时间戳 → false', () => {
+    expect(hasTimings([sentence(0), sentence(1)])).toBe(false);
+  });
+
+  it('有一句有 startTime → true', () => {
+    expect(hasTimings([sentence(0), sentence(1, { startTime: 3.5 })])).toBe(true);
+  });
+
+  it('只有排除句带时间戳 → false（排除句永远不该算进来）', () => {
+    expect(hasTimings([sentence(0, { excluded: true, startTime: 1 })])).toBe(false);
   });
 });

@@ -22,7 +22,15 @@ services:
     networks:
       - wnet
     # 这台机器上跑着别人的东西，给个上限，别让一个失控的进程把 mssql 挤下去。
-    mem_limit: 256m
+    #
+    # **2026-09-03 从 256m 提到 2g**：对齐（FR-15.17）要在进程里加载那份 230MB 的
+    # q4 权重并跑推理，实测单块峰值 RSS 约 584MB（3 线程）。256m 下的症状是
+    # 容器在第一次对齐时被 OOM 杀掉 —— 连着把**同步**也带走（restart 会拉回来，
+    # 但那一次的备份推送会失败）。这台机器 7.9G 里当时还剩 5.2G，2g 是有余量的。
+    # 只想要同步的话：`ALIGN_ENABLED=false` + 这里改回 256m。
+    mem_limit: 2g
+    # 4 vCPU 的机器，留一个核给别人（ORT 自己的线程数由 ALIGN_THREADS 控，默认 3）。
+    cpus: 3.0
     logging:
       driver: json-file
       options:

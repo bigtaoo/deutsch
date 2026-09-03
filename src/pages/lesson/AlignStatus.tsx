@@ -13,7 +13,7 @@ import { Banner, Button } from '@/components/ui';
 import type { Lesson } from '@/types/models';
 
 export function AlignStatus({ lesson }: { lesson: Lesson }) {
-  const { current, queue, blocked, native, enqueue } = useAlignStore();
+  const { current, queue, blocked, native, remote, enqueue } = useAlignStore();
 
   const hasAudio = lesson.audioDuration !== undefined;
   const usable = lesson.sentences.filter((s) => !s.excluded);
@@ -33,20 +33,38 @@ export function AlignStatus({ lesson }: { lesson: Lesson }) {
         {queued && <span className="text-sky-700">排队中</span>}
         {!hasAudio && <span className="text-neutral-400">这一课还没有音频</span>}
         {hasAudio && !busy && !queued && (
-          <Button
-            // 手机上这个按钮不再是 primary：主路径是「桌面算完同步过来」，
-            // 在这台手机上跑是那条要付十几分钟的备用路。按钮的显眼程度要跟这件事一致。
-            variant={timed.length === 0 && !native ? 'primary' : 'ghost'}
-            onClick={() => enqueue(lesson.id, { manual: true })}
-          >
-            {native
-              ? timed.length === 0
-                ? '在这台手机上对齐（约十几分钟）'
-                : '在这台手机上重对（约十几分钟）'
-              : timed.length === 0
-                ? '自动对齐'
-                : '重新对齐'}
-          </Button>
+          <>
+            <Button
+              // 显眼程度跟着「这一下要付多少代价」走：
+              // 桌面本机 26 秒、服务器一两分钟 —— 都可以是 primary；
+              // 而「在这台手机上算」是十几分钟且必须一直亮屏，它永远是 ghost。
+              variant={timed.length === 0 && (!native || remote) ? 'primary' : 'ghost'}
+              onClick={() =>
+                enqueue(lesson.id, { manual: true, backend: remote ? 'remote' : 'auto' })
+              }
+            >
+              {remote
+                ? timed.length === 0
+                  ? '用服务器对齐（约一两分钟）'
+                  : '用服务器重对'
+                : native
+                  ? timed.length === 0
+                    ? '在这台手机上对齐（约十几分钟）'
+                    : '在这台手机上重对（约十几分钟）'
+                  : timed.length === 0
+                    ? '自动对齐'
+                    : '重新对齐'}
+            </Button>
+            {/*
+              有服务器时手机上仍然留着本地那条 —— 服务器会挂、会没网，而
+              「今天就想练这一课」不该被那件事完全挡住。它是 ghost 且写明代价。
+            */}
+            {remote && native && (
+              <Button variant="ghost" onClick={() => enqueue(lesson.id, { manual: true, backend: 'local' })}>
+                在这台手机上算（约十几分钟）
+              </Button>
+            )}
+          </>
         )}
       </div>
 
@@ -55,19 +73,29 @@ export function AlignStatus({ lesson }: { lesson: Lesson }) {
         这条必须说清楚，否则用户看到的是「导入完了什么也没发生」，
         而那和 §7.10 那次「进程被系统杀掉」在界面上又是同一个样子。
       */}
-      {native && hasAudio && timed.length === 0 && !busy && !queued && (
+      {native && !remote && hasAudio && timed.length === 0 && !busy && !queued && (
         <Banner tone="info">
           这一课还没有时间戳。手机上导入后<strong>不会</strong>自动对齐 —— 一课要十几分钟满载，
           而且必须一直亮屏、别切出去（iOS 会把后台进程挂起）。
           在桌面上对齐一次，句级和词级时间戳都会跟着同步回来，这台手机上直接就能练。
-          真的只有手机的时候，点上面那个按钮 —— 它一块一块算，中途被打断下次接着算。
+          <strong>或者登录同步</strong> —— 登录之后手机上导入的课会自动送到服务器算（约一两分钟，
+          这期间手机可以锁屏）。真的只有手机又没网的时候，点上面那个按钮：
+          它一块一块算，中途被打断下次接着算。
         </Banner>
       )}
 
-      {blocked && hasAudio && (
+      {native && remote && hasAudio && timed.length === 0 && !busy && !queued && (
+        <Banner tone="info">
+          这一课还没有时间戳。点上面那个按钮送到服务器算 —— 上传音频（6~10MB）之后
+          <strong>手机可以锁屏、可以退出 App</strong>，回来再看结果。
+          文稿不上传，服务器只拿音频算声音那一半。
+        </Banner>
+      )}
+
+      {blocked && !remote && hasAudio && (
         <Banner tone="warn">
           这台设备上两档对齐后端都被系统杀过（见「设置 → 对齐后端」里的记录），所以不再自动跑。
-          在桌面上对齐这一课，句级时间戳会跟着备份同步回来 —— 手机端照样能跟读和听写。
+          在桌面上对齐这一课、或者登录同步让服务器算 —— 句级与词级时间戳都会跟着同步回来。
         </Banner>
       )}
 

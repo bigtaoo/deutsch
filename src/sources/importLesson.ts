@@ -145,6 +145,14 @@ export interface RehydrateOutcome {
   manuscriptChanged: boolean;
   audioRestored: boolean;
   audioError?: string;
+  /**
+   * 重新抓到的音频时长和标注层记着的那个明显不同 —— DW 换过音频，
+   * 时间戳大概率整体作废，这一课要重对。差 1 秒以内当成同一份（时长是页面上报的，会抖）。
+   *
+   * 这一位是「补齐之后要不要重对」的**唯一**依据（变更 34）：
+   * 以前是无条件重对，而在有同步的世界里那等于「在手机上花十几分钟重算桌面刚算好的值」。
+   */
+  audioDurationChanged: boolean;
   /** manuscriptChanged 时，按新文稿重切的预览结果，等用户决定 */
   fresh?: { plainText: string; dw: DwLesson };
 }
@@ -192,19 +200,31 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
     audioError = '页面里没有找到音频直链，这一课也没有记录过原始下载地址';
   }
 
-  // 标注层这边要更新的两样：刷新音频地址（CDN 直链会变），以及文稿没变时刷新候选词。
+  // 标注层这边要更新的三样：刷新音频地址（CDN 直链会变）、刷新时长，以及文稿没变时刷新候选词。
   // 文稿变了就不动候选词 —— 它的 offset 基于旧文稿，等用户在 FR-3.7 里做完决定。
   const nextAudioSrc = dw.audio?.mp3Src ?? lesson.audioSrc;
-  if (nextAudioSrc !== lesson.audioSrc || !manuscriptChanged) {
+  const nextDuration = dw.audio?.duration || lesson.audioDuration;
+  const audioDurationChanged =
+    lesson.audioDuration !== undefined &&
+    nextDuration !== undefined &&
+    Math.abs(nextDuration - lesson.audioDuration) > 1;
+  if (nextAudioSrc !== lesson.audioSrc || nextDuration !== lesson.audioDuration || !manuscriptChanged) {
     await useLessonStore.getState().saveLesson({
       ...lesson,
       audioSrc: nextAudioSrc,
+      audioDuration: nextDuration,
       glossary: manuscriptChanged ? lesson.glossary : buildCandidates(dw, lesson.sentences),
     });
   }
 
   await useLessonStore.getState().load();
-  return { manuscriptChanged, audioRestored, audioError, fresh: { plainText: dw.plainText, dw } };
+  return {
+    manuscriptChanged,
+    audioRestored,
+    audioError,
+    audioDurationChanged,
+    fresh: { plainText: dw.plainText, dw },
+  };
 }
 
 /**

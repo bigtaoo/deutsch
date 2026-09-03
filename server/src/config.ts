@@ -19,6 +19,32 @@ export interface Config {
   maxDocBytes: number;
   /** 每个文档保留多少个历史版本 —— 这是 GitHub 方案里「git 历史可回滚」的替代物。 */
   revisionsPerDoc: number;
+  /**
+   * 对齐那一半（FR-15.17）。整块可关：这条服务的本职是备份，
+   * 对齐是搭上来的第二个用途，任何一天它碍事了就 `ALIGN_ENABLED=false` 重启。
+   */
+  align: {
+    enabled: boolean;
+    /** 权重放哪。默认 `${dataDir}/models` —— 挂进来的卷，镜像重建不碰它。 */
+    modelDir: string;
+    /** 权重变体。默认 q4，与手机原生插件那一档同一份（见 align/model.ts 顶部）。 */
+    dtype: string;
+    /** ORT 的 intra-op 线程数。4 vCPU 的机器上默认留一个给别人。 */
+    threads: number;
+    /** 上传音频的字节上限。一课 6~10MB，40MB 挡的是误传和恶意。 */
+    maxAudioBytes: number;
+    /** 音频秒数上限。一期 8~10 分钟，30 分钟已经很宽松。 */
+    maxSeconds: number;
+    /** 排队上限（不含正在跑的那个）。 */
+    maxQueued: number;
+    /** 结果留多久 —— 「手机切走十分钟再回来取」这条路要靠它。 */
+    resultTtlMs: number;
+  };
+}
+
+function flag(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw === '') return fallback;
+  return raw === '1' || raw.toLowerCase() === 'true';
 }
 
 function list(raw: string | undefined): string[] {
@@ -39,9 +65,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('SESSION_SECRET 至少 32 个字符（openssl rand -hex 32）');
   }
 
+  const dataDir = env.DATA_DIR ?? './data';
+
   return {
     port: Number(env.PORT ?? 8790),
-    dataDir: env.DATA_DIR ?? './data',
+    dataDir,
     googleClientIds: requireNonEmpty('GOOGLE_CLIENT_IDS', list(env.GOOGLE_CLIENT_IDS)),
     allowedEmails: requireNonEmpty('ALLOWED_EMAILS', list(env.ALLOWED_EMAILS)).map((e) =>
       e.toLowerCase(),
@@ -51,5 +79,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     allowedOrigins: requireNonEmpty('ALLOWED_ORIGINS', list(env.ALLOWED_ORIGINS)),
     maxDocBytes: Number(env.MAX_DOC_BYTES ?? 8 * 1024 * 1024),
     revisionsPerDoc: Number(env.REVISIONS_PER_DOC ?? 30),
+    align: {
+      enabled: flag(env.ALIGN_ENABLED, true),
+      modelDir: env.ALIGN_MODEL_DIR ?? `${dataDir}/models`,
+      dtype: env.ALIGN_MODEL_DTYPE ?? 'q4',
+      threads: Number(env.ALIGN_THREADS ?? 3),
+      maxAudioBytes: Number(env.ALIGN_MAX_AUDIO_BYTES ?? 40 * 1024 * 1024),
+      maxSeconds: Number(env.ALIGN_MAX_SECONDS ?? 1800),
+      maxQueued: Number(env.ALIGN_MAX_QUEUED ?? 3),
+      resultTtlMs: Number(env.ALIGN_RESULT_TTL_MS ?? 30 * 60_000),
+    },
   };
 }

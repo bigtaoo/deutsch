@@ -58,7 +58,11 @@ jobs:
           cache-dependency-path: server/package-lock.json
 
       - name: install
-        run: npm --prefix server ci
+        # `--omit=optional` 跳过 onnxruntime-node（283MB，四个平台的预编译产物都在里面）。
+        # CI 里用不上它：typecheck 只看类型，而对齐的单测喂的是假 engine ——
+        # 真模型要 230MB 权重和 ffmpeg，那是部署验收（deploy/README.md §对齐）。
+        # 镜像里当然要装，Dockerfile 那条 `npm ci` 没有这个开关。
+        run: npm --prefix server ci --omit=optional
 
       - name: typecheck
         run: npm --prefix server run typecheck

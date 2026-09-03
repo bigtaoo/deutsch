@@ -191,6 +191,80 @@ Android 客户端登记的包名**逐字一致**（含任何 `.debug` 后缀）�
 - [ ] 断网做一课 → 首页状态条「待推送 N 项」→ 恢复网络自动清零
 - [ ] iPhone 真机走一遍上面四条（原生壳的 Google 登录走的是系统账号，和 web 不是同一条码）
 
+## 4b. 对齐那一半（FR-15.17，2026-09-03 新增）
+
+这台服务器现在还替手机算 emissions（音频 → 帧级 log-prob）。**同步不依赖它** ——
+装不上、关掉、算挂了都只让对齐那三条路由回 503，同步照常。
+
+### 一次性：改 compose 并放好权重
+
+**这两步 CI 干不了**（部署脚本只搬 `src/`、`package.json`、`package-lock.json`、`Dockerfile`，
+compose 与 `.env` 一律不动，理由见 §6），所以第一次上线要手工做一次：
+
+```bash
+# ① mem_limit 必须从 256m 提到 2g，否则第一次对齐会把容器 OOM 掉（连同步一起带走）。
+#    仓库里 server/docker-compose.yml 已经是新的，把它同步过去即可：
+scp server/docker-compose.yml wnet-server:~/deutsch-sync/docker-compose.yml
+```
+
+```bash
+# ② 权重（241MB 的 model_q4.onnx）。不放也能用 —— 第一次对齐时服务器自己去 HF 取，
+#    只是那一次要多等几分钟。本机已经有一份（npm run stage:align 下过），直接送过去更快：
+# 一行，别加反斜杠续行 —— 这些命令是在 PowerShell 里跑的
+scp public/models/onnx-community/mms-300m-1130-forced-aligner-ONNX/onnx/model_q4.onnx wnet-server:~/deutsch-sync/data/models/onnx-community/mms-300m-1130-forced-aligner-ONNX/onnx/
+```
+
+```bash
+# 目标目录要先建出来（属主是跑容器那个用户）
+ssh wnet-server 'mkdir -p ~/deutsch-sync/data/models/onnx-community/mms-300m-1130-forced-aligner-ONNX/onnx'
+```
+
+```bash
+# ③ 重建并起来（Dockerfile 变了：多了 ffmpeg + libgomp1 + onnxruntime-node）
+ssh wnet-server 'cd ~/deutsch-sync && docker compose up -d --build'
+```
+
+`.env` 里**什么都不用加**：对齐默认开着，其余全有默认值。想调的话有这些
+（改完 `docker compose up -d`）：`ALIGN_ENABLED`、`ALIGN_MODEL_DTYPE`（默认 q4，
+**换它意味着服务器算的和手机/桌面算的不再逐位相同**）、`ALIGN_THREADS`（默认 3）、
+`ALIGN_MAX_AUDIO_BYTES`（40MB）、`ALIGN_MAX_SECONDS`（1800）、`ALIGN_MAX_QUEUED`（3）、
+`ALIGN_RESULT_TTL_MS`（30 分钟）。
+
+### 验收（对齐这一半）
+
+```bash
+# ① 服务器认自己开着对齐
+curl -s https://sync.gamestao.com/v1/healthz
+# align.status 是 idle（还没加载过权重）或 ready；off = 被关掉了 / ORT 没装上
+```
+
+```bash
+# ② 在真机器上读三个数：解码几秒、加载权重几秒、**一块几秒**。
+#    先把一个真实 mp3 放进 data/（它只是探针的输入，不会被服务读到）
+ssh wnet-server 'cd ~/deutsch-sync && docker compose exec sync node src/align/probe.ts /data/sample.mp3'
+```
+
+第 ③ 个数（一块几秒）× 27 就是「一课要等多久」。本机（Windows、3 线程）实测一块 3.4 秒，
+所以这台 EPYC 上一课**估**一两分钟 —— 真值要这条命令给。
+探针最后打的那份指纹（frames + 前 5 个 log-prob + 全局均值）是拿来和桌面浏览器
+算同一课时的结果对比的：**三条路应该给出同一份矩阵**。
+
+- [ ] `healthz` 里 `align.status` 不是 `off`
+- [ ] `probe.ts` 跑通：解码正常、权重加载成功（说明这份 ORT 认 `MatMulNBits`）、块数与 `27` 量级一致
+- [ ] 手机（登录状态）导入一课 → 自动送到服务器算 → 一两分钟后有时间戳，**期间锁屏不影响**
+- [ ] 对齐进行中把 App 切走、回来 → 结果照样能取到（计算不在这台设备上）
+- [ ] 关掉对齐（`ALIGN_ENABLED=false` + 重启）→ 手机上退回「不自动对齐」，而同步一切正常
+
+### 出问题时先看哪儿
+
+| 症状 | 多半是 |
+|---|---|
+| `align.status` 是 `off` | `ALIGN_ENABLED=false`，或 `onnxruntime-node` 没装进镜像（它是 optionalDependency，`npm ci` 会静静跳过装不上的平台） |
+| 第一次对齐失败，`align.message` 里有 `libgomp` / `binding` | 镜像少了 `libgomp1`（Dockerfile 里有，确认镜像是新的） |
+| 报错里有 `ffmpeg` | 镜像少了 ffmpeg，或那个音频文件本身坏了 |
+| 容器反复重启、日志末尾是 `Killed` | `mem_limit` 还是 256m（见上面 ①） |
+| 手机上按钮还是「在这台手机上对齐」 | 没登录（远端可用的判据是「配了服务器 + 有会话令牌」），或服务器回过 `align_off` |
+
 ## 5. 运维
 
 前后端都由 CI 自动部署（见 §6）。下面这些是手工干预时用的。

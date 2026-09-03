@@ -14,7 +14,8 @@
 //   · 本机 ORT（`emissions.ts`,目前唯一实现)
 //   · 原生插件（Capacitor + onnxruntime-objc/-android —— WebView 的 jetsam 线远低于
 //     原生进程,而原生可以 mmap 那份 .onnx,峰值从「约 3 倍模型体积」掉到「约 1 倍」)
-//   · 远端（只上行音频、下行这个矩阵。因为 ① 不看文稿,**德语正文一个字都不出设备** ——
+//   · 远端（`remoteEmissions.ts` + `server/src/align/`,2026-09-03 落地）：只上行音频、
+//     下行这个矩阵。因为 ① 不看文稿,**德语正文一个字都不出设备** ——
 //     SPEC §3.1 那一整套关于正文的约束因此完全不受影响,要认的只剩「音频经手」一条)
 //
 // 所以这个文件里**不许出现任何 import 自 @huggingface/transformers 的东西**。
@@ -25,8 +26,11 @@
 // `logProbs` 是 Float32Array,天生 structured-clone 可传、可 transfer（零拷贝进 Worker）。
 // 8 分钟一课是 24275 × 31 个 float32 ≈ 2.9MB —— 比音频本身小一个量级,
 // 所以「先全部算完再对齐」是划算的,不需要流式。
-// 上到线缆时还可以压（float16 减半、gzip 再减半),但那是 provider 自己的事:
-// 这里定的是**内存里的形状**,编解码器等真的有远端 provider 时再写。
+// 上到线缆时还可以压（float16 减半、gzip 再减半)，但那是 provider 自己的事：
+// 这里定的是**内存里的形状**。远端那条路 2026-09-03 落地时的决定是**一律不压**
+// （`server/src/align/wire.ts`)：float16 只有约 3 位十进制，而 Viterbi 要在 24000 帧上
+// 累加这些数 —— 压了之后同一课在服务器上算和在桌面上算会得到细微不同的边界，
+// 那正是这条路最不该引入的差别。3MB 一课、一周一课，不值得拿可复现性去换。
 
 import type { AlignModelConfig, DevicePlan, NativePlan } from './config';
 
@@ -36,7 +40,7 @@ export type EmissionSource =
   | { kind: 'local'; plan: DevicePlan }
   /** 原生插件算的（Capacitor + onnxruntime，见 native-plugins/align-native) */
   | { kind: 'native'; plan: NativePlan }
-  /** 远端算的。只记 origin,不记路径与参数 */
+  /** 远端算的（FR-15.17，见 remoteEmissions.ts）。只记 origin,不记路径与参数 */
   | { kind: 'remote'; origin: string };
 
 export interface EmissionMatrix {

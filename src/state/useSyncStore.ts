@@ -19,12 +19,20 @@ export type SyncStatus = 'unconfigured' | 'signed-out' | 'signing-in' | 'signed-
 
 interface PersistedSyncStatus {
   lastSuccessAt?: number;
+  /** 上次**拉取**跑通的时刻（FR-11.19）。由 sync/pull.ts 写。 */
+  lastPullAt?: number;
 }
 
 interface SyncState {
   status: SyncStatus;
   account: SyncAccount | null;
   lastSuccessAt: number | null;
+  /**
+   * 上次拉取跑通的时刻。和「上次推送成功」分开显示（FR-11.9）：
+   * 推通了不代表拉通了，而「拉悄悄停了」的症状就是「另一台设备上的东西一直不来」——
+   * 只看推送那一行的话状态条会一片绿，用户只能靠猜。
+   */
+  lastPullAt: number | null;
   pendingCount: number;
   errorMessage: string | null;
 
@@ -34,7 +42,8 @@ interface SyncState {
   signIn: () => Promise<void>;
   signOut: () => Promise<void>;
 
-  refreshPendingCount: () => Promise<void>;
+  /** 重读「待推送几项 + 上次推送/拉取时刻」。同步链路每次 onChange 都调它。 */
+  refreshStatus: () => Promise<void>;
   recordPushSuccess: () => Promise<void>;
 
   /** 令牌被撤销 / 过期时由 sync/trigger.ts 的钩子调进来。 */
@@ -45,6 +54,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   status: isSyncConfigured() ? 'signed-out' : 'unconfigured',
   account: null,
   lastSuccessAt: null,
+  lastPullAt: null,
   pendingCount: 0,
   errorMessage: null,
 
@@ -62,6 +72,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       status: session ? 'signed-in' : 'signed-out',
       account: session?.account ?? null,
       lastSuccessAt: persisted?.lastSuccessAt ?? null,
+      lastPullAt: persisted?.lastPullAt ?? null,
       pendingCount: queue.length,
     });
 
@@ -97,8 +108,16 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'signed-out', account: null, errorMessage: null });
   },
 
-  refreshPendingCount: async () => {
-    set({ pendingCount: (await getQueue()).length });
+  refreshStatus: async () => {
+    const [queue, persisted] = await Promise.all([
+      getQueue(),
+      getMeta<PersistedSyncStatus>(META_KEYS.syncStatus),
+    ]);
+    set({
+      pendingCount: queue.length,
+      lastSuccessAt: persisted?.lastSuccessAt ?? null,
+      lastPullAt: persisted?.lastPullAt ?? null,
+    });
   },
 
   recordPushSuccess: async () => {
@@ -106,7 +125,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     const existing = (await getMeta<PersistedSyncStatus>(META_KEYS.syncStatus)) ?? {};
     await putMeta(META_KEYS.syncStatus, { ...existing, lastSuccessAt: now });
     set({ lastSuccessAt: now });
-    await get().refreshPendingCount();
+    await get().refreshStatus();
   },
 
   markSessionExpired: () => {

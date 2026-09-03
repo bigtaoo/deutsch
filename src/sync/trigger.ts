@@ -1,6 +1,7 @@
 // FR-11.6 / FR-11.7 / FR-11.10：把「数据变了」接到「推同步服务器」上。
 //
 // 四条路径：
+//   syncNow()               —— 启动、回前台、网络恢复时调用：先推排队的，再拉一次（FR-11.19）
 //   scheduleLessonSync(id)  —— 标注/挖空变更后调用，30s 去抖（FR-11.7）
 //   syncVocabNow()          —— 每次复习会话结束调用，不去抖（FR-11.6，不可重建的数据不过夜）
 //   scheduleSettingsSync()  —— 改过设置后调用，5s 去抖（§0 变更 28）
@@ -35,6 +36,7 @@ import {
   rememberVersion,
 } from './docs';
 import { drainQueue, enqueuePush, onNetworkRestored, type QueuedPush } from './queue';
+import { pullFromServer, pullWroteData, type PullResult } from './pull';
 
 const LESSON_DEBOUNCE_MS = 30_000;
 /**
@@ -231,7 +233,74 @@ export async function drainSyncQueue(): Promise<void> {
   hooks.onChange?.();
 }
 
-/** 启动时调一次：网络恢复即自动重试。返回取消订阅函数。 */
+// ── 拉（FR-11.19 / §0 变更 34）────────────────────────────────────────────
+
+/**
+ * 两次自动拉取之间的最小间隔。
+ *
+ * 有这个节流是因为触发点里有一个 **onResume**：iOS 上「切出去看一眼通知再切回来」
+ * 会连着发好几次，而每一次都要一趟 `GET /v1/docs`。60 秒足够让「在桌面上改完、
+ * 马上拿起手机」这条路径感觉是即时的（拿起手机就是一次 resume），
+ * 又不会把弱网下的往返次数变成噪声。
+ */
+const PULL_THROTTLE_MS = 60_000;
+
+let lastPullStartedAt = 0;
+let pullInFlight: Promise<PullResult | null> | null = null;
+
+/**
+ * 拉一次，失败不抛。返回 null = 没跑（未登录 / 被节流 / 出错）。
+ *
+ * **单飞**：启动那一刻 App.tsx 和 onResume 可能几乎同时调进来，
+ * 两个并发的拉取会各自 rememberVersion，互相把对方的合并结果当成「远端新值」。
+ */
+export async function pullSyncNow(options: { force?: boolean } = {}): Promise<PullResult | null> {
+  const token = await getSessionToken();
+  if (!token) return null;
+  if (pullInFlight) return pullInFlight;
+  if (!options.force && Date.now() - lastPullStartedAt < PULL_THROTTLE_MS) return null;
+
+  lastPullStartedAt = Date.now();
+  pullInFlight = (async () => {
+    try {
+      const result = await pullFromServer({ force: options.force });
+      // 合并把别的设备的数据写进了本地库 —— 内存里的 store 得重读，否则界面还是旧的。
+      if (pullWroteData(result)) hooks.onRemoteDataWritten?.();
+
+      // 本地赢了的那部分要回推，否则它一直停在这台设备上（拉不等于远端赢，§2.4）。
+      if (result.vocabNeedsPush) await attempt('vocab');
+      if (result.settingsNeedsPush) await attempt('settings');
+      for (const lessonId of result.lessonsNeedPush) await attempt('lesson', lessonId);
+
+      // 单个文档坏掉不让整次拉取失败（pull.ts），但也不能一声不响。
+      if (result.failures.length > 0) console.warn('[sync] 拉取时有文档失败：', result.failures);
+      return result;
+    } catch (err) {
+      if (err instanceof SyncAuthError) hooks.onSessionExpired?.();
+      // 别的错误（离线、服务器 5xx）不报警：状态条上「上次拉取」的时间会自己变旧，
+      // 那是比一条时隐时现的红字更诚实的信号。
+      return null;
+    } finally {
+      pullInFlight = null;
+      hooks.onChange?.();
+    }
+  })();
+  return pullInFlight;
+}
+
+/**
+ * FR-11.19：一次完整的同步 —— 先把排队的推出去，再拉一次。
+ * 启动（App.tsx）、回前台（main.tsx 的 onResume）、网络恢复都走这条。
+ *
+ * 先推后拉：推完再拉，远端拿到的就是这台设备的最新状态，
+ * 于是拉回来的合并结果不会把刚要推的东西判成「本地更旧」。
+ */
+export async function syncNow(options: { force?: boolean } = {}): Promise<void> {
+  await drainSyncQueue();
+  await pullSyncNow(options);
+}
+
+/** 启动时调一次：网络恢复即自动推 + 拉。返回取消订阅函数。 */
 export function startSyncAutoRetry(): () => void {
-  return onNetworkRestored(() => void drainSyncQueue());
+  return onNetworkRestored(() => void syncNow());
 }

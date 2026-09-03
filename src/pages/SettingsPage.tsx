@@ -14,12 +14,14 @@ import {
   MMS_FA,
   LOCAL_MODEL_PATH,
   NATIVE_PLAN,
+  REMOTE_PLAN,
   PLAN_LADDER,
   hasLocalWeights,
   pickDevice,
   planLabel,
 } from '@/align/config';
 import { nativeEmissionsAvailable } from '@/align/nativeEmissions';
+import { remoteEmissionsAvailable } from '@/align/remoteEmissions';
 import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
 import { nativePlatform } from '@/platform/native';
 
@@ -86,13 +88,22 @@ function AlignBackendSection() {
   useEffect(() => {
     void (async () => {
       const out: string[] = [];
-      // 原生那一档要排在最前面：它一旦可用，下面关于 WebGPU / 降档 / 「下一次加载哪份权重」
+      // 服务器那一档排在最最前面（FR-15.17）：它一旦可用，这一整页余下的每一行
+      // 说的都是**这台设备上那条现在不走的路**。
+      const remote = await remoteEmissionsAvailable();
+      if (remote) {
+        out.push(`emissions 由服务器算：${REMOTE_PLAN.device} / ${REMOTE_PLAN.dtype} —— 上行 mp3、下行矩阵，文稿不出设备`);
+      }
+      // 原生那一档跟在后面：它一旦可用，下面关于 WebGPU / 降档 / 「下一次加载哪份权重」
       // 的每一句话在这台设备上都不再成立 —— 权重压根不进 WebView。
       const native = await nativeEmissionsAvailable();
       if (native) {
         out.push(
           `emissions 由原生插件算：${NATIVE_PLAN.device} / ${NATIVE_PLAN.dtype} —— 权重不进 WebView，也不参与降档`,
         );
+      }
+      if (native && remote) {
+        out.push('原生插件那条还在（服务器不可用时的手动退路，课程页上那个 ghost 按钮）');
       }
       const plan = await pickDevice();
       out.push(
@@ -296,18 +307,21 @@ function AccountSection() {
 }
 
 function SyncStatusBanner() {
-  const { status, lastSuccessAt, pendingCount, refreshPendingCount } = useSyncStore();
+  const { status, lastSuccessAt, lastPullAt, pendingCount, refreshStatus } = useSyncStore();
 
   useEffect(() => {
-    void refreshPendingCount();
-  }, [refreshPendingCount]);
+    void refreshStatus();
+  }, [refreshStatus]);
 
   if (status !== 'signed-in') return null;
 
   return (
     <section className="space-y-1 rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-sm">
       <h2 className="font-semibold">同步状态（FR-11.9：常驻可见）</h2>
-      <p>上次成功同步：{lastSuccessAt ? formatDateTime(lastSuccessAt) : '尚未同步过'}</p>
+      <p>上次推送成功：{lastSuccessAt ? formatDateTime(lastSuccessAt) : '尚未推送过'}</p>
+      {/* 拉那一半单独一行（FR-11.19）：推通了不代表拉通了，而「拉悄悄停了」的症状
+          就是「另一台设备上的东西一直不来」—— 两个时刻必须分开看。 */}
+      <p>上次拉取成功：{lastPullAt ? formatDateTime(lastPullAt) : '尚未拉取过'}</p>
       <p>{pendingCount > 0 ? `⏳ ${pendingCount} 项待推送` : '✅ 没有待推送的变更'}</p>
       {typeof navigator !== 'undefined' && !navigator.onLine && pendingCount > 0 && (
         <p className="text-amber-700">当前离线，已排队，恢复网络后自动重试（FR-11.10）。</p>

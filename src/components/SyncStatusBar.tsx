@@ -8,7 +8,7 @@ import { useEffect } from 'react';
 import { href } from '@/app/router';
 import { useSyncStore } from '@/state/useSyncStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { drainSyncQueue } from '@/sync/trigger';
+import { syncNow } from '@/sync/trigger';
 
 const MANUAL_EXPORT_REMINDER_DAYS = 90;
 
@@ -17,13 +17,13 @@ function daysAgo(timestamp: number): number {
 }
 
 export function SyncStatusBar() {
-  const { status, account, lastSuccessAt, pendingCount, errorMessage, refreshPendingCount } =
+  const { status, account, lastSuccessAt, lastPullAt, pendingCount, errorMessage, refreshStatus } =
     useSyncStore();
   const lastManualExport = useSettingsStore((s) => s.settings.lastBackupAt);
 
   useEffect(() => {
-    void refreshPendingCount();
-  }, [refreshPendingCount]);
+    void refreshStatus();
+  }, [refreshStatus]);
 
   const manualOverdue =
     lastManualExport === undefined || daysAgo(lastManualExport) > MANUAL_EXPORT_REMINDER_DAYS;
@@ -44,12 +44,16 @@ export function SyncStatusBar() {
           )}
         </span>
 
-        <span>上次成功：{lastSuccessAt ? `${daysAgo(lastSuccessAt)} 天前` : '从未'}</span>
+        <span>上次推送：{lastSuccessAt ? `${daysAgo(lastSuccessAt)} 天前` : '从未'}</span>
+
+        {/* FR-11.19：拉那一半也要常驻可见 —— 它停了的症状是「别的设备上的东西一直不来」，
+            而那看起来跟「我最近没在别的设备上练」一模一样。 */}
+        <span>上次拉取：{lastPullAt ? `${daysAgo(lastPullAt)} 天前` : '从未'}</span>
 
         <span className={pendingCount > 0 ? 'text-amber-700' : ''}>
           待推送 {pendingCount} 项
           {pendingCount > 0 && (
-            <button className="ml-1 underline" onClick={() => void drainSyncQueue()}>
+            <button className="ml-1 underline" onClick={() => void syncNow({ force: true })}>
               立即重试
             </button>
           )}

@@ -21,6 +21,14 @@ export interface AlignProgress {
    * 放在同一个联合里是因为界面只关心「现在在哪一步」，不关心它是谁发的。
    */
   stage: 'decode' | 'model' | 'infer' | 'align' | 'apply';
+  /**
+   * 这一步**在哪儿跑**。`remote` = 服务器（FR-15.17）。
+   *
+   * 有它是因为阶段名全是设备视角的：远端那条路上照原样显示「加载对齐模型」，
+   * 会让人以为这台手机正在下 230MB 权重 —— 而那恰好是这条路存在的理由
+   * （手机上不该干那件事）。stageLabel() 据此换一套措辞。
+   */
+  where?: 'remote';
   /** 0..1 */
   fraction?: number;
   /** model 阶段的下载进度 */

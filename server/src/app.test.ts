@@ -17,6 +17,16 @@ const config: Config = {
   allowedOrigins: ['https://d.gamestao.com'],
   maxDocBytes: 1000,
   revisionsPerDoc: 3,
+  align: {
+    enabled: true,
+    modelDir: ':memory:',
+    dtype: 'q4',
+    threads: 1,
+    maxAudioBytes: 1024,
+    maxSeconds: 60,
+    maxQueued: 2,
+    resultTtlMs: 60_000,
+  },
 };
 
 /** 假校验器：token 就是邮箱本身，前缀 bad- 表示一张伪造的票。 */

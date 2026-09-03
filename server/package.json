@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node src/index.ts",
     "dev": "node --watch src/index.ts",
@@ -20,5 +22,8 @@
     "@types/node": "^26.4.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "^1.29.0"
   }
 }

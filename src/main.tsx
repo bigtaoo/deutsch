@@ -4,7 +4,7 @@ import App from './App';
 import './index.css';
 import { initStoragePersistence } from './db';
 import { initNativeShell } from './platform/native';
-import { drainSyncQueue } from './sync/trigger';
+import { syncNow } from './sync/trigger';
 import { initAppShellUpdates } from './platform/pwa';
 import { isOAuthPopupReturn } from './sync/session';
 
@@ -32,7 +32,11 @@ function bootApp(): void {
   // onResume 为什么值得接：自动重试挂在 window 的 online 事件上，而手机把 App 挂起时
   // 事件一起冻住 —— 「打完一课 → 切走 → 三天后回来」这条最常见的路径上，
   // 队列要等下一次网络抖动才动。回前台立刻推一次，备份的时效才对得上 FR-11.10。
-  initNativeShell({ onResume: () => void drainSyncQueue() });
+  //
+  // 拉也挂在这里（FR-11.19）：「在桌面上导完一课 → 拿起手机」里的「拿起手机」
+  // 就是一次 resume，这是让手机端**不用点任何按钮**就拿到新课的那一下。
+  // 频繁 resume 由 pullSyncNow 的 60 秒节流兜着。
+  initNativeShell({ onResume: () => void syncNow() });
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

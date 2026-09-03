@@ -52,6 +52,22 @@ export function isManual(sentence: Sentence): boolean {
   return sentence.timingSource === undefined && sentence.startTime !== undefined;
 }
 
+/**
+ * 这一课有没有时间戳（哪怕一句）。
+ *
+ * 用来回答「要不要在这台设备上跑对齐」：变更 34 之前，「补齐素材」之后是**无条件**
+ * 重排一次对齐的，理由是「换过音频，旧时间戳可能作废」。那条理由在有同步之后不成立了 ——
+ * 常态是「桌面算完、手机补齐素材」，标注层里那份时间戳正是桌面刚算出来的，
+ * 而在手机上重算一遍要十几分钟，算完还盖回同样的值。
+ * 真正会让时间戳作废的是**音频变了**，那件事有 `audioDuration` 可比，不必靠猜。
+ *
+ * 排除句（Glossar 之类）不算：它们永远没有时间戳，把它们算进来会让
+ * 「一句都没对齐」永远为假。
+ */
+export function hasTimings(sentences: Sentence[]): boolean {
+  return sentences.some((s) => !s.excluded && s.startTime !== undefined);
+}
+
 export function applyTimings(
   sentences: Sentence[],
   timings: SentenceTiming[],

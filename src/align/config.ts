@@ -95,11 +95,29 @@ export interface NativePlan {
   dtype: Dtype;
 }
 
-/** 黑匣子与诊断里记的「用的哪套后端」。浏览器那两档 + 原生那一档。 */
-export type RunPlan = DevicePlan | NativePlan;
+/**
+ * 服务器那一档（SPEC §0 变更 35 / FR-15.17）。和原生那一档同一个道理：
+ * **不在 `PLAN_LADDER` 里**，`planStep` 也用 -1 —— 这台设备的内存和它一点关系都没有，
+ * 把它算进崩溃计数会让桌面的降档判据跟着坏。
+ *
+ * dtype 记 `q4`，与原生那一档、与服务器 `ALIGN_MODEL_DTYPE` 的默认值是同一份权重。
+ * 三条路用同一个 dtype 不是巧合而是要求：量化误差一换，同一课的边界就会细微地不一样
+ * （理由写在 server/src/align/model.ts 顶部）。
+ */
+export interface RemotePlan {
+  device: 'remote';
+  dtype: Dtype;
+}
+
+/** 黑匣子与诊断里记的「用的哪套后端」。浏览器那两档 + 原生 + 服务器。 */
+export type RunPlan = DevicePlan | NativePlan | RemotePlan;
 
 export const NATIVE_PLAN: NativePlan = { device: 'native', dtype: 'q4' };
 export const NATIVE_PLAN_STEP = -1;
+
+export const REMOTE_PLAN: RemotePlan = { device: 'remote', dtype: 'q4' };
+/** 与原生共用 -1：那个值的含义是「不在阶梯上」，不是「哪一档」。 */
+export const REMOTE_PLAN_STEP = NATIVE_PLAN_STEP;
 
 /**
  * 「第几档」这句话只对浏览器那两档成立。原生不在阶梯上，
@@ -107,7 +125,9 @@ export const NATIVE_PLAN_STEP = -1;
  */
 export function planLabel(plan: RunPlan, planStep: number): string {
   const backend = `${plan.device}/${plan.dtype}`;
-  return plan.device === 'native' ? `${backend}（原生插件，不在阶梯上）` : `${backend}（第 ${planStep + 1} 档）`;
+  if (plan.device === 'native') return `${backend}（原生插件，不在阶梯上）`;
+  if (plan.device === 'remote') return `${backend}（服务器，不在阶梯上）`;
+  return `${backend}（第 ${planStep + 1} 档）`;
 }
 
 /**
