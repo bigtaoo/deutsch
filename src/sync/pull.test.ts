@@ -68,12 +68,25 @@ function json(status: number, body: unknown): Response {
  * 按 URL 路由的 fetch 假件。这里刻意不用「按顺序返回」那一套：
  * 这条链路的关键正是**哪些 URL 被请求了**，顺序反而是实现细节。
  */
+/**
+ * 取出请求的路径。
+ *
+ * **必须给 `new URL` 一个 base**：`SYNC_API_BASE` 来自构建期环境变量，本机有
+ * `.env.local` 所以它是绝对地址，而 CI 上没有那个文件 —— 那时同步的请求是
+ * `/v1/docs` 这样的相对路径，`new URL('/v1/docs')` 直接抛 `ERR_INVALID_URL`。
+ * 这条是被 CI 抓出来的：本机全绿、CI 全红，而原因在测试的辅助函数里，不在被测代码里。
+ *
+ * 顺带解一次 URL 编码：docId 里那个冒号在 URL 里是 %3A（docs.ts 用 encodeURIComponent
+ * 拼的），解回来好让路由表照人读的样子写。
+ */
+function pathOf(input: unknown): string {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : String(input);
+  return decodeURIComponent(new URL(url, 'http://localhost').pathname);
+}
+
 function routeFetch(routes: Record<string, () => Response>) {
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    // docId 里那个冒号在 URL 里是 %3A（docs.ts 用 encodeURIComponent 拼的）——
-    // 解回来，好让下面的路由表照人读的样子写。
-    const path = decodeURIComponent(new URL(url).pathname);
+    const path = pathOf(typeof input === 'string' || input instanceof URL ? input : input.url);
     const handler = routes[path];
     if (!handler) throw new Error(`测试里没有为 ${path} 准备响应`);
     return handler();
@@ -83,7 +96,7 @@ function routeFetch(routes: Record<string, () => Response>) {
 }
 
 function requestedPaths(fetchMock: ReturnType<typeof routeFetch>): string[] {
-  return fetchMock.mock.calls.map(([input]) => decodeURIComponent(new URL(String(input)).pathname));
+  return fetchMock.mock.calls.map(([input]) => pathOf(input));
 }
 
 const DOC_LIST = '/v1/docs';

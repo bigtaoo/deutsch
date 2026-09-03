@@ -58,11 +58,12 @@ jobs:
           cache-dependency-path: server/package-lock.json
 
       - name: install
-        # `--omit=optional` 跳过 onnxruntime-node（283MB，四个平台的预编译产物都在里面）。
-        # CI 里用不上它：typecheck 只看类型，而对齐的单测喂的是假 engine ——
-        # 真模型要 230MB 权重和 ffmpeg，那是部署验收（deploy/README.md §对齐）。
-        # 镜像里当然要装，Dockerfile 那条 `npm ci` 没有这个开关。
-        run: npm --prefix server ci --omit=optional
+        # **不要加 `--omit=optional`。** 试过，CI 当场红：TypeScript 7 把编译器本体
+        # 按平台拆成了 optionalDependencies（`@typescript/typescript-linux-x64`），
+        # 跳过 optional 之后 `tsc` 第一行就抛「Unable to resolve」。
+        # 那个 flag 本来是想省掉 onnxruntime-node 的 283MB（CI 用不上它：
+        # 对齐的单测喂的是假 engine），但 npm 只有全局开关，省不了那一个包。
+        run: npm --prefix server ci
 
       - name: typecheck
         run: npm --prefix server run typecheck
