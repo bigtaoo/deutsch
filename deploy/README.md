@@ -199,7 +199,9 @@ Android 客户端登记的包名**逐字一致**（含任何 `.debug` 后缀）�
 ### 一次性：改 compose 并放好权重
 
 **这两步 CI 干不了**（部署脚本只搬 `src/`、`package.json`、`package-lock.json`、`Dockerfile`，
-compose 与 `.env` 一律不动，理由见 §6），所以第一次上线要手工做一次：
+compose 与 `.env` 一律不动，理由见 §6），所以第一次上线要手工做一次。
+**2026-09-03（0.3.0）已经做过**：compose 送上去了（容器上确认 `mem=2147483648`、`cpus=3`），
+权重是让服务器自己从 HF 取的（那一次 60.7 秒）。下面这些留着，是为了重装或换机器时照着走：
 
 ```bash
 # ① mem_limit 必须从 256m 提到 2g，否则第一次对齐会把容器 OOM 掉（连同步一起带走）。
@@ -244,15 +246,33 @@ curl -s https://sync.gamestao.com/v1/healthz
 ssh wnet-server 'cd ~/deutsch-sync && docker compose exec sync node src/align/probe.ts /data/sample.mp3'
 ```
 
-第 ③ 个数（一块几秒）× 27 就是「一课要等多久」。本机（Windows、3 线程）实测一块 3.4 秒，
-所以这台 EPYC 上一课**估**一两分钟 —— 真值要这条命令给。
+第 ③ 个数（一块几秒）× 27 就是「一课要等多久」。
 探针最后打的那份指纹（frames + 前 5 个 log-prob + 全局均值）是拿来和桌面浏览器
 算同一课时的结果对比的：**三条路应该给出同一份矩阵**。
 
-- [ ] `healthz` 里 `align.status` 不是 `off`
-- [ ] `probe.ts` 跑通：解码正常、权重加载成功（说明这份 ORT 认 `MatMulNBits`）、块数与 `27` 量级一致
+**没有真实 mp3 也能验** —— 探针要的三个数与音频内容无关，现场生成一段正弦波就行：
+
+```bash
+ssh wnet-server 'cd ~/deutsch-sync && docker compose exec -T sync sh -c "ffmpeg -hide_banner -loglevel error -f lavfi -i \"sine=frequency=220:duration=25\" -ac 1 -ar 16000 /tmp/probe25.wav"'
+```
+
+**2026-09-03（0.3.0）在这台机器上的实测值**，以后回归时拿它对照：
+
+| | 实测 |
+|---|---|
+| ffmpeg | 7.1.5，解码 25 秒音频用 0.1~0.2 秒 |
+| `MatMulNBits` | 认（没有「算子找不到」）|
+| 权重加载 | 首次 **60.7 秒**（含从 HF 下 241MB），之后 **0.6 秒** |
+| 一块（20 秒音频）| **4.1~4.5 秒** → 一课 27 块约 **2 分钟**，实时倍率 4.5× |
+| 容器内存 | 空载 104MiB / 2GiB |
+
+- [x] `healthz` 里 `align.status` 不是 `off`（是 `idle`，还没加载过权重）
+- [x] `probe.ts` 跑通：解码正常、权重加载成功（说明这份 ORT 认 `MatMulNBits`）、帧数与期望一致
+- [x] 同一输入跑两次得到**逐位相同**的指纹
+- [x] 容器上的限制真的生效了：`docker inspect deutsch-sync --format "{{.HostConfig.Memory}}"` = 2147483648
 - [ ] 手机（登录状态）导入一课 → 自动送到服务器算 → 一两分钟后有时间戳，**期间锁屏不影响**
 - [ ] 对齐进行中把 App 切走、回来 → 结果照样能取到（计算不在这台设备上）
+- [ ] 桌面上对同一课算一遍，与服务器算的对比（指纹/时间戳应当一致）
 - [ ] 关掉对齐（`ALIGN_ENABLED=false` + 重启）→ 手机上退回「不自动对齐」，而同步一切正常
 
 ### 出问题时先看哪儿
