@@ -120,7 +120,7 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
           ref={boxRef}
           onWheel={() => setFollow(false)}
           onTouchMove={() => setFollow(false)}
-          className="relative max-h-[60vh] space-y-1 overflow-y-auto rounded-lg border border-neutral-200 p-3"
+          className="relative max-h-[60vh] space-y-1 overflow-y-auto rounded-box border border-line bg-raised p-3"
         >
           {lines.map((line) => (
             <Line
@@ -149,10 +149,10 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
 type LineState = 'current' | 'just-read' | 'idle';
 
 const LINE_STATE: Record<LineState, string> = {
-  current: 'bg-amber-50 text-neutral-900',
+  current: 'bg-warn-soft text-ink',
   // 刚读完（落在两句之间的空档）：留一道左边线，别整块亮着 —— 否则看不出高亮已经走过去了
-  'just-read': 'border-l-2 border-amber-300 text-neutral-900',
-  idle: 'text-neutral-600',
+  'just-read': 'border-l-2 border-warn/40 text-ink',
+  idle: 'text-muted',
 };
 
 const Line = memo(function Line({
@@ -175,12 +175,12 @@ const Line = memo(function Line({
   return (
     <li
       ref={(el) => register(line.index, el)}
-      className={`rounded px-2 py-1 text-sm leading-relaxed ${
-        line.excluded ? 'text-neutral-300' : LINE_STATE[state]
+      className={`rounded-ctl px-2 py-1 text-de ${
+        line.excluded ? 'text-faint' : LINE_STATE[state]
       }`}
     >
       <span
-        className={`mr-2 text-xs ${lowConfidence ? 'text-amber-600' : 'text-neutral-400'}`}
+        className={`mr-2 text-note ${lowConfidence ? 'text-warn' : 'text-faint'}`}
         title={lowConfidence ? '这一句的对齐置信度明显低于本课水平，值得亲耳确认' : undefined}
       >
         {number ?? '—'}
@@ -191,8 +191,8 @@ const Line = memo(function Line({
           <span
             key={token.start}
             onClick={() => onSeek(token.time!.start)}
-            className={`cursor-pointer rounded hover:bg-neutral-100 ${
-              i === activeToken ? 'bg-amber-200 font-medium' : ''
+            className={`cursor-pointer rounded-ctl hover:bg-sunken ${
+              i === activeToken ? 'bg-warn-soft font-medium' : ''
             }`}
           >
             {token.text}

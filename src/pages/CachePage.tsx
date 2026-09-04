@@ -7,7 +7,7 @@
 import { useEffect, useState } from 'react';
 import { getStorageEstimate, type StorageEstimateResult } from '@/db';
 import { useLessonStore, isRehydratable } from '@/state/useLessonStore';
-import { Banner, Button, EmptyState, Hint, Section, formatBytes } from '@/components/ui';
+import { Button, Chip, EmptyState, Hint, Note, Section, formatBytes } from '@/components/ui';
 
 export function CachePage() {
   const { lessons, caches, clearCache } = useLessonStore();
@@ -33,12 +33,13 @@ export function CachePage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">素材缓存</h1>
+      <h1 className="hidden text-title font-semibold sm:block">素材缓存</h1>
 
-      <Banner tone="info">
-        缓存层（音频、原文、Glossar）丢了可以重来，标注层（时间戳、挖空、生词、FSRS 状态）丢了就没了。
-        这一页只动缓存层，无论清掉多少，标注一个字都不会少。
-      </Banner>
+      {/* 这条以前是整宽横幅。它说的是「你在这一页做什么都不会丢东西」——
+          那是让人放心的话，不是拦路的话，所以它属于一行那一档（§12.3）。 */}
+      <Note tone="ok">
+        这一页只动缓存层（音频与原文）。无论清掉多少，时间戳、挖空、生词、FSRS 状态一个字都不会少。
+      </Note>
 
       <Section
         title="用量"
@@ -48,7 +49,7 @@ export function CachePage() {
           ) : null
         }
       >
-        <p className="text-sm text-neutral-600">
+        <p className="text-ui text-muted">
           本应用音频合计 {formatBytes(total)}（{cached.length} 课）
           {estimate && !estimate.unsupported && (
             <> · 浏览器统计已用 {formatBytes(estimate.usageBytes)} / 配额 {formatBytes(estimate.quotaBytes)}</>
@@ -60,22 +61,29 @@ export function CachePage() {
       {cached.length === 0 ? (
         <EmptyState>本机没有任何已缓存的音频。</EmptyState>
       ) : (
-        <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+        <ul className="divide-y divide-line overflow-hidden rounded-box border border-line bg-raised">
           {cached.map((lesson) => {
             const rehydratable = isRehydratable(lesson);
             return (
               <li key={lesson.id} className="flex flex-wrap items-center gap-3 p-3">
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{lesson.title}</p>
-                  <p className="text-xs text-neutral-500">
-                    {formatBytes(caches[lesson.id]?.audioBytes ?? 0)} ·{' '}
-                    <span className={rehydratable ? 'text-emerald-700' : 'text-amber-700'}>
-                      {rehydratable ? '可自动补齐（DW 来源，清除无损）' : '不可自动补齐（手动导入，清了要自己找回文件）'}
-                    </span>
+                  <p className="text-note text-muted">
+                    {formatBytes(caches[lesson.id]?.audioBytes ?? 0)}
                   </p>
                 </div>
+                <Chip
+                  tone={rehydratable ? 'ok' : 'warn'}
+                  title={
+                    rehydratable
+                      ? '来自 DW，可以按 lesson id 重新抓取，清除是无损的'
+                      : '手动导入，清了要自己重新找回音频文件'
+                  }
+                >
+                  {rehydratable ? '可自动补齐' : '清了找不回'}
+                </Chip>
                 <Button
-                  variant={rehydratable ? 'secondary' : 'danger'}
+                  variant={rehydratable ? 'ghost' : 'danger'}
                   onClick={() => {
                     const ok = rehydratable
                       ? confirm(`清除《${lesson.title}》的素材？随时可以按 lesson id 重新抓取，标注不受影响。`)

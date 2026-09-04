@@ -10,7 +10,7 @@ import { useSyncStore } from '@/state/useSyncStore';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { Banner, Button, Hint, Section } from '@/components/ui';
+import { Banner, Button, Hint, Note, Section, field } from '@/components/ui';
 
 const DRILL_META_KEY = 'lastRestoreDrillAt';
 const DRILL_INTERVAL_MS = 365 * 86_400_000;
@@ -51,23 +51,28 @@ export function RestoreSection() {
   const drillOverdue = lastDrillAt === null || Date.now() - lastDrillAt > DRILL_INTERVAL_MS;
 
   return (
-    <Section title="从同步服务器恢复（FR-11.13）">
+    <Section title="从服务器恢复">
       {status !== 'signed-in' || !account ? (
         <Hint>先在上面用 Google 登录。</Hint>
       ) : (
         <>
           <Hint>
-            把 {account.email} 在服务器上的生词与全部课程拉下来，按 §2.4 合并规则写入本机。
-            只恢复标注层；课程会显示「素材未下载」，音频去「来源」页一键补齐。
-            设置也在同步范围内（§0 变更 28）；音频与原文不上传，所以课程会显示「素材未下载」。
+            把 {account.email} 在服务器上的生词与全部课程拉下来，按合并规则写入本机（本机更新过的部分留住）。
+            只恢复标注层（含设置）—— 音频与原文按设计不上传，所以课程会显示「素材未下载」，
+            打开那一课时会自动补齐。
           </Hint>
 
           {/* FR-11.15：工具在变，恢复路径会悄悄坏掉。每年提醒重演一次。 */}
           {drillOverdue && (
-            <Banner tone="warn">
-              {lastDrillAt === null
-                ? '还没走过一次恢复。备份没验证过就等于没有备份 —— 现在点一次，它是幂等的。'
-                : '距上次恢复演练已超过一年。跑一次，确认这条路还通。'}
+            <Banner
+              tone="warn"
+              title={lastDrillAt === null ? '这条恢复路径还没验证过' : '距上次恢复演练已超过一年'}
+            >
+              <p>
+                {lastDrillAt === null
+                  ? '备份没验证过就等于没有备份。现在点一次「一键恢复」—— 它是幂等的，不会覆盖本机更新的东西。'
+                  : '跑一次，确认这条路还通。'}
+              </p>
             </Banner>
           )}
 
@@ -75,10 +80,17 @@ export function RestoreSection() {
             {busy ? '恢复中…' : '一键恢复'}
           </Button>
 
-          {error && <Banner tone="error">{error}</Banner>}
+          {error && (
+            <Banner tone="danger" title="恢复失败">
+              <p>{error}</p>
+            </Banner>
+          )}
 
           {result && (
-            <Banner tone={result.failures.length > 0 ? 'warn' : 'ok'}>
+            <Banner
+              tone={result.failures.length > 0 ? 'warn' : 'ok'}
+              title={result.failures.length > 0 ? '恢复完成，但有几份没读出来' : '恢复完成'}
+            >
               <p>
                 拉取 {result.lessonsFetched} 课 / {result.vocabFetched} 个生词。
                 新增课程 {result.summary.addedLessons.length}、更新 {result.summary.updatedLessons.length}、
@@ -114,27 +126,27 @@ export function StudySettingsSection() {
     hint: string,
     step = 1,
   ) => (
-    <label className="flex flex-wrap items-center gap-2 text-sm">
+    <label className="flex flex-wrap items-center gap-2 text-ui">
       <span className="w-32">{label}</span>
       <input
         type="number"
         step={step}
         min={0}
-        className="w-24 rounded border border-neutral-300 px-2 py-1"
+        className={`${field} w-24 px-2 py-1`}
         value={settings[key]}
         onChange={(e) => void update({ [key]: Number(e.target.value) || 0 })}
       />
-      <span className="text-neutral-500">{hint}</span>
+      <span className="text-muted">{hint}</span>
     </label>
   );
 
   return (
-    <Section title="学习设置（FR-12）">
+    <Section title="学习参数">
       {numberField('每日新卡', 'newPerDay', '每周 1 篇 ≈ 每天 3–4 个新词，设 30 会周一清空、之后空转')}
       {numberField('每日复习上限', 'reviewPerDay', '防爆闸，正常不会触顶')}
       {numberField('跟读重复次数', 'shadowingRepeat', '0 = 无限，手动推进')}
       {numberField('静默间隔倍数', 'shadowingGapRatio', '静默时长 = 句子时长 × 这个值', 0.1)}
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2 text-ui">
         <input
           type="checkbox"
           checked={settings.dictationStrictCase}
@@ -142,20 +154,17 @@ export function StudySettingsSection() {
         />
         听写严格区分大小写（关掉后大小写错不计错）
       </label>
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2 text-ui">
         <input
           type="checkbox"
           checked={settings.autoAlignOnImport}
           onChange={(e) => void update({ autoAlignOnImport: e.target.checked })}
         />
-        下载课程后自动对齐音频与文稿（FR-15）
+        下载课程后自动对齐音频与文稿
       </label>
-      <p className="text-xs text-neutral-500">
-        自动对齐在本机跑 CTC 强制对齐，音频不出设备。随包版本权重已在安装包里；纯网页版首次要下载一次
-        约 187MB 的模型，之后离线可用。WASM 后端下一课约几分钟，有 WebGPU 时快得多。
-        关掉它只是不再自动跑 —— 课程页头部那个「自动对齐」按钮永远可用。
-        置信度偏低的句子会被标出来：它把要核对的句子从几十句降到几句，不是降到零。
-      </p>
+      <Note>
+        关掉只是不再自动跑 —— 课程页头部那个「自动对齐」按钮永远可用。
+      </Note>
     </Section>
   );
 }

@@ -24,6 +24,7 @@ import { nativeEmissionsAvailable } from '@/align/nativeEmissions';
 import { remoteEmissionsAvailable } from '@/align/remoteEmissions';
 import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
 import { nativePlatform } from '@/platform/native';
+import { Banner, Button, Chip, Disclosure, FilePicker, Hint, Note, Section } from '@/components/ui';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -49,27 +50,25 @@ function StorageSection() {
   };
 
   return (
-    <section className="space-y-2 rounded-lg border border-neutral-200 p-4">
-      <h2 className="font-semibold">存储（§2.2 / FR-11.16）</h2>
+    <Section
+      title="本机存储"
+      aside={<Button onClick={() => void requestPersist()}>申请持久化存储</Button>}
+    >
       {estimate && !estimate.unsupported && (
-        <p className="text-sm text-neutral-600">
+        <p className="tnum text-ui text-muted">
           已用 {formatBytes(estimate.usageBytes)} / 配额 {formatBytes(estimate.quotaBytes)}
         </p>
       )}
-      {estimate?.unsupported && <p className="text-sm text-neutral-500">此浏览器不支持用量查询。</p>}
-      <button className="rounded bg-neutral-800 px-3 py-1.5 text-sm text-white" onClick={requestPersist}>
-        申请持久化存储
-      </button>
-      {persistence && (
-        <p className="text-sm">
-          {persistence.unsupported
-            ? '此浏览器不支持持久化存储请求（iOS 请务必"添加到主屏幕"）。'
-            : persistence.persisted
-              ? '✅ 已获得持久化存储，浏览器不会自动清空数据。'
-              : '⚠️ 未获得持久化存储，数据仍可能被浏览器驱逐。'}
-        </p>
-      )}
-    </section>
+      {estimate?.unsupported && <Hint>此浏览器不支持用量查询。</Hint>}
+      {persistence &&
+        (persistence.persisted ? (
+          <Note tone="ok">已获得持久化存储，浏览器不会自动清空数据。</Note>
+        ) : persistence.unsupported ? (
+          <Note tone="warn">此浏览器不支持持久化存储请求（iOS 请务必「添加到主屏幕」）。</Note>
+        ) : (
+          <Note tone="warn">没拿到持久化存储，数据仍可能被浏览器驱逐。</Note>
+        ))}
+    </Section>
   );
 }
 
@@ -132,30 +131,31 @@ function AlignBackendSection() {
   }, []);
 
   return (
-    <section className="space-y-2 rounded-lg border border-neutral-200 p-4">
-      <h2 className="font-semibold">对齐后端（FR-15 诊断）</h2>
+    <Section title="对齐后端">
+      <Hint>这一段只在排查「为什么这台设备上对齐跑不动」时有用。</Hint>
+      <Disclosure summary="探测结果与最近几次运行">
       {lines
         ? lines.map((l) => (
-            <p key={l} className="text-sm text-neutral-600">
+            <p key={l} className="text-ui text-muted">
               {l}
             </p>
           ))
-        : <p className="text-sm text-neutral-500">探测中…</p>}
+        : <p className="text-ui text-muted">探测中…</p>}
 
       {/*
         最近几次对齐的黑匣子。手机上唯一能拿到「上次为什么整个应用消失了」的地方 ——
         进程被系统杀掉时 JS 跑不了任何收尾代码，只有边跑边落盘的记录留得下来。
         细节见 src/align/journal.ts。
       */}
-      <h3 className="pt-2 text-sm font-medium">最近几次运行</h3>
+      <p className="pt-2 text-ui font-medium">最近几次运行</p>
       {history.length === 0 ? (
-        <p className="text-sm text-neutral-500">还没有记录。</p>
+        <p className="text-ui text-muted">还没有记录。</p>
       ) : (
-        <ul className="space-y-1 text-xs text-neutral-600">
+        <ul className="space-y-1 text-note text-muted">
           {history.map((run) => (
             <li key={run.startedAt} className="font-mono">
               {new Date(run.startedAt).toLocaleString('zh-CN', { hour12: false })}{' · '}
-              <span className={run.status === 'crashed' ? 'text-rose-700' : ''}>
+              <span className={run.status === 'crashed' ? 'text-danger' : ''}>
                 {run.status === 'done'
                   ? '完成'
                   : run.status === 'error'
@@ -180,7 +180,7 @@ function AlignBackendSection() {
       )}
       {history.length > 0 && (
         <button
-          className="text-xs text-neutral-500 underline"
+          className="text-note text-muted underline"
           onClick={() => {
             // 清掉记录同时也清掉「降档」——两者是同一份数据。换了设备或换了包之后
             // 想让第 1 档重新有机会，就点这里。
@@ -191,7 +191,8 @@ function AlignBackendSection() {
           清除记录（同时恢复用第 1 档后端）
         </button>
       )}
-    </section>
+      </Disclosure>
+    </Section>
   );
 }
 
@@ -253,80 +254,74 @@ function AccountSection() {
   };
 
   return (
-    <section className="space-y-3 rounded-lg border border-neutral-200 p-4">
-      <h2 className="font-semibold">账号与同步（FR-11.1 ~ FR-11.3）</h2>
-
+    <Section title="账号">
       {status === 'unconfigured' ? (
-        <p className="text-sm text-neutral-500">
+        <Note tone="warn">
           这个构建没有配置同步服务器（缺 <code>VITE_SYNC_API_BASE</code> 或{' '}
-          <code>VITE_GOOGLE_WEB_CLIENT_ID</code>）。自动同步整体关闭，手动导出照常可用 ——
-          它本来就是不同故障域的第二道保险。
-        </p>
+          <code>VITE_GOOGLE_WEB_CLIENT_ID</code>）。自动同步整体关闭，手动导出照常可用。
+        </Note>
       ) : status === 'signed-in' && account ? (
-        <div className="space-y-2 text-sm">
+        <div className="space-y-2 text-ui">
           <p className="flex items-center gap-2">
             {account.picture && (
-              <img src={account.picture} alt="" className="h-6 w-6 rounded-full" referrerPolicy="no-referrer" />
+              <img src={account.picture} alt="" className="size-6 rounded-full" referrerPolicy="no-referrer" />
             )}
-            <span>
-              ✅ 已登录：<strong>{account.email}</strong>
-            </span>
+            <strong className="min-w-0 truncate">{account.email}</strong>
+            <Chip tone="ok">已登录</Chip>
           </p>
-          <p className="text-neutral-500">
-            服务器：<code>{SYNC_API_BASE}</code>
+          <SyncTimes />
+          <p className="text-note text-muted">
+            服务器 <code>{SYNC_API_BASE}</code>
           </p>
-          <button
-            className="rounded border border-neutral-300 px-3 py-1 text-sm disabled:opacity-50"
-            disabled={busy}
-            onClick={() => void handle(signOut)}
-          >
+          <Button disabled={busy} onClick={() => void handle(signOut)}>
             退出登录
-          </button>
-          <p className="text-xs text-neutral-500">
-            退出只清掉这台设备上的登录状态和版本号，服务器上的数据一个字节都不动。
-          </p>
+          </Button>
+          <Hint>退出只清掉这台设备上的登录状态和版本号，服务器上的数据一个字节都不动。</Hint>
         </div>
       ) : (
-        <div className="space-y-2 text-sm">
-          <p>
-            用 Google 登录 <code>{SYNC_API_BASE}</code>，之后生词与课程标注会自动同步到那台服务器。
-            服务器只认白名单里的邮箱，别人拿同一个按钮登录会被挡在 403。
-          </p>
-          <button
-            className="rounded bg-neutral-800 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+        <div className="space-y-2 text-ui">
+          <p>登录之后生词与课程标注会自动同步。</p>
+          <Button
+            variant="primary"
             disabled={busy || status === 'signing-in'}
             onClick={() => void handle(signIn)}
           >
             {status === 'signing-in' ? '登录中…' : '用 Google 登录'}
-          </button>
-          {errorMessage && <p className="text-red-600">{errorMessage}</p>}
+          </Button>
+          <Hint>
+            服务器 <code>{SYNC_API_BASE}</code> 只认白名单里的邮箱，别人拿同一个按钮登录会被挡在 403。
+          </Hint>
+          {errorMessage && <Hint tone="danger">{errorMessage}</Hint>}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
-function SyncStatusBanner() {
-  const { status, lastSuccessAt, lastPullAt, pendingCount, refreshStatus } = useSyncStore();
+/**
+ * 同步的**绝对时刻**。头部那个芯片给的是「几天前」那种摘要（FR-11.9 要求常驻可见
+ * 的那一份），而在跟服务器对账时要的是精确到分钟的时刻 —— 两者用途不同，都留着。
+ */
+function SyncTimes() {
+  const { lastSuccessAt, lastPullAt, pendingCount, refreshStatus } = useSyncStore();
 
   useEffect(() => {
     void refreshStatus();
   }, [refreshStatus]);
 
-  if (status !== 'signed-in') return null;
+  const offlineQueued = typeof navigator !== 'undefined' && !navigator.onLine && pendingCount > 0;
 
   return (
-    <section className="space-y-1 rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-sm">
-      <h2 className="font-semibold">同步状态（FR-11.9：常驻可见）</h2>
+    <div className="space-y-1 text-note text-muted">
       <p>上次推送成功：{lastSuccessAt ? formatDateTime(lastSuccessAt) : '尚未推送过'}</p>
       {/* 拉那一半单独一行（FR-11.19）：推通了不代表拉通了，而「拉悄悄停了」的症状
           就是「另一台设备上的东西一直不来」—— 两个时刻必须分开看。 */}
       <p>上次拉取成功：{lastPullAt ? formatDateTime(lastPullAt) : '尚未拉取过'}</p>
-      <p>{pendingCount > 0 ? `⏳ ${pendingCount} 项待推送` : '✅ 没有待推送的变更'}</p>
-      {typeof navigator !== 'undefined' && !navigator.onLine && pendingCount > 0 && (
-        <p className="text-amber-700">当前离线，已排队，恢复网络后自动重试（FR-11.10）。</p>
-      )}
-    </section>
+      <p className={pendingCount > 0 ? 'text-warn' : undefined}>
+        待推送 {pendingCount} 项
+        {offlineQueued && ' —— 当前离线，恢复网络后自动重试'}
+      </p>
+    </div>
   );
 }
 
@@ -375,29 +370,44 @@ function ManualBackupSection() {
   };
 
   return (
-    <section className="space-y-3 rounded-lg border border-neutral-200 p-4">
-      <h2 className="font-semibold">手动导出 / 导入（FR-11.11 / FR-11.14，第二道保险）</h2>
-
-      <div className="flex items-center gap-2">
-        <button className="rounded bg-neutral-800 px-3 py-1.5 text-sm text-white" onClick={() => void handleExport()}>
+    <Section
+      title="手动导出与导入"
+      aside={
+        <Button variant="primary" onClick={() => void handleExport()}>
           导出备份 JSON
-        </button>
-        {exportMessage && <span className="text-sm text-neutral-600">{exportMessage}</span>}
-      </div>
+        </Button>
+      }
+    >
+      <Hint>
+        自动同步是主力。手动导出防的是同步服务器本身出问题（机器没了、证书过期、账号登不上）——
+        两者是不同的故障域。
+      </Hint>
+      {exportMessage && <Note tone="ok">{exportMessage}</Note>}
 
       <div className="space-y-2">
-        <input
-          type="file"
+        <FilePicker
           accept="application/json"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
+          onPick={(file) => {
             if (file) void handleFileSelected(file);
-            e.target.value = '';
           }}
-        />
-        {importError && <p className="text-sm text-red-600">{importError}</p>}
+        >
+          选一份备份 JSON 导入…
+        </FilePicker>
+        {importError && (
+          <Banner tone="danger" title="这个备份文件读不出来">
+            <p>{importError}</p>
+          </Banner>
+        )}
         {pendingSummary && (
-          <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+          <Banner
+            tone="warn"
+            title="确认这次合并"
+            action={
+              <Button variant="primary" onClick={() => void handleConfirmImport()}>
+                确认导入
+              </Button>
+            }
+          >
             <p>已自动导出一份当前状态作为防呆备份。合并预览：</p>
             <ul className="list-disc pl-5">
               <li>新增课程 {pendingSummary.addedLessons.length}</li>
@@ -411,16 +421,10 @@ function ManualBackupSection() {
               <li>更新生词 {pendingSummary.updatedVocab.length}</li>
               <li>跳过生词（本机更新）{pendingSummary.skippedVocab.length}</li>
             </ul>
-            <button
-              className="mt-2 rounded bg-neutral-800 px-3 py-1.5 text-sm text-white"
-              onClick={() => void handleConfirmImport()}
-            >
-              确认导入
-            </button>
-          </div>
+          </Banner>
         )}
       </div>
-    </section>
+    </Section>
   );
 }
 
@@ -432,15 +436,16 @@ export function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
-      <h1 className="text-xl font-bold">设置</h1>
-      <StorageSection />
-      <DictSection />
-      <AlignBackendSection />
+      <h1 className="hidden text-title font-semibold sm:block">设置</h1>
+      {/* 顺序 = 会碰它的频率。诊断（存储用量、对齐后端探测）排在最后 ——
+          它们以前是这一页的头两块，而那两块一年也用不到一次。 */}
       <AccountSection />
-      <SyncStatusBanner />
+      <StudySettingsSection />
       <ManualBackupSection />
       <RestoreSection />
-      <StudySettingsSection />
+      <DictSection />
+      <StorageSection />
+      <AlignBackendSection />
     </div>
   );
 }

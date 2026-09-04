@@ -13,7 +13,7 @@ import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { syncVocabNow } from '@/sync/trigger';
 import { review } from '@/srs/fsrs';
-import { Banner, Button, EmptyState } from '@/components/ui';
+import { Banner, Button, Card, EmptyState } from '@/components/ui';
 import type { Lesson, LessonCache, Sentence } from '@/types/models';
 
 const UMLAUT_KEYS = ['ä', 'ö', 'ü', 'ß', 'Ä', 'Ö', 'Ü'];
@@ -42,9 +42,13 @@ export function DictationTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
 
   return (
     <div className="space-y-3">
-      {audio.status !== 'ready' && <Banner tone="warn">音频不可用，只能看着填空，不算听写。</Banner>}
+      {audio.status !== 'ready' && (
+        <Banner tone="warn" title="音频不可用 —— 这不算听写">
+          <p>只能看着挖空句填词。补齐素材之后才听得到句子。</p>
+        </Banner>
+      )}
 
-      <p className="text-sm text-neutral-500">
+      <p className="text-ui text-muted">
         第 {position + 1} / {queue.length} 句
       </p>
 
@@ -163,8 +167,8 @@ function DictationCard({
   let blankCursor = -1;
 
   return (
-    <div className="space-y-4 rounded-lg border border-neutral-200 p-5">
-      <p className="text-lg leading-loose">
+    <Card className="space-y-4 p-5">
+      <p className="text-de leading-loose">
         {segments.map((segment, i) => {
           if (segment.type === 'text') return <span key={i}>{segment.text}</span>;
           blankCursor++;
@@ -191,7 +195,7 @@ function DictationCard({
         {UMLAUT_KEYS.map((ch) => (
           <Button key={ch} onClick={() => insertUmlaut(ch)}>{ch}</Button>
         ))}
-        <span className="mx-2 h-5 w-px bg-neutral-200" />
+        <span className="mx-2 h-5 w-px bg-sunken" />
         <Button disabled={!audioReady} onClick={replay} title={audioReady ? undefined : '本机没有这一课的音频'}>
           重播本句 (Space)
         </Button>
@@ -206,15 +210,15 @@ function DictationCard({
       </div>
 
       {results && <ResultList results={results} />}
-    </div>
+    </Card>
   );
 }
 
 const VERDICT_STYLE: Record<DictationResult['verdict'], { border: string; tone: string; label: string }> = {
-  correct: { border: 'border-emerald-500', tone: 'text-emerald-700', label: '正确' },
-  transliteration: { border: 'border-sky-500', tone: 'text-sky-700', label: '转写等价' },
-  case: { border: 'border-amber-500', tone: 'text-amber-700', label: '仅大小写错' },
-  wrong: { border: 'border-red-500', tone: 'text-red-700', label: '错误' },
+  correct: { border: 'border-ok', tone: 'text-ok', label: '正确' },
+  transliteration: { border: 'border-accent', tone: 'text-accent', label: '转写等价' },
+  case: { border: 'border-warn', tone: 'text-warn', label: '仅大小写错' },
+  wrong: { border: 'border-danger', tone: 'text-danger', label: '错误' },
 };
 
 const BlankInput = ({
@@ -246,7 +250,7 @@ const BlankInput = ({
     // 宽度按答案长度给，既是提示也避免输入框把版面撑烂
     style={{ width: `${Math.max(6, segment.text.length + 2)}ch` }}
     className={`mx-1 border-b-2 bg-transparent px-1 text-center outline-none ${
-      result ? VERDICT_STYLE[result.verdict].border : 'border-neutral-400 focus:border-sky-500'
+      result ? VERDICT_STYLE[result.verdict].border : 'border-line-strong focus:border-accent'
     }`}
     placeholder="____"
   />
@@ -254,10 +258,10 @@ const BlankInput = ({
 
 function ResultList({ results }: { results: DictationResult[] }) {
   return (
-    <ul className="space-y-2 border-t border-neutral-100 pt-3 text-sm">
+    <ul className="space-y-2 border-t border-line pt-3 text-ui">
       {results.map((result, i) => (
         <li key={i} className={VERDICT_STYLE[result.verdict].tone}>
-          <span className="mr-2 rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-700">
+          <span className="mr-2 rounded-ctl bg-sunken px-1.5 py-0.5 text-note text-ink">
             {VERDICT_STYLE[result.verdict].label}
           </span>
           {result.message}
@@ -283,8 +287,8 @@ function DiffView({ parts }: { parts: DiffPart[] }) {
             part.type === 'same'
               ? ''
               : part.type === 'missing'
-                ? 'bg-emerald-100 text-emerald-800'
-                : 'bg-red-100 text-red-800 line-through'
+                ? 'bg-ok-soft text-ok'
+                : 'bg-danger-soft text-danger line-through'
           }
         >
           {part.text}

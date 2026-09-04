@@ -1,8 +1,23 @@
 // 一课的工作台。§4 的动线②～⑦全部在这里，按 tab 切换。
 // 音频/素材状态是全页共享的，所以放在壳里而不是各个 tab 里各查一遍。
+//
+// ── 动线（SPEC §12.6）──
+// 落地页从「切句」改成「通听」。以前打开一课的默认状态是**编辑模式** —— 五个 tab
+// 平级排着，第一个是切句，而切句是一次性的准备工作，不是每天要做的事。
+// 现在 tab 条只有每天走的那四个，顺序就是真实动线（通听 → 跟读 → 学词 → 听写），
+// 切句收进页头的「⋯」。`#/lesson/<id>/sentences` 这个深链接照旧有效。
+//
+// tab 名旁边那个点是**前提状态**，不是「做完了」：通听和跟读要时间戳，听写还要挖空。
+// 缺前提时点进去会得到一句话说清缺什么 —— 但在点进去之前就该看得出来。
 
-import { useEffect, useState } from 'react';
-import { LESSON_TABS, LESSON_TAB_LABELS, href, navigate, type LessonTab } from '@/app/router';
+import { useEffect, useRef, useState } from 'react';
+import {
+  PRACTICE_TABS,
+  LESSON_TAB_LABELS,
+  href,
+  navigate,
+  type LessonTab,
+} from '@/app/router';
 import { useLessonStore, isMaterialMissing, isRehydratable } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { rehydrateLesson } from '@/sources/importLesson';
@@ -13,50 +28,138 @@ import { ListenTab } from './lesson/ListenTab';
 import { ShadowingTab } from './lesson/ShadowingTab';
 import { StudyTab } from './lesson/StudyTab';
 import { DictationTab } from './lesson/DictationTab';
-import { Banner, Button, EmptyState, Hint, formatBytes, formatTime } from '@/components/ui';
+import { Banner, Button, EmptyState, FilePicker, Hint, Note, formatBytes, formatTime } from '@/components/ui';
+import type { Lesson } from '@/types/models';
+
+/** 每个 tab 的前提。缺了它点进去只会看到一句「这里还不能用」。 */
+function readiness(
+  lesson: Lesson,
+  tab: (typeof PRACTICE_TABS)[number],
+): { ready: boolean; why: string } {
+  const usable = lesson.sentences.filter((s) => !s.excluded);
+  const timed = usable.filter((s) => s.startTime !== undefined);
+  const dictatable = usable.filter((s) => s.blanks.length > 0 && s.startTime !== undefined);
+  const blanks = usable.reduce((sum, s) => sum + s.blanks.length, 0);
+
+  switch (tab) {
+    case 'listen':
+      return timed.length > 0
+        ? { ready: true, why: `${timed.length}/${usable.length} 句有时间戳，跟着音频高亮` }
+        : { ready: false, why: '还没有时间戳 —— 展开只是一份静态文本' };
+    case 'shadowing':
+      return timed.length > 0
+        ? { ready: true, why: `可循环 ${timed.length} 句` }
+        : { ready: false, why: '还没有时间戳 —— 句子没有可播的区间' };
+    case 'study':
+      return { ready: true, why: blanks > 0 ? `已挖空 ${blanks} 处` : '还没标过生词' };
+    case 'dictation':
+      return dictatable.length > 0
+        ? { ready: true, why: `${dictatable.length} 句可听写` }
+        : { ready: false, why: '需要「有时间戳 + 有挖空」的句子，去「学词」标几个词' };
+  }
+}
 
 export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab }) {
   const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId));
   const cache = useLessonStore((s) => s.caches[lessonId]);
   const loaded = useLessonStore((s) => s.loaded);
+  const menuRef = useRef<HTMLDetailsElement>(null);
 
   if (!loaded) return <EmptyState>加载中…</EmptyState>;
   if (!lesson) return <EmptyState>找不到这一课。它可能已被删除。</EmptyState>;
 
+  const onSentences = tab === 'sentences';
 
   return (
     <div className="space-y-4">
-      <header className="space-y-1">
-        <h1 className="text-xl font-semibold">{lesson.title}</h1>
-        <p className="text-sm text-neutral-500">
-          {lesson.audioDuration ? `音频 ${formatTime(lesson.audioDuration, 0)}` : '没有音频'}
-          {cache?.audioBytes ? ` · ${formatBytes(cache.audioBytes)}` : ''}
-        </p>
-        {/* FR-6.4 的「已标注 N / M」搬到这里：它现在说的是自动对齐的覆盖率与可疑句数。 */}
+      <header className="space-y-2">
+        <div className="flex items-start gap-2">
+          <h1 className="min-w-0 flex-1 text-title font-semibold">{lesson.title}</h1>
+
+          <details ref={menuRef} className="relative shrink-0">
+            <summary
+              aria-label="这一课的更多操作"
+              className="flex size-11 cursor-pointer list-none items-center justify-center rounded-ctl text-muted hover:bg-sunken hover:text-ink"
+            >
+              <span aria-hidden className="text-title leading-none">
+                ⋯
+              </span>
+            </summary>
+            <div className="fixed inset-0 z-40" onClick={() => menuRef.current?.removeAttribute('open')} />
+            <div className="absolute right-0 z-50 mt-1 w-60 overflow-hidden rounded-box border border-line bg-raised shadow-lg">
+              <a
+                href={href({ name: 'lesson', lessonId, tab: 'sentences' })}
+                onClick={() => menuRef.current?.removeAttribute('open')}
+                className={`block px-4 py-3 text-ui hover:bg-sunken ${onSentences ? 'text-accent' : 'text-ink'}`}
+              >
+                切句
+                <span className="block text-note text-faint">
+                  {lesson.sentences.length} 句 · 合并、拆分、排除非朗读段落
+                </span>
+              </a>
+              <a
+                href={href({ name: 'cache' })}
+                onClick={() => menuRef.current?.removeAttribute('open')}
+                className="block px-4 py-3 text-ui text-ink hover:bg-sunken"
+              >
+                素材
+                <span className="block text-note text-faint">
+                  {lesson.audioDuration ? `音频 ${formatTime(lesson.audioDuration, 0)}` : '没有音频'}
+                  {cache?.audioBytes ? ` · ${formatBytes(cache.audioBytes)}` : ''}
+                </span>
+              </a>
+            </div>
+          </details>
+        </div>
+
+        {/* FR-6.4 的「已标注 N / M」在这里：它现在说的是自动对齐的覆盖率与可疑句数。 */}
         <AlignStatus lesson={lesson} />
       </header>
 
       {isMaterialMissing(cache) && <MissingMaterialBanner lessonId={lessonId} />}
 
-      <nav className="flex flex-wrap gap-1 border-b border-neutral-200 pb-2">
-        {LESSON_TABS.map((t) => (
-          <a
-            key={t}
-            href={href({ name: 'lesson', lessonId, tab: t })}
-            className={`rounded px-3 py-1.5 text-sm ${
-              t === tab ? 'bg-neutral-800 text-white' : 'text-neutral-600 hover:bg-neutral-100'
-            }`}
-          >
-            {LESSON_TAB_LABELS[t]}
-          </a>
-        ))}
-      </nav>
+      {onSentences ? (
+        // 切句不在 tab 条里（它是一次性的准备工作），所以给一条明确的返回。
+        <>
+          <Note tone="accent" action={<a className="underline" href={href({ name: 'lesson', lessonId, tab: 'listen' })}>回到通听</a>}>
+            切句是一次性的准备工作 —— 改完就不用再来。
+          </Note>
+          <SentencesTab lesson={lesson} cache={cache} />
+        </>
+      ) : (
+        <>
+          <nav className="flex gap-1 border-b border-line">
+            {PRACTICE_TABS.map((t) => {
+              const { ready, why } = readiness(lesson, t);
+              const active = t === tab;
+              return (
+                <a
+                  key={t}
+                  href={href({ name: 'lesson', lessonId, tab: t })}
+                  title={why}
+                  aria-current={active ? 'page' : undefined}
+                  className={`-mb-px flex min-h-11 items-center gap-1.5 border-b-2 px-3 text-ui ${
+                    active
+                      ? 'border-accent text-ink'
+                      : 'border-transparent text-muted hover:text-ink'
+                  }`}
+                >
+                  {LESSON_TAB_LABELS[t]}
+                  <span
+                    aria-hidden
+                    className={`size-1.5 rounded-full ${ready ? 'bg-accent' : 'bg-warn'}`}
+                  />
+                </a>
+              );
+            })}
+          </nav>
 
-      {tab === 'sentences' && <SentencesTab lesson={lesson} cache={cache} />}
-      {tab === 'listen' && <ListenTab lesson={lesson} cache={cache} />}
-      {tab === 'shadowing' && <ShadowingTab lesson={lesson} cache={cache} />}
-      {tab === 'study' && <StudyTab lesson={lesson} cache={cache} />}
-      {tab === 'dictation' && <DictationTab lesson={lesson} cache={cache} />}
+          {tab === 'listen' && <ListenTab lesson={lesson} cache={cache} />}
+          {tab === 'shadowing' && <ShadowingTab lesson={lesson} cache={cache} />}
+          {tab === 'study' && <StudyTab lesson={lesson} cache={cache} />}
+          {tab === 'dictation' && <DictationTab lesson={lesson} cache={cache} />}
+        </>
+      )}
     </div>
   );
 }
@@ -80,6 +183,8 @@ const autoRehydrated = new Set<string>();
  *
  * 代价说清楚：它会在移动网络下直接开始下 6~10MB。取舍是「练不了」比「省流量」更疼 ——
  * 而且下载中横幅一直在，不是偷偷进行。
+ *
+ * 它是「拦路」那一档（§12.3）：这一页现在真的做不了，所以有底色、有标题、有出口。
  */
 function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId))!;
@@ -146,33 +251,31 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   }, [lessonId, rehydratable]);
 
   return (
-    <Banner tone="warn">
-      <p className="font-medium">{busy ? '正在补齐素材…' : '素材未下载'}</p>
-      <p className="mt-1">
+    <Banner
+      tone="warn"
+      title={busy ? '正在补齐素材…' : '素材未下载 —— 播放相关的功能全部不可用'}
+      action={
+        <>
+          <FilePicker accept="audio/*" onPick={(file) => void pickAudio(file)}>
+            选本地音频文件…
+          </FilePicker>
+          {rehydratable && !needsDecision && (
+            <Button disabled={busy} onClick={() => void rehydrate()}>
+              {busy ? '补齐中…' : '重新抓取'}
+            </Button>
+          )}
+          {needsDecision && <Button onClick={() => navigate({ name: 'sources' })}>去「来源」页处理</Button>}
+        </>
+      }
+    >
+      <p>
         {busy
-          ? '照标注层里记着的下载地址重新抓页面和音频（6~10MB），抓完这一页的播放功能就恢复。'
-          : '标注层里有这一课，但本机没有音频，播放相关的功能全部不可用。'}
-        {!busy &&
-          (rehydratable
+          ? '照标注层里记着的下载地址重新抓页面和音频（6~10MB）。'
+          : rehydratable
             ? '这一课来自 DW，可以按 lesson id 重新抓取。'
-            : '这一课是手动导入的，无法自动补齐，需要重新选择本地音频文件。')}
+            : '这一课是手动导入的，无法自动补齐，需要重新选择本地音频文件。'}
       </p>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <input
-          type="file"
-          accept="audio/*"
-          className="text-sm"
-          onChange={(e) => void pickAudio(e.target.files?.[0])}
-        />
-        {rehydratable && !needsDecision && (
-          <Button disabled={busy} onClick={() => void rehydrate()}>
-            {busy ? '补齐中…' : '重新抓取'}
-          </Button>
-        )}
-        {needsDecision && <Button onClick={() => navigate({ name: 'sources' })}>去「来源」页处理</Button>}
-      </div>
       {message && <Hint tone="warn">{message}</Hint>}
     </Banner>
   );
-
 }

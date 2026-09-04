@@ -13,7 +13,7 @@
 // 手评是元认知任务，而且它与自动评分喂给 FSRS 的分布不同，两条路径不能并存。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { navigate } from '@/app/router';
+import { DEFAULT_LESSON_TAB, navigate } from '@/app/router';
 import { audioPlayer } from '@/audio/player';
 import { getAudioBlob } from '@/db/cache';
 import { resolveRange } from '@/lesson/timing';
@@ -27,7 +27,7 @@ import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dic
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
-import { Banner, Button, EmptyState, Hint } from '@/components/ui';
+import { Banner, Button, Card, EmptyState, Hint } from '@/components/ui';
 import type { Question } from '@/srs/choices';
 import type { Lesson, VocabEntry } from '@/types/models';
 
@@ -145,12 +145,12 @@ export function ReviewPage() {
   if (finished || queue.length === 0) {
     return (
       <EmptyState>
-        <p className="text-base">{finished ? '这一轮做完了。' : '今天没有到期的卡片。'}</p>
+        <p className="text-ui">{finished ? '这一轮做完了。' : '今天没有到期的卡片。'}</p>
         {breakdown?.nextDueAt && (
           <p className="mt-2">下一张卡 {new Date(breakdown.nextDueAt).toLocaleString('zh-CN', { hour12: false })} 到期。</p>
         )}
         {(settings.enrolledBands ?? []).length === 0 && entries.length === 0 && (
-          <p className="mt-2 text-sm">
+          <p className="mt-2 text-ui">
             还没有卡片。可以在生词本页报名一档预置词库，或者从课程里标几个生词。
           </p>
         )}
@@ -166,7 +166,7 @@ export function ReviewPage() {
 
   return (
     <div className="mx-auto flex min-h-[80vh] max-w-2xl flex-col gap-4">
-      <div className="flex flex-wrap items-baseline gap-x-3 text-sm text-neutral-500">
+      <div className="flex flex-wrap items-baseline gap-x-3 text-ui text-muted">
         <span>
           {position + 1} / {queue.length}
         </span>
@@ -175,7 +175,7 @@ export function ReviewPage() {
             新卡 {breakdown.newCount} · 复习 {breakdown.reviewCount}
           </span>
         )}
-        {topUp && <span className="text-emerald-700">{topUp}</span>}
+        {topUp && <span className="text-ok">{topUp}</span>}
       </div>
 
       <QuizCard
@@ -345,9 +345,9 @@ function QuizCard({
       {/* FR-10.11：答对时那 600ms 是名词的性在主路径上唯一露脸的机会 */}
       <div className="flex h-9 items-center justify-center">
         {phase === 'flash' && (
-          <p className="text-lg font-semibold text-emerald-700">
+          <p className="text-de font-semibold text-ok">
             ✓ {articled(entry.lemma ?? entry.surface, entry.gender)}
-            {nextDue && <span className="ml-2 text-sm font-normal text-neutral-500">下次 {formatInterval(nextDue)}后</span>}
+            {nextDue && <span className="ml-2 text-ui font-normal text-muted">下次 {formatInterval(nextDue)}后</span>}
           </p>
         )}
       </div>
@@ -355,11 +355,11 @@ function QuizCard({
       {/* 卡面撑满剩余高度并把内容居中：正面只有一个播放键（FR-10.2），
           靠上贴着标题行的话，播放键和底部的选项之间会空掉半屏。
           选项那一块仍然由 `mt-auto` 钉在底部（FR-10.7），所以按钮位置不受影响。 */}
-      <div className="flex flex-1 flex-col justify-center space-y-4 rounded-lg border border-neutral-200 p-6">
+      <Card className="flex flex-1 flex-col justify-center space-y-4 p-6">
         {audioStatus === 'ok' ? (
           <div className="flex flex-col items-center gap-2">
             <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
-            <p className="text-xs text-neutral-400">听这一句，选出挖掉的那个词</p>
+            <p className="text-note text-faint">听这一句，选出挖掉的那个词</p>
           </div>
         ) : audioStatus === 'preset-word' ? (
           <div className="flex flex-col items-center gap-2">
@@ -367,14 +367,13 @@ function QuizCard({
             {noAudio ? (
               // FR-10.5：绝不静默降级。真人音没有、系统又没有德语嗓音时，
               // 这张卡确实只能看文字 —— 那就明说，并且把词显示出来（否则题面是空的）。
-              <Banner tone="warn">
+              <Banner tone="warn" title="这张卡没有声音，只能当文字卡用">
                 <p>
-                  这张卡没有声音：Wiktionary 上没有 <b>{entry.surface}</b> 的录音，系统里也没有德语嗓音。
-                  只能当文字卡用。
+                  Wiktionary 上没有 <b>{entry.surface}</b> 的录音，系统里也没有德语嗓音。
                 </p>
               </Banner>
             ) : (
-              <p className="text-xs text-neutral-400">
+              <p className="text-note text-faint">
                 {wordSource === 'human' ? '真人录音（Wiktionary，CC BY-SA）' : wordSource === 'tts' ? '系统合成音' : '取音频中…'}
                 {' · '}孤立词发音，练不到连读
               </p>
@@ -382,40 +381,48 @@ function QuizCard({
           </div>
         ) : (
           // FR-10.5：两种无音频原因给不同出口，绝不静默降级成纯文本卡
-          <Banner tone="warn">
-            {audioStatus === 'no-timestamp' ? (
-              <>
-                <p>这张卡没有音频：来源句还没有时间戳（自动对齐没覆盖到它）。</p>
-                {lesson && (
-                  <Button className="mt-2" onClick={() => navigate({ name: 'lesson', lessonId: lesson.id, tab: 'sentences' })}>
+          audioStatus === 'no-timestamp' ? (
+            <Banner
+              tone="warn"
+              title="这张卡没有音频：来源句还没有时间戳"
+              action={
+                lesson && (
+                  <Button
+                    onClick={() =>
+                      navigate({ name: 'lesson', lessonId: lesson.id, tab: DEFAULT_LESSON_TAB })
+                    }
+                  >
                     去这一课重新对齐
                   </Button>
-                )}
-              </>
-            ) : (
-              <>
-                <p>这张卡没有音频：本机没有《{lesson?.title ?? '这一课'}》的素材。一键可解。</p>
-                <Button className="mt-2" onClick={() => navigate({ name: 'sources' })}>
-                  去下载素材
-                </Button>
-              </>
-            )}
-          </Banner>
+                )
+              }
+            >
+              <p>自动对齐没覆盖到它。</p>
+            </Banner>
+          ) : (
+            <Banner
+              tone="warn"
+              title="这张卡没有音频：本机没有这一课的素材"
+              action={<Button onClick={() => navigate({ name: 'sources' })}>去下载素材</Button>}
+            >
+              <p>《{lesson?.title ?? '这一课'}》—— 一键可解。</p>
+            </Banner>
+          )
         )}
 
         {/* 没有任何音源时把词显示出来，否则这道题无从下手 */}
-        {noAudio && <p className="text-center text-2xl font-semibold">{entry.surface}</p>}
+        {noAudio && <p className="text-center text-word font-semibold">{entry.surface}</p>}
 
         {phase === 'revealed' && <CardBack entry={entry} sentence={sentence?.text} examples={examples} />}
-      </div>
+      </Card>
 
       <div className="mt-auto space-y-2">
         {question === null ? (
-          <p className="py-4 text-center text-sm text-neutral-400">组题中…</p>
+          <p className="py-4 text-center text-ui text-faint">组题中…</p>
         ) : phase === 'revealed' ? (
           <>
             <ChoiceGrid question={question} picked={picked} revealed />
-            <Button variant="primary" className="w-full py-4 text-base" onClick={onContinue}>
+            <Button variant="primary" className="w-full py-4 text-de" onClick={onContinue}>
               继续 (Space)
             </Button>
           </>
@@ -450,7 +457,7 @@ function PlayButton({ disabled, onClick }: { disabled: boolean; onClick: () => v
       disabled={disabled}
       onClick={onClick}
       aria-label="播放"
-      className="flex h-20 w-20 items-center justify-center rounded-full bg-sky-600 text-3xl text-white transition active:scale-95 disabled:opacity-40"
+      className="flex size-20 items-center justify-center rounded-full bg-accent text-word text-accent-ink transition active:scale-95 disabled:opacity-40"
     >
       ▶
     </button>
@@ -482,22 +489,22 @@ function ChoiceGrid({
     <div className={`grid gap-2 ${cols}`}>
       {question.choices.map((choice, i) => {
         const tone = !revealed
-          ? 'border-neutral-300 bg-white hover:border-sky-400'
+          ? 'border-line-strong bg-raised hover:border-accent'
           : choice.correct
-            ? 'border-emerald-500 bg-emerald-50 text-emerald-900'
+            ? 'border-ok bg-ok-soft text-ok'
             : choice.id === picked
-              ? 'border-red-500 bg-red-50 text-red-900'
-              : 'border-neutral-200 bg-white text-neutral-400';
+              ? 'border-danger bg-danger-soft text-danger'
+              : 'border-line bg-raised text-faint';
         return (
           <button
             key={choice.id}
             type="button"
             disabled={!onPick}
             onClick={() => onPick?.(choice.id, choice.correct)}
-            className={`min-h-[4.5rem] rounded-lg border px-3 py-3 text-left text-sm leading-snug ${tone}`}
+            className={`min-h-[4.5rem] rounded-box border px-3 py-3 text-left text-ui leading-snug ${tone}`}
           >
-            <span className="mr-2 text-xs text-neutral-400">{i + 1}</span>
-            {question.kind === 'form' ? <span className="text-base font-medium">{choice.text}</span> : choice.text}
+            <span className="mr-2 text-note text-faint">{i + 1}</span>
+            {question.kind === 'form' ? <span className="text-de font-medium">{choice.text}</span> : choice.text}
           </button>
         );
       })}
@@ -516,19 +523,19 @@ function CardBack({
   examples: string[] | null;
 }) {
   return (
-    <div className="space-y-2 border-t border-neutral-200 pt-4">
-      <p className="text-2xl font-semibold">
+    <div className="space-y-2 border-t border-line pt-4">
+      <p className="text-word font-semibold">
         {articled(entry.lemma ?? entry.surface, entry.gender)}
-        {entry.plural && <span className="ml-2 text-base text-neutral-500">{entry.plural}</span>}
+        {entry.plural && <span className="ml-2 text-ui text-muted">{entry.plural}</span>}
       </p>
-      {entry.ipa && <p className="text-sm text-neutral-400">[{entry.ipa}]</p>}
-      <p className="text-base">{entry.meaning ?? <span className="text-neutral-400">（释义还没填）</span>}</p>
+      {entry.ipa && <p className="text-ui text-faint">[{entry.ipa}]</p>}
+      <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义还没填）</span>}</p>
       {sentence ? (
-        <p className="text-sm text-neutral-500">{sentence}</p>
+        <p className="text-ui text-muted">{sentence}</p>
       ) : (
         // 预置卡没有原句，例句来自词典（FR-16.9）
         examples?.map((ex) => (
-          <p key={ex} className="text-sm text-neutral-500">
+          <p key={ex} className="text-ui text-muted">
             {ex}
           </p>
         ))

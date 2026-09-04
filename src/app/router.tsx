@@ -14,17 +14,31 @@ export type Route =
   | { name: 'cache' }
   | { name: 'settings' };
 
-// 「标注」那一页在 FR-15 之后去掉了：时间戳一律由自动对齐给（导入后立刻跑），
-// 状态与重跑入口在课程页头部的 AlignStatus 里。
-export const LESSON_TABS = ['sentences', 'listen', 'shadowing', 'study', 'dictation'] as const;
+/**
+ * 一课的所有 tab。**顺序就是真实动线**（§12.6）：通听 → 跟读 → 学词 → 听写。
+ *
+ * 「标注」那一页在 FR-15 之后去掉了：时间戳一律由自动对齐给（导入后立刻跑），
+ * 状态与重跑入口在课程页头部的 AlignStatus 里。
+ */
+export const LESSON_TABS = ['listen', 'shadowing', 'study', 'dictation', 'sentences'] as const;
 export type LessonTab = (typeof LESSON_TABS)[number];
 
+/**
+ * 每天要走的那四个。`sentences` **不在其中** —— 它是一次性的准备工作（§12.6）。
+ *
+ * 以前五个 tab 平级排着，而且落地页就是 `sentences`：打开一课的默认状态是
+ * 「编辑模式」，不是「能练」。切句现在收进课程页头部的「⋯」，深链接照旧有效。
+ */
+export const PRACTICE_TABS = ['listen', 'shadowing', 'study', 'dictation'] as const;
+
+export const DEFAULT_LESSON_TAB: LessonTab = 'listen';
+
 export const LESSON_TAB_LABELS: Record<LessonTab, string> = {
-  sentences: '切句',
   listen: '通听',
   shadowing: '跟读',
   study: '学词',
   dictation: '听写',
+  sentences: '切句',
 };
 
 function parse(hash: string): Route {
@@ -50,7 +64,7 @@ function parse(hash: string): Route {
       return {
         name: 'lesson',
         lessonId: parts[1] ?? '',
-        tab: tab && LESSON_TABS.includes(tab) ? tab : 'sentences',
+        tab: tab && LESSON_TABS.includes(tab) ? tab : DEFAULT_LESSON_TAB,
       };
     }
     default:
@@ -67,6 +81,11 @@ export function href(route: Route): string {
     default:
       return `#/${route.name}`;
   }
+}
+
+/** 进一课的默认落点。绝大多数链接都该用它，而不是自己挑一个 tab。 */
+export function lessonHref(lessonId: string, tab: LessonTab = DEFAULT_LESSON_TAB): string {
+  return href({ name: 'lesson', lessonId, tab });
 }
 
 function subscribe(callback: () => void): () => void {

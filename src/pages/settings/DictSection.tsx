@@ -19,6 +19,7 @@ import { getWordAudioBytes } from '@/db/wordAudio';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { nativePlatform, type NativePlatform } from '@/platform/native';
 import type { DictMeta } from '@/dict/types';
+import { Button, Disclosure, Hint, Note, Section } from '@/components/ui';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -59,67 +60,59 @@ export function DictSection() {
   };
 
   return (
-    <section className="space-y-2 rounded-lg border border-neutral-200 p-4">
-      <h2 className="font-semibold">词典（FR-16 / FR-17）</h2>
-
+    <Section
+      title="词典与预置词库"
+      aside={<Button onClick={() => void runProbe()}>查一个词试试</Button>}
+    >
       {meta === 'loading' ? (
-        <p className="text-sm text-neutral-500">读取中…</p>
+        <Hint>读取中…</Hint>
       ) : meta === null ? (
-        <p className="text-sm text-amber-700">
-          ⚠️ 内置词典没有就位。打包版应随包带 <code>public/dict/</code>；本机跑一次{' '}
+        <Note tone="warn">
+          内置词典没有就位。打包版应随包带 <code>public/dict/</code>；本机跑一次{' '}
           <code>npm run build:dict</code>。
-        </p>
+        </Note>
       ) : (
         <>
-          <p className="text-sm text-neutral-600">
+          <p className="text-ui text-muted">
             词条 {meta.words.toLocaleString()} 条 · 词形索引 {meta.forms.toLocaleString()} 个 ·{' '}
             {meta.buckets} 个分桶
           </p>
-          <p className="text-sm text-neutral-600">
+          <p className="text-ui text-muted">
             预置词库：{meta.decks.map((d) => `第${d.id}档 ${d.count}`).join(' · ')}
           </p>
-          <p className="text-xs text-neutral-500">{meta.note}</p>
-          <p className="text-xs text-neutral-500">
+          <p className="text-note text-muted">
             {platform === 'web'
-              ? '当前是 web 版：分桶文件按需联网取（Service Worker 不预缓存 json，35MB 预缓存不划算），断网时查不到新词。'
+              ? '当前是 web 版：分桶文件按需联网取，断网时查不到新词。'
               : '当前是原生壳：词典在 App 包内，完全离线可用。'}
           </p>
         </>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 pt-1">
-        <button className="rounded bg-neutral-800 px-3 py-1.5 text-sm text-white" onClick={() => void runProbe()}>
-          查一个词试试
-        </button>
-        {probe && <span className="text-sm">{probe}</span>}
-      </div>
+      {probe && <Note tone={probe.startsWith('❌') ? 'danger' : 'ok'}>{probe}</Note>}
 
-      <label className="flex items-center gap-2 pt-1 text-sm">
+      <label className="flex items-center gap-2 pt-1 text-ui">
         <input
           type="checkbox"
           checked={settings.onlineDictFallback}
           onChange={(e) => void update({ onlineDictFallback: e.target.checked })}
         />
-        内置词典查不到时联网查 de.wiktionary（FR-16.5）
+        内置词典查不到时联网查 de.wiktionary
       </label>
-      <p className="text-xs text-neutral-500">
-        直连 Wiktionary，没有任何中转（§3.1.1 R-1）。内置词典裁掉了「只有音标、既无释义也无性」的那 8 万多条，
-        长尾复合词也覆盖不全 —— 而 Alltagsdeutsch 满篇都是复合词，所以这条留着有用。
+      <Hint>直连 Wiktionary，没有任何中转。长尾复合词内置词典覆盖不全，而 Alltagsdeutsch 满篇都是复合词。</Hint>
+
+      <p className="text-note text-muted">
+        发音缓存：{audio ? `${audio.count} 个词 · ${formatBytes(audio.bytes)}` : '统计中…'}
+        {' · '}
+        {voice ? `合成音兜底：${voice}` : '系统里没有德语嗓音，只能靠真人录音'}
       </p>
 
-      <div className="border-t border-neutral-100 pt-2 text-sm text-neutral-600">
-        发音缓存：{audio ? `${audio.count} 个词 · ${formatBytes(audio.bytes)}` : '统计中…'}
-        <span className="ml-2 text-xs text-neutral-500">
-          （合成音兜底：{voice ? `系统德语嗓音 ${voice}` : '系统里没有德语嗓音，只能靠真人录音'}）
-        </span>
-      </div>
-
+      {/* CC BY-SA 要求署名，所以它必须在用户看得到的地方 —— 但它不必占主路径。
+          折叠块是「在」的，`<details>` 打印时也会展开。 */}
       {meta !== 'loading' && meta !== null && (
-        <div className="border-t border-neutral-100 pt-2">
-          <p className="text-xs font-medium text-neutral-600">数据来源与许可</p>
-          <ul className="mt-1 space-y-1">
+        <Disclosure summary="数据来源与许可">
+          <ul className="space-y-1">
             {meta.attribution.map((a) => (
-              <li key={a.url} className="text-xs text-neutral-500">
+              <li key={a.url} className="text-note text-muted">
                 {a.what} —— {a.source}，
                 <a className="underline" href={a.url} target="_blank" rel="noreferrer noopener">
                   {a.url}
@@ -127,12 +120,13 @@ export function DictSection() {
                 ，{a.license}
               </li>
             ))}
-            <li className="text-xs text-neutral-500">
+            <li className="text-note text-muted">
               发音 —— Wikimedia Commons 上的录音，各文件许可随原文件（多为 CC BY-SA / CC0）
             </li>
+            <li className="text-note text-muted">{meta.note}</li>
           </ul>
-        </div>
+        </Disclosure>
       )}
-    </section>
+    </Section>
   );
 }

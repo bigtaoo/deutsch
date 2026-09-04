@@ -7,7 +7,7 @@ import { useMemo, useState } from 'react';
 import { href } from '@/app/router';
 import { useLessonStore } from '@/state/useLessonStore';
 import { needsGender, useVocabStore } from '@/state/useVocabStore';
-import { Button, EmptyState, Hint } from '@/components/ui';
+import { Button, EmptyState, Hint, field } from '@/components/ui';
 import { PresetPanel } from './vocab/PresetPanel';
 import type { VocabEntry } from '@/types/models';
 
@@ -36,9 +36,9 @@ export function VocabPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <h1 className="mr-auto text-xl font-semibold">生词本（{entries.length}）</h1>
+        <h1 className="mr-auto hidden text-title font-semibold sm:block">生词本（{entries.length}）</h1>
         <select
-          className="min-w-0 max-w-full flex-1 rounded border border-neutral-300 px-2 py-1 text-sm sm:flex-none"
+          className={`${field} min-w-0 max-w-full flex-1 px-2 py-1 sm:flex-none`}
           value={lessonFilter}
           onChange={(e) => setLessonFilter(e.target.value)}
         >
@@ -49,7 +49,7 @@ export function VocabPage() {
           ))}
         </select>
         <select
-          className="min-w-0 max-w-full flex-1 rounded border border-neutral-300 px-2 py-1 text-sm sm:flex-none"
+          className={`${field} min-w-0 max-w-full flex-1 px-2 py-1 sm:flex-none`}
           value={stateFilter}
           onChange={(e) => setStateFilter(e.target.value)}
         >
@@ -71,9 +71,9 @@ export function VocabPage() {
       {filtered.length === 0 ? (
         <EmptyState>没有符合条件的词条。</EmptyState>
       ) : (
-        <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+        <ul className="divide-y divide-line overflow-hidden rounded-box border border-line bg-raised">
           {filtered.map((entry) => (
-            <li key={entry.id} className={`p-3 ${needsGender(entry) ? 'bg-amber-50' : ''}`}>
+            <li key={entry.id} className={`p-3 ${needsGender(entry) ? 'bg-warn-soft' : ''}`}>
               {editing === entry.id ? (
                 <InlineEditor
                   entry={entry}
@@ -119,28 +119,28 @@ function Row({
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
       <div className="min-w-0 flex-1 space-y-1">
         <p className="font-medium">
-          {entry.gender && <span className="mr-1 text-neutral-500">{{ m: 'der', f: 'die', n: 'das' }[entry.gender]}</span>}
+          {entry.gender && <span className="mr-1 text-muted">{{ m: 'der', f: 'die', n: 'das' }[entry.gender]}</span>}
           {entry.surface}
-          {entry.plural && <span className="ml-2 text-sm text-neutral-500">{entry.plural}</span>}
-          {entry.suspended && <span className="ml-2 rounded bg-neutral-200 px-1.5 text-xs">已暂停</span>}
+          {entry.plural && <span className="ml-2 text-ui text-muted">{entry.plural}</span>}
+          {entry.suspended && <span className="ml-2 rounded-ctl bg-sunken px-1.5 text-note">已暂停</span>}
           {entry.preset ? (
             <span
-              className="ml-2 rounded bg-sky-100 px-1.5 text-xs text-sky-800"
+              className="ml-2 rounded-ctl bg-accent-soft px-1.5 text-note text-accent"
               title={`预置词库第 ${entry.preset.band} 档第 ${entry.preset.rank} 名（词频档，不是 CEFR 等级）`}
             >
               预置 第{entry.preset.band}档
             </span>
           ) : (
             !entry.hasTimestamp && (
-              <span className="ml-2 rounded bg-amber-100 px-1.5 text-xs text-amber-800" title="来源句没有时间戳">
+              <span className="ml-2 rounded-ctl bg-warn-soft px-1.5 text-note text-warn" title="来源句没有时间戳">
                 无音频卡
               </span>
             )
           )}
         </p>
-        <p className="text-sm">{entry.meaning ?? <span className="text-neutral-400">（释义待填）</span>}</p>
-        {entry.contextSentence && <p className="text-sm text-neutral-500">{entry.contextSentence}</p>}
-        <p className="text-xs text-neutral-400">
+        <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义待填）</span>}</p>
+        {entry.contextSentence && <p className="text-ui text-muted">{entry.contextSentence}</p>}
+        <p className="text-note text-faint">
           {entry.preset ? (
             // 预置卡没有出处课程，也没有原句。如实写出来，不要显示「（课程已删除）」
             // —— 那会让人以为丢了数据。
@@ -179,13 +179,13 @@ function InlineEditor({
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
         <input
-          className="w-40 rounded border border-neutral-300 px-2 py-1 text-sm"
+          className={`${field} w-40 px-2 py-1`}
           placeholder="词条（lemma）"
           value={draft.lemma ?? ''}
           onChange={(e) => setDraft({ ...draft, lemma: e.target.value })}
         />
         <select
-          className="rounded border border-neutral-300 px-2 py-1 text-sm"
+          className={`${field} px-2 py-1`}
           value={draft.gender ?? ''}
           onChange={(e) => setDraft({ ...draft, gender: (e.target.value || undefined) as VocabEntry['gender'] })}
         >
@@ -195,13 +195,13 @@ function InlineEditor({
           <option value="n">das (n)</option>
         </select>
         <input
-          className="w-24 rounded border border-neutral-300 px-2 py-1 text-sm"
+          className={`${field} w-24 px-2 py-1`}
           placeholder="复数"
           value={draft.plural ?? ''}
           onChange={(e) => setDraft({ ...draft, plural: e.target.value })}
         />
         <input
-          className="min-w-60 flex-1 rounded border border-neutral-300 px-2 py-1 text-sm"
+          className={`${field} min-w-60 flex-1 px-2 py-1`}
           placeholder="释义"
           value={draft.meaning ?? ''}
           onChange={(e) => setDraft({ ...draft, meaning: e.target.value })}
