@@ -7,7 +7,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <!-- 跟图标底色（scripts/generate-icons.mjs 的 TILE）一致。图标从深色改成浅色那次，
          这里忘了改的话手机上是深色状态栏配浅蓝图标，两个调子。 -->
-    <meta name="theme-color" content="#e0f2fe" />
+    <meta name="theme-color" content="#e0f2fe" media="(prefers-color-scheme: light)" />
+    <!-- 深色下必须换一条：浅蓝状态栏压在 #121211 的页面上是两个调子（§12.5 有了深色令牌
+         之后才需要这一行）。值 = index.css 里深色的 --color-surface。 -->
+    <meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="精听" />

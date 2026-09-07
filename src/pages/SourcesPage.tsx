@@ -14,7 +14,7 @@ import { backfillRecent, BACKFILL_LIMITS, type BackfillProgress } from '@/source
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { hasTimings } from '@/align/apply';
-import { Banner, Button, EmptyState, Hint, Section, formatBytes } from '@/components/ui';
+import { Banner, Button, Chip, Disclosure, EmptyState, Hint, Note, Section, field, formatBytes } from '@/components/ui';
 import type { Lesson } from '@/types/models';
 import type { DwLesson } from '@/sources/dw/adapter';
 
@@ -61,34 +61,34 @@ export function SourcesPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">来源</h1>
+      <h1 className="hidden text-title font-semibold sm:block">来源</h1>
 
       <RehydratePanel />
 
-      <Section title="L1 全自动" aside={<Button disabled={loading} onClick={() => void refresh()}>{loading ? '拉取中…' : '刷新列表'}</Button>}>
+      <Section title="订阅列表" aside={<Button disabled={loading} onClick={() => void refresh()}>{loading ? '拉取中…' : '刷新列表'}</Button>}>
         <div className="flex flex-wrap gap-2">
           {SOURCES.map((s) => (
             <button
               key={s.id}
               onClick={() => setSource(s)}
-              className={`rounded px-3 py-1.5 text-sm ${
-                s.id === source.id ? 'bg-neutral-800 text-white' : 'border border-neutral-300'
+              className={`rounded-ctl px-3 py-1.5 text-ui ${
+                s.id === source.id ? 'bg-accent text-accent-ink' : 'border border-line-strong'
               }`}
             >
               {s.name}
-              <span className="ml-2 text-xs opacity-70">{s.level}</span>
+              <span className="ml-2 text-note opacity-70">{s.level}</span>
             </button>
           ))}
         </div>
         {source.note && <Hint>{source.note}</Hint>}
-        {error && <Banner tone="warn">{error}</Banner>}
+        {error && <Note tone="danger">{error}</Note>}
 
         {feed ? (
           <>
             <Hint>
               抓取于 {new Date(feed.fetchedAt).toLocaleString('zh-CN', { hour12: false })} · {feed.items.length} 期
             </Hint>
-            <ul className="divide-y divide-neutral-100">
+            <ul className="divide-y divide-line">
               {feed.items.map((item) => (
                 <FeedRow key={item.lessonId} item={item} imported={importedIds.has(item.lessonId)} />
               ))}
@@ -102,10 +102,9 @@ export function SourcesPage() {
 
       <ManualIdSection />
 
-      <Section title="L3 手动（地板）">
+      <Section title="完全手动">
         <Hint>
-          DW 改版、教材音频、任何非 DW 素材都走这条路：粘贴文本 + 选本地文件。
-          它不依赖上面任何一层的代码，永远可用。
+          粘贴文本 + 选本地文件。教材音频、DW 改版之后都走这条 —— 它不依赖上面任何一层，永远可用。
         </Hint>
         <Button onClick={() => navigate({ name: 'import' })}>去手动导入</Button>
       </Section>
@@ -161,21 +160,21 @@ function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
   };
 
   return (
-    <li className="flex flex-wrap items-center gap-3 py-2 text-sm">
+    <li className="flex flex-wrap items-center gap-3 py-2 text-ui">
       <div className="min-w-0 flex-1">
         <p className="font-medium">{item.title}</p>
-        <p className="text-xs text-neutral-500">
+        <p className="text-note text-muted">
           {item.durationText ?? '时长未知'}
           {item.enclosureBytes ? ` · ${formatBytes(item.enclosureBytes)}` : ''}
           {' · id '}
           {item.lessonId}
         </p>
-        {progress && <p className="text-xs text-sky-700">{importProgressText(progress)}</p>}
-        {result && <p className="text-xs text-amber-700">{result}</p>}
+        {progress && <p className="text-note text-accent">{importProgressText(progress)}</p>}
+        {result && <p className="text-note text-warn">{result}</p>}
       </div>
       {/* FR-13.8：按 lesson id 判断已导入，不用带 ?maca= 的 link */}
       {imported ? (
-        <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">已导入</span>
+        <Chip tone="ok">已导入</Chip>
       ) : (
         <Button disabled={progress !== null} onClick={() => void run()}>
           {progress ? '导入中…' : '导入'}
@@ -211,11 +210,11 @@ function ManualIdSection() {
   };
 
   return (
-    <Section title="L2 半自动（存档期次）">
+    <Section title="按地址或 id 导入">
       <Hint>RSS 只给最近 100 期。更老的期次把页面地址或 lesson id 粘到这里。</Hint>
       <div className="flex flex-wrap gap-2">
         <input
-          className="min-w-72 flex-1 rounded border border-neutral-300 px-3 py-2 text-sm"
+          className={`${field} min-w-72 flex-1 px-3 py-2`}
           placeholder="https://learngerman.dw.com/de/…/l-45334084 或 45334084"
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -224,8 +223,8 @@ function ManualIdSection() {
           {progress ? '导入中…' : '导入'}
         </Button>
       </div>
-      {progress && <p className="text-xs text-sky-700">{importProgressText(progress)}</p>}
-      {message && <Banner tone="warn">{message}</Banner>}
+      {progress && <p className="text-note text-accent">{importProgressText(progress)}</p>}
+      {message && <Note tone="danger">{message}</Note>}
     </Section>
   );
 }
@@ -275,46 +274,48 @@ function RehydratePanel() {
 
   return (
     <Section title={`素材未下载（${missing.length}）`}>
-      <Hint>标注层里有这些课，本机没有素材。DW 来源可以按 lesson id 重新抓取，标注不受影响。</Hint>
-      {message && <Banner tone="info">{message}</Banner>}
+      <Hint>标注层里有这些课，本机没有音频。DW 来源可以重新抓取，标注不受影响。</Hint>
+      {message && <Note tone="ok">{message}</Note>}
 
       {conflict && (
         // FR-3.7：不能静默接受。这是「静默数据损坏」类风险，必须在补齐时就拦住。
-        <Banner tone="error">
-          <p className="font-medium">《{conflict.lesson.title}》的文稿与本机记录的 hash 不一致 —— DW 改过稿。</p>
-          <p className="mt-1">
-            时间戳与挖空的 offset 可能全部失效。音频已经补齐，但正文要你选一条路：
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <Button
-              onClick={() => {
-                void acceptNewManuscript(conflict.lesson, conflict.dw).then((result) => {
-                  setMessage(
-                    `已按新文稿重切：${result.sentences.length} 句，沿用 ${result.carriedOver.size} 处标注` +
-                      (result.orphaned.length > 0 ? `，${result.orphaned.length} 处对不上已丢弃` : ''),
-                  );
-                });
-                setConflict(null);
-              }}
-            >
-              按新文稿重切（保留能匹配上的标注）
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setConflict(null);
-                setMessage('保留旧标注。本机正文仍是旧版，请自行核对时间戳是否还对得上。');
-              }}
-            >
-              保留旧标注，自行核对
-            </Button>
-          </div>
+        <Banner
+          tone="danger"
+          title={`DW 改过《${conflict.lesson.title}》的稿 —— 正文要你选一条路`}
+          action={
+            <>
+              <Button
+                onClick={() => {
+                  void acceptNewManuscript(conflict.lesson, conflict.dw).then((result) => {
+                    setMessage(
+                      `已按新文稿重切：${result.sentences.length} 句，沿用 ${result.carriedOver.size} 处标注` +
+                        (result.orphaned.length > 0 ? `，${result.orphaned.length} 处对不上已丢弃` : ''),
+                    );
+                  });
+                  setConflict(null);
+                }}
+              >
+                按新文稿重切（保留能匹配上的标注）
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setConflict(null);
+                  setMessage('保留旧标注。本机正文仍是旧版，请自行核对时间戳是否还对得上。');
+                }}
+              >
+                保留旧标注，自行核对
+              </Button>
+            </>
+          }
+        >
+          <p>文稿与本机记录的 hash 不一致，时间戳与挖空的 offset 可能全部失效。音频已经补齐。</p>
         </Banner>
       )}
 
-      <ul className="divide-y divide-neutral-100">
+      <ul className="divide-y divide-line">
         {missing.map((lesson) => (
-          <li key={lesson.id} className="flex items-center gap-3 py-2 text-sm">
+          <li key={lesson.id} className="flex items-center gap-3 py-2 text-ui">
             <span className="min-w-0 flex-1">{lesson.title}</span>
             <Button disabled={busyId !== null} onClick={() => void run(lesson)}>
               {busyId === lesson.id ? '补齐中…' : '补齐素材'}
@@ -365,15 +366,15 @@ function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds:
   }
 
   return (
-    <div className="space-y-2 border-t border-neutral-100 pt-3">
-      <p className="text-sm">
+    <div className="space-y-2 border-t border-line pt-3">
+      <p className="text-ui">
         <b>回填最近几期</b>
-        <span className="ml-2 text-neutral-500">列表里还有 {pending} 期没导入</span>
+        <span className="ml-2 text-muted">列表里还有 {pending} 期没导入</span>
       </p>
-      <p className="text-xs text-neutral-500">
-        导进来之后每期的 Glossar 候选词就能一键接受成生词 —— 那些词带德语释义、带语境句、带真人朗读，
-        比预置词库的孤立词发音有用得多。<b>不接受候选词的话，导入本身不会往生词本里加任何东西。</b>
-      </p>
+      <Hint>
+        每期的 Glossar 候选词能一键接受成生词，那些词带释义、带语境句、带真人朗读。
+        不接受候选词的话，导入本身不往生词本里加任何东西。
+      </Hint>
       <div className="flex flex-wrap items-center gap-2">
         {BACKFILL_LIMITS.map((n) => (
           <Button key={n} disabled={progress !== null} onClick={() => void run(n)}>
@@ -382,7 +383,7 @@ function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds:
         ))}
         {progress && (
           <>
-            <span className="text-sm text-neutral-600">
+            <span className="text-ui text-muted">
               第 {progress.index}/{progress.total} 期
               {progress.step ? `（${{ page: '取文稿', audio: '取音频', saving: '落库', done: '完成' }[progress.step]}）` : ''}
               {progress.title ? ` · ${progress.title.slice(0, 28)}` : ''}
@@ -393,11 +394,13 @@ function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds:
           </>
         )}
       </div>
-      <p className="text-xs text-neutral-400">
-        串行、每次出网间隔 ≥ 1 秒，只从上面这份已拉到的列表里取 —— 不翻页、不爬归档。
-        <b>没有「全部」这个选项</b>，最多 {Math.max(...BACKFILL_LIMITS)} 期（§3.1.1 R-3）。
-        「停」会停在期与期之间，不留半篇课程。
-      </p>
+      <Disclosure summary="它到底会做什么">
+        <p className="text-note text-muted">
+          串行、每次出网间隔 ≥ 1 秒，只从上面这份已拉到的列表里取 —— 不翻页、不爬归档。
+          <b>没有「全部」这个选项</b>，最多 {Math.max(...BACKFILL_LIMITS)} 期。
+          「停」会停在期与期之间，不留半篇课程。
+        </p>
+      </Disclosure>
       {result && <Hint tone="ok">{result}</Hint>}
     </div>
   );

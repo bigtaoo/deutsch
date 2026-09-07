@@ -13,7 +13,7 @@ import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { GlossaryCandidates, acceptCandidate } from './GlossaryCandidates';
-import { Banner, Button, Hint } from '@/components/ui';
+import { Banner, Button, Hint, field } from '@/components/ui';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence, VocabEntry } from '@/types/models';
 
 export function StudyTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
@@ -118,11 +118,11 @@ function SentenceRow({
   };
 
   return (
-    <div className={`rounded-lg border p-3 ${active ? 'border-sky-400' : 'border-neutral-200'}`}>
+    <div className={`rounded-box border bg-raised p-3 ${active ? 'border-accent' : 'border-line'}`}>
       <div className="flex items-start gap-3">
-        <span className="w-8 shrink-0 pt-1 text-right text-xs text-neutral-400">{displayNumber ?? '—'}</span>
+        <span className="w-8 shrink-0 pt-1 text-right text-note text-faint">{displayNumber ?? '—'}</span>
 
-        <p className="min-w-0 flex-1 text-base leading-loose">
+        <p className="min-w-0 flex-1 text-de leading-loose">
           {tokens.map((token) => {
             const inBlank = isSelected(blankRanges, token);
             const picked = active && selection.some((t) => t.start === token.start);
@@ -133,14 +133,14 @@ function SentenceRow({
                 key={token.start}
                 onClick={() => toggle(token)}
                 title={candidate ? `Glossar：${candidate.title}（点一下接受）` : undefined}
-                className={`cursor-pointer rounded px-0.5 ${
+                className={`cursor-pointer rounded-ctl px-0.5 ${
                   picked
-                    ? 'bg-sky-200'
+                    ? 'bg-accent-soft'
                     : inBlank
-                      ? 'bg-amber-100 underline decoration-amber-400'
+                      ? 'bg-warn-soft underline decoration-warn'
                       : candidate
-                        ? 'underline decoration-sky-300 decoration-dotted underline-offset-4 hover:bg-neutral-100'
-                        : 'hover:bg-neutral-100'
+                        ? 'underline decoration-accent decoration-dotted underline-offset-4 hover:bg-sunken'
+                        : 'hover:bg-sunken'
                 }`}
               >
                 {token.text}
@@ -170,26 +170,31 @@ function SentenceRow({
           />
         ) : (
           // §3.3 R1
-          <Banner tone="warn">
-            <p>这一句还没有时间戳，挖空既不能听写、也生成不了带音频的卡。先自动对齐一次。</p>
-            <div className="mt-2 flex gap-2">
-              <Button onClick={() => enqueueAlign(lesson.id, { manual: true })}>自动对齐这一课</Button>
-              <Button variant="ghost" onClick={() => onSelectionChange([])}>
-                取消选择
-              </Button>
-            </div>
+          <Banner
+            tone="warn"
+            title="这一句还没有时间戳，挖不了空"
+            action={
+              <>
+                <Button onClick={() => enqueueAlign(lesson.id, { manual: true })}>自动对齐这一课</Button>
+                <Button variant="ghost" onClick={() => onSelectionChange([])}>
+                  取消选择
+                </Button>
+              </>
+            }
+          >
+            <p>没有时间戳的挖空既不能听写、也生成不了带音频的卡。</p>
           </Banner>
         )
       )}
 
       {sentence.blanks.length > 0 && (
-        <ul className="mt-2 space-y-1 border-t border-neutral-100 pt-2">
+        <ul className="mt-2 space-y-1 border-t border-line pt-2">
           {sentence.blanks.map((blank) => {
             const entry = entries.find((e) => e.id === blank.vocabEntryId);
             return (
-              <li key={blank.id} className="flex items-center gap-2 text-sm">
+              <li key={blank.id} className="flex items-center gap-2 text-ui">
                 <span className="font-medium">{blank.surface}</span>
-                <span className="text-neutral-500">{entry?.meaning ?? '（释义待填）'}</span>
+                <span className="text-muted">{entry?.meaning ?? '（释义待填）'}</span>
                 <BlankRemoveButton lesson={lesson} sentence={sentence} blankId={blank.id} />
               </li>
             );
@@ -214,7 +219,7 @@ function BlankRemoveButton({ lesson, sentence, blankId }: { lesson: Lesson; sent
   }
   return (
     <span className="ml-auto flex items-center gap-2">
-      <span className="text-xs text-neutral-500">生词条目也删掉吗？</span>
+      <span className="text-note text-muted">生词条目也删掉吗？</span>
       <Button variant="danger" onClick={() => { void removeBlank(lesson.id, sentence.index, blankId, true); setAsking(false); }}>
         一起删
       </Button>
@@ -267,34 +272,39 @@ function MarkPanel({
 
   if (duplicates) {
     return (
-      <Banner tone="info">
+      <Banner
+        tone="warn"
+        title={`生词本里已经有「${surface}」`}
+        action={
+          <>
+            <Button
+              variant="primary"
+              onClick={() => {
+                void attachToExisting({ lesson, sentence, ranges, entryId: duplicates[0].id });
+                setDuplicates(null);
+                onDone();
+              }}
+            >
+              合并到已有条目
+            </Button>
+            <Button onClick={() => { setDuplicates(null); void create(); }}>仍然新建</Button>
+            <Button variant="ghost" onClick={() => { setDuplicates(null); onDone(); }}>取消</Button>
+          </>
+        }
+      >
         <p>
-          生词本里已经有「{surface}」
+          来自
           {duplicates
-            .map((d) => `（来自《${lessons.find((l) => l.id === d.lessonId)?.title ?? '未知课程'}》）`)
-            .join('')}
+            .map((d) => `《${lessons.find((l) => l.id === d.lessonId)?.title ?? '未知课程'}》`)
+            .join('、')}
         </p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          <Button
-            variant="primary"
-            onClick={() => {
-              void attachToExisting({ lesson, sentence, ranges, entryId: duplicates[0].id });
-              setDuplicates(null);
-              onDone();
-            }}
-          >
-            合并到已有条目
-          </Button>
-          <Button onClick={() => { setDuplicates(null); void create(); }}>仍然新建</Button>
-          <Button variant="ghost" onClick={() => { setDuplicates(null); onDone(); }}>取消</Button>
-        </div>
       </Banner>
     );
   }
 
   return (
-    <div className="mt-2 space-y-2 rounded border border-sky-200 bg-sky-50 p-3">
-      <p className="text-sm">
+    <div className="mt-2 space-y-2 rounded-ctl border border-accent/40 bg-accent-soft p-3">
+      <p className="text-ui">
         选中：<span className="font-medium">{surface}</span>
       </p>
       {shouldSuggestCollocation(surface) && (
@@ -302,7 +312,7 @@ function MarkPanel({
           考虑连搭配一起标记 —— `sich einer Sache bewusst sein` 比 `bewusst` 有用得多。（不强制）
         </Hint>
       )}
-      {error && <Hint tone="error">{error}</Hint>}
+      {error && <Hint tone="danger">{error}</Hint>}
       <div className="flex gap-2">
         <Button variant="primary" onClick={() => void check()}>标记为生词并挖空</Button>
         <Button variant="ghost" onClick={onDone}>取消选择</Button>
@@ -324,17 +334,17 @@ export function EntryEditor({
   const [draft, setDraft] = useState(entry);
 
   return (
-    <div className="mt-2 space-y-2 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm">
+    <div className="mt-2 space-y-2 rounded-ctl border border-ok/40 bg-ok-soft p-3 text-ui">
       <p className="font-medium">{entry.surface}</p>
       <div className="flex flex-wrap gap-2">
         <input
-          className="min-w-48 flex-1 rounded border border-neutral-300 px-2 py-1"
+          className={`${field} min-w-48 flex-1 px-2 py-1`}
           placeholder="释义"
           value={draft.meaning ?? ''}
           onChange={(e) => setDraft({ ...draft, meaning: e.target.value })}
         />
         <select
-          className="rounded border border-neutral-300 px-2 py-1"
+          className={`${field} px-2 py-1`}
           value={draft.gender ?? ''}
           onChange={(e) => setDraft({ ...draft, gender: (e.target.value || undefined) as VocabEntry['gender'] })}
         >
@@ -344,7 +354,7 @@ export function EntryEditor({
           <option value="n">das (n)</option>
         </select>
         <input
-          className="w-28 rounded border border-neutral-300 px-2 py-1"
+          className={`${field} w-28 px-2 py-1`}
           placeholder="复数"
           value={draft.plural ?? ''}
           onChange={(e) => setDraft({ ...draft, plural: e.target.value })}

@@ -1,7 +1,112 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────────────────
+   设计令牌（SPEC §12.4 / §12.5）
+
+   为什么有这一层：在它之前，界面上出现过 neutral 的五个档位加 amber / sky /
+   emerald / rose / red 五套语义色，其中 rose 和 red 都在表示「错误」，而 `dark:`
+   在整个 src 里出现零次。颜色因此不携带任何信息 —— 看到黄底不知道该不该停下来。
+
+   所以这里做了一件强制的事：`--color-*: initial` 把 Tailwind 自带的整套调色板
+   **清空**。于是 `bg-neutral-200` 这类写法不再生成任何 CSS，一处漏改会在界面上
+   露出无色的元素，而不是悄悄多出第十一种灰。能用的颜色只有下面这十个名字。
+   ───────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  --color-*: initial;
+
+  /* 这四个不是颜色，是关键字，必须留着 */
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  /* 中性六档。surface = 页面底，raised = 卡片与浮层，sunken = 输入框与进度槽。
+     ink / muted / faint 三档文字：正文、次要说明、编号与单位。
+     line / line-strong：分隔线与输入框边框。 */
+  --color-surface: #fbfaf9;
+  --color-raised: #ffffff;
+  --color-sunken: #f1efec;
+  --color-line: #e5e2dc;
+  --color-line-strong: #cdc8c0;
+  --color-ink: #1a1918;
+  --color-muted: #6a655d;
+  --color-faint: #9b9589;
+
+  /* 强调色。跟应用图标底色（浅天蓝 #e0f2fe，scripts/generate-icons.mjs 的 TILE）
+     同一个色相族，深下去做前景。它同时承担「信息性强调」—— 刻意不再单设 info 色：
+     以前 sky 既是主按钮又是 info 横幅，两个含义共用一种颜色等于都没有。 */
+  --color-accent: #0f6a92;
+  --color-accent-ink: #ffffff;
+  --color-accent-soft: #e6f1f8;
+
+  /* 三档语义色。只有这三种，且**只在「拦路」那一档用底色**（§12.3）。 */
+  --color-ok: #2c7a52;
+  --color-ok-soft: #e8f3ec;
+  --color-warn: #8a5a12;
+  --color-warn-soft: #fbf1e0;
+  --color-danger: #a63a30;
+  --color-danger-soft: #fbeceb;
+
+  /* ── 排版四级（§12.4）──
+     在它之前，166 处字号里有 147 处是 text-sm / text-xs —— 德语正文（这个应用
+     唯一的主角）和表单说明文字同一号。现在德语句子有自己的一级，而且是最大的一级。 */
+  --text-note: 0.8125rem;        /* 13px 说明、编号、单位 */
+  --text-note--line-height: 1.5;
+  --text-ui: 0.9375rem;          /* 15px 界面正文 */
+  --text-ui--line-height: 1.5;
+  --text-de: 1.1875rem;          /* 19px 德语正文：跟读、学词、听写、通听 */
+  --text-de--line-height: 1.75;
+  --text-title: 1.375rem;        /* 22px 页面与区块标题 */
+  --text-title--line-height: 1.3;
+  --text-word: 1.75rem;          /* 28px 复习卡背那一个词 */
+  --text-word--line-height: 1.2;
+
+  /* ── 圆角两档（§12.5）──
+     之前是 `rounded`(4px) 50 处、`rounded-lg`(8px) 25 处，没有任何规则区分。
+     现在：控件用 ctl，容器用 box。 */
+  --radius-ctl: 0.375rem;
+  --radius-box: 0.75rem;
+}
+
+/* 深色。晚上躺着练听力是 §2.1 写的主场景，而在这之前整个应用是 #fff 满屏。
+   只重定义令牌，不写任何 `dark:` 变体 —— 组件因此对主题无感。 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #121211;
+    --color-raised: #1b1b1a;
+    --color-sunken: #262524;
+    --color-line: #33322f;
+    --color-line-strong: #4a4844;
+    --color-ink: #eae7e1;
+    --color-muted: #a19b91;
+    --color-faint: #756f66;
+
+    --color-accent: #55b3dd;
+    --color-accent-ink: #0a1a22;
+    --color-accent-soft: #14262f;
+
+    --color-ok: #6cc48d;
+    --color-ok-soft: #16281d;
+    --color-warn: #dfae5f;
+    --color-warn-soft: #2b2214;
+    --color-danger: #ef8d82;
+    --color-danger-soft: #2e1917;
+  }
+}
+
+/* 让浏览器自带的控件（checkbox、range、number 的步进器、select 的下拉）跟着换色。
+   不写这一条的话，深色模式下会得到一堆亮白的原生控件。 */
+:root {
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+  }
+}
+
 /* 手机端适配（§2.1：手机是复习工位）。
-   - safe-area：iPhone 装到主屏幕后，底部 home indicator 会压住评分按钮（FR-10.7）
    - overscroll-behavior：跟读时误触下拉刷新会打断循环，代价比「刷新不了」大得多
    - text-size-adjust：iOS 横屏时会自作主张放大正文，把挖空输入框挤成两行 */
 html {
@@ -9,26 +114,61 @@ html {
 }
 
 body {
-  padding-bottom: env(safe-area-inset-bottom);
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  font-size: var(--text-ui);
+  line-height: var(--text-ui--line-height);
   overscroll-behavior-y: contain;
+}
+
+/* ── 底部单浮层契约（§12.2）──
+   `--bottom-inset` 由 src/components/bottomLayer.ts 按实测高度写进来：底部标签栏
+   或音频条（两者互斥）+ 对齐进度条。页面内容照它留白。
+   它替掉了原来写在容器上的 `pb-24` —— 那个魔法数没人维护，而底部真实高度取决于
+   当前有哪几层、以及这台设备的安全区有多高。 */
+:root {
+  --bottom-inset: 0px;
+}
+
+.app-content {
+  padding-bottom: calc(var(--bottom-inset) + 1rem);
 }
 
 /* 顶部安全区（原生壳 §7.10，以及 iOS 上的主屏幕 PWA）：WebView 铺满整屏，
    刘海/状态栏会压在吸顶导航上。安全区必须加在**导航自己**身上 ——
    sticky 是相对视口定位的，加在 body 的 padding 上导航照样会滑到状态栏底下。
-   加完之后导航自己的白底把状态栏那条也铺上了，正好。
    浏览器里（含 Android 壳，状态栏不覆盖 WebView）env() 是 0，这条规则等于不存在。
-   写成普通 CSS 而不是 Tailwind 的 pt-[…]：它要盖掉同一个元素上的 py-2，
+   写成普通 CSS 而不是 Tailwind 的 pt-[…]：它要盖掉同一个元素上的 py-*，
    而 Tailwind v4 的工具类在 @layer utilities 里，未分层的规则才稳赢。 */
 .app-nav {
   padding-top: calc(0.5rem + env(safe-area-inset-top));
 }
 
-/* 触屏上的点击目标不小于 44px（iOS HIG）。桌面上按钮更紧凑，所以只在粗指针下放大。 */
+/* 底部标签栏与底部浮层同理：home indicator 那一条必须让出来。 */
+.app-bottom-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 触屏上的点击目标不小于 44px（iOS HIG）。桌面上按钮更紧凑，所以只在粗指针下放大。
+   导航项是 <a>，拿不到这条规则 —— 它们在标记里直接写了 min-h-11。 */
 @media (pointer: coarse) {
   button,
   input[type='checkbox'],
   select {
     min-height: 44px;
   }
+}
+
+/* 数字与时间码一律等宽且不跳动。时间码每秒都在变，比例数字会让整行左右抖。 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 行内代码：设置页里有一串服务器地址和几个环境变量名。默认的 <code> 只换个字体，
+   在 15px 正文里几乎看不出来是「一段要照抄的字面量」。 */
+code {
+  border-radius: var(--radius-ctl);
+  background-color: var(--color-sunken);
+  padding: 0.05em 0.35em;
+  font-size: 0.9em;
 }

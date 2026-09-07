@@ -20,7 +20,7 @@ export const SOURCES: SourceDefinition[] = [
     feedUrl: 'https://rss.dw.com/xml/DKpodcast_alltagsdeutsch_de',
     adapter: 'dw',
     level: 'C1',
-    note: '每周一篇，更新已放缓，靠吃存档（附录 A.2）',
+    note: '每周一篇，更新已放缓，靠吃存档',
   },
   {
     id: 'dw-sprachbar',
@@ -28,7 +28,7 @@ export const SOURCES: SourceDefinition[] = [
     feedUrl: 'https://rss.dw.com/xml/DKpodcast_sprachbar_de',
     adapter: 'dw',
     level: 'B2–C1',
-    note: '页面结构推测与 Alltagsdeutsch 同构（附录 A.4，未验证）',
+    note: '页面结构推测与 Alltagsdeutsch 同构，未验证',
   },
   {
     id: 'dw-langsam',

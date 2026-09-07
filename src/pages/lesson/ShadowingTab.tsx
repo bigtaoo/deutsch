@@ -11,8 +11,8 @@ import { annotatedSentences, resolveRange } from '@/lesson/timing';
 import { displayNumbers } from '@/lesson/sentences';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { PLAYBACK_RATES } from '@/components/AudioBar';
-import { Banner, Button, EmptyState, Hint } from '@/components/ui';
+import { PLAYBACK_RATES, RateSwitch } from '@/components/AudioBar';
+import { Banner, Button, Card, EmptyState, Hint, field } from '@/components/ui';
 import type { Lesson, LessonCache } from '@/types/models';
 
 export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
@@ -112,11 +112,13 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
   return (
     <div className="space-y-3">
       {audio.status !== 'ready' && (
-        <Banner tone="warn">音频不可用，跟读无法开始。{audio.error ?? ''}</Banner>
+        <Banner tone="warn" title="音频不可用，跟读无法开始">
+          {audio.error && <p>{audio.error}</p>}
+        </Banner>
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-ui">
           <input
             type="checkbox"
             checked={difficultOnly}
@@ -124,24 +126,24 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
           />
           只练标记为困难的句子
         </label>
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-ui">
           每句重复
           <input
             type="number"
             min={0}
-            className="w-16 rounded border border-neutral-300 px-2 py-1"
+            className={`${field} w-16 px-2 py-1`}
             value={settings.shadowingRepeat}
             onChange={(e) => void update({ shadowingRepeat: Math.max(0, Number(e.target.value) || 0) })}
           />
-          <span className="text-neutral-500">次（0 = 无限，手动推进）</span>
+          <span className="text-muted">次（0 = 无限，手动推进）</span>
         </label>
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-ui">
           静默间隔 ×
           <input
             type="number"
             min={0.2}
             step={0.1}
-            className="w-16 rounded border border-neutral-300 px-2 py-1"
+            className={`${field} w-16 px-2 py-1`}
             value={settings.shadowingGapRatio}
             onChange={(e) => void update({ shadowingGapRatio: Number(e.target.value) || 1.2 })}
           />
@@ -178,19 +180,10 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
         >
           标记困难 (D)
         </Button>
-        <div className="flex gap-1">
-          {PLAYBACK_RATES.map((r) => (
-            <button
-              key={r}
-              onClick={() => { audioPlayer.setRate(r); void update({ playbackRate: r }); }}
-              className={`rounded px-2 py-1 text-xs ${
-                r === settings.playbackRate ? 'bg-neutral-800 text-white' : 'border border-neutral-300'
-              }`}
-            >
-              {r.toFixed(2).replace(/0$/, '')}×
-            </button>
-          ))}
-        </div>
+        <RateSwitch
+          rate={settings.playbackRate}
+          onChange={(r) => void update({ playbackRate: r })}
+        />
       </div>
 
       <Hint>
@@ -215,26 +208,26 @@ function CurrentSentenceCard({
   const sentence = sentenceIndex !== null ? lesson.sentences[sentenceIndex] : undefined;
 
   return (
-    <div className="space-y-3 rounded-lg border border-neutral-200 p-6">
+    <Card className="space-y-3 p-6">
       {sentence ? (
         <>
           <div className="flex items-baseline gap-3">
-            <span className="text-xs text-neutral-400">第 {displayNumber ?? '—'} 句</span>
+            <span className="text-note text-faint">第 {displayNumber ?? '—'} 句</span>
             {sentence.markedDifficult && (
-              <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">困难</span>
+              <span className="rounded-ctl bg-warn-soft px-2 py-0.5 text-note text-warn">困难</span>
             )}
-            <span className="text-xs text-neutral-400">
+            <span className="text-note text-faint">
               {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
             </span>
           </div>
-          <p className="text-lg leading-relaxed">{sentence.text}</p>
+          <p className="text-de">{sentence.text}</p>
         </>
       ) : (
-        <p className="text-neutral-400">按「开始跟读」进入循环。</p>
+        <p className="text-faint">按「开始跟读」进入循环。</p>
       )}
 
       <GapCountdown state={state} />
-    </div>
+    </Card>
   );
 }
 
@@ -259,18 +252,18 @@ function GapCountdown({ state }: { state: ShadowingState }) {
 
   if (state.phase !== 'gap') {
     return (
-      <div className="h-2 rounded bg-neutral-100">
-        <div className={`h-2 rounded ${state.phase === 'playing' ? 'w-full bg-sky-400' : 'w-0'}`} />
+      <div className="h-2 rounded-ctl bg-sunken">
+        <div className={`h-2 rounded-ctl ${state.phase === 'playing' ? 'w-full bg-accent' : 'w-0'}`} />
       </div>
     );
   }
 
   return (
     <div className="space-y-1">
-      <div className="h-2 overflow-hidden rounded bg-emerald-100">
-        <div className="h-2 bg-emerald-500 transition-none" style={{ width: `${(1 - progress) * 100}%` }} />
+      <div className="h-2 overflow-hidden rounded-ctl bg-ok-soft">
+        <div className="h-2 bg-ok transition-none" style={{ width: `${(1 - progress) * 100}%` }} />
       </div>
-      <p className="text-xs text-emerald-700">现在跟读 —— 还有 {((1 - progress) * (state.gapMs / 1000)).toFixed(1)} 秒</p>
+      <p className="text-note text-ok">现在跟读 —— 还有 {((1 - progress) * (state.gapMs / 1000)).toFixed(1)} 秒</p>
     </div>
   );
 }

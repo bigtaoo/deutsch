@@ -3,11 +3,20 @@
 // 为什么必须是常驻的：手机上一课要跑几分钟到十几分钟，而这段时间人一定会切页面。
 // 进度只画在某一页上，等于「切走就看不见了」——那和卡死无法区分，
 // 而这个功能上一次的真实故障（进程被系统杀掉）恰恰长得就像卡死。
+//
+// ── 底部单浮层契约（SPEC §12.2）──
+// 它以前是 `fixed bottom-0 z-30`，而音频条是 `sticky bottom-0 z-10` —— 对齐一跑，
+// 进度条就正正压住播放键。现在两件事变了：
+//   ① 位置从 `bottom-0` 改成 `bottom: var(--base-bar-h)`，永远落在基座之上；
+//   ② 有音频条在场时**默认折叠成一条进度线**（20px），点一下才展成整行。
+// 优先级是「音频条 > 对齐进度」：你在听的时候，能不能按到播放键比看不看得见
+// 百分数重要，而进度线仍然在动，「还活着」这件事一眼可见。
 
 import { useEffect, useState } from 'react';
 import { planLabel } from '@/align/config';
-import { formatBytes } from '@/components/ui';
+import { Banner, Button, Note, formatBytes } from '@/components/ui';
 import { stageLabel, useAlignStore } from '@/state/useAlignStore';
+import { useBottomLayer, useHasAudioBar } from './bottomLayer';
 import type { AlignProgress } from '@/align/align';
 
 function detail(p: AlignProgress): string {
@@ -87,62 +96,103 @@ function percent(p: AlignProgress): number {
 export function AlignBar() {
   const { current, queue, lastDone, lastError, cancel, dismiss } = useAlignStore();
   const now = useTicker(current !== null);
+  const hasAudioBar = useHasAudioBar();
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  useBottomLayer('align', el);
 
   if (!current && !lastDone && !lastError) return null;
 
   const eta = current ? remaining(current.progress, current, now) : null;
+  // 折叠只发生在「正在跑」这一档：完成和失败各只出现一次、一句话说完，
+  // 而且带着一个「知道了」要点，压成一条线反而藏起了唯一的出口。
+  const collapsed = current !== null && hasAudioBar && !expanded;
 
   return (
-    <div className="align-bar fixed inset-x-0 bottom-0 z-30 border-t border-neutral-200 bg-white/95 px-4 py-2 backdrop-blur">
-      <div className="mx-auto flex max-w-4xl items-center gap-3 text-sm">
-        {current ? (
-          <>
-            <div className="min-w-0 flex-1">
-              <p className="truncate">
-                <span className="font-medium">《{current.title}》</span>
-                <span className="ml-2 text-neutral-600">
-                  {stageLabel(current.progress)} {detail(current.progress)}
-                </span>
-                <span className="ml-2 text-xs text-neutral-400">
-                  已跑 {clock(now - current.startedAt)}
-                  {eta && ` · ${eta}`}
-                </span>
-                {queue.length > 0 && (
-                  <span className="ml-2 text-xs text-neutral-400">还有 {queue.length} 课排队</span>
-                )}
-              </p>
-              <div className="mt-1 h-1 overflow-hidden rounded bg-neutral-200">
-                <div
-                  className="h-full bg-sky-500 transition-[width] duration-300"
-                  style={{ width: `${percent(current.progress)}%` }}
-                />
+    <div
+      ref={setEl}
+      // 基座之上，不是视口底部。基座是底部标签栏或音频条（两者互斥），高度实测。
+      style={{ bottom: 'var(--base-bar-h, 0px)' }}
+      className={`fixed inset-x-0 z-20 border-t border-line bg-raised/95 backdrop-blur ${
+        hasAudioBar ? '' : 'app-bottom-safe'
+      }`}
+    >
+      {collapsed ? (
+        <button
+          onClick={() => setExpanded(true)}
+          aria-label={`对齐中：${stageLabel(current.progress)} ${detail(current.progress)}，点开看详情`}
+          className="block w-full"
+        >
+          <div className="h-[2px] w-full bg-sunken">
+            <div
+              className="h-full bg-accent transition-[width] duration-300"
+              style={{ width: `${percent(current.progress)}%` }}
+            />
+          </div>
+          <div className="mx-auto flex h-[18px] max-w-4xl items-center justify-end px-4">
+            <span className="size-1.5 rounded-full bg-accent" />
+          </div>
+        </button>
+      ) : (
+        <div className="mx-auto max-w-4xl px-4 py-2 text-ui">
+          {current ? (
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate">
+                  <span className="font-medium">《{current.title}》</span>
+                  <span className="ml-2 text-muted">
+                    {stageLabel(current.progress)} {detail(current.progress)}
+                  </span>
+                  <span className="tnum ml-2 text-note text-faint">
+                    已跑 {clock(now - current.startedAt)}
+                    {eta && ` · ${eta}`}
+                  </span>
+                  {queue.length > 0 && (
+                    <span className="ml-2 text-note text-faint">还有 {queue.length} 课排队</span>
+                  )}
+                </p>
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-sunken">
+                  <div
+                    className="h-full bg-accent transition-[width] duration-300"
+                    style={{ width: `${percent(current.progress)}%` }}
+                  />
+                </div>
               </div>
+              {hasAudioBar && (
+                <button className="shrink-0 text-note text-muted underline" onClick={() => setExpanded(false)}>
+                  收起
+                </button>
+              )}
+              <button className="shrink-0 text-note text-muted underline" onClick={cancel}>
+                停止
+              </button>
             </div>
-            <button className="shrink-0 text-xs text-neutral-500 underline" onClick={cancel}>
-              停止
-            </button>
-          </>
-        ) : lastError ? (
-          <>
-            <p className="min-w-0 flex-1 truncate text-rose-700">
+          ) : lastError ? (
+            <Note
+              tone="danger"
+              action={
+                <button className="shrink-0 text-note text-muted underline" onClick={dismiss}>
+                  知道了
+                </button>
+              }
+            >
               《{lastError.title}》自动对齐失败：{lastError.message}
-            </p>
-            <button className="shrink-0 text-xs text-neutral-500 underline" onClick={dismiss}>
-              知道了
-            </button>
-          </>
-        ) : lastDone ? (
-          <>
-            <p className="min-w-0 flex-1 truncate text-emerald-800">
+            </Note>
+          ) : lastDone ? (
+            <Note
+              tone="ok"
+              action={
+                <button className="shrink-0 text-note text-muted underline" onClick={dismiss}>
+                  知道了
+                </button>
+              }
+            >
               《{lastDone.title}》对齐完成：{lastDone.applied} 句，用了 {lastDone.seconds} 秒
               {lastDone.review > 0 && ` · ${lastDone.review} 句置信度偏低`}
-            </p>
-            <button className="shrink-0 text-xs text-neutral-500 underline" onClick={dismiss}>
-              知道了
-            </button>
-          </>
-        ) : null}
-      </div>
+            </Note>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -156,6 +206,10 @@ export function AlignBar() {
  * 以及接下来自动改用什么。
  *
  * 放在应用外壳而不是某一页：崩溃之后你会落在哪一页是不确定的。
+ *
+ * 这一条**留在「拦路」那一档**（§12.3）：它要求你现在做一个决定（接着算 / 知道了），
+ * 而那些取证细节（死在哪一步、哪档后端、堆多大）收进折叠块 —— 需要它们的时候
+ * 是在跟我自己对账，不是在练听力。
  */
 export function AlignCrashBanner() {
   const { crash, blocked, native, dismiss, enqueue } = useAlignStore();
@@ -172,44 +226,54 @@ export function AlignCrashBanner() {
           chunks: crash.chunks,
         })}`;
 
+  const retryLabel = native
+    ? crash.chunk && crash.chunks
+      ? `接着算（上次到第 ${crash.chunk}/${crash.chunks} 块）`
+      : '接着算'
+    : '再试一次（用降档后的后端）';
+
   return (
-    <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-      <p className="font-medium">上次自动对齐没跑完 —— 进程被系统终止了。</p>
-      <p className="mt-1">
-        《{crash.title}》· 死在「{where}」· 已经跑了 {elapsed} 秒 ·
-        {planLabel(crash.plan, crash.planStep)} · {crash.platform} ·
-        权重{crash.weights === 'local' ? (crash.ranged ? '随包·分片取' : '随包·整份取') : '来自 CDN'}
-        {crash.heapMB !== undefined && ` · JS 堆 ${crash.heapMB} MB`}
+    <Banner
+      tone="warn"
+      title="上次自动对齐没跑完 —— 进程被系统终止了。"
+      action={
+        <>
+          {/*
+            重试是手动的，不是自动的：崩掉的那一课在启动时自动重跑，等于「一开应用就再被杀一次」，
+            而那正是这条横幅要终结的循环。降档已经准备好了，按不按由你决定。
+          */}
+          <Button
+            onClick={() => {
+              enqueue(crash.lessonId, { manual: true });
+              dismiss();
+            }}
+          >
+            {retryLabel}
+          </Button>
+          <Button variant="ghost" onClick={dismiss}>
+            知道了
+          </Button>
+        </>
+      }
+    >
+      <p>
+        《{crash.title}》死在「{where}」，已经跑了 {elapsed} 秒。
       </p>
-      <p className="mt-1">
+      <p>
         {native
           ? '这台设备走原生插件算 emissions —— 那 230MB 权重不再进 WebView。已经算完的块存在断点里，接着算不会从头开始。'
           : blocked
             ? '两档后端都被杀过了 —— 这台设备跑不动这个模型。自动对齐已停掉，请在桌面上对齐，句级时间戳会跟着备份同步回来。'
             : '下一次会自动换一档更保守的后端重试（同一档不会连试两次）。'}
       </p>
-      {/*
-        重试是手动的，不是自动的：崩掉的那一课在启动时自动重跑，等于「一开应用就再被杀一次」，
-        而那正是这条黄条要终结的循环。降档已经准备好了，按不按由你决定。
-      */}
-      <div className="mt-2 flex items-center gap-3 text-xs">
-        <button
-          className="underline"
-          onClick={() => {
-            enqueue(crash.lessonId, { manual: true });
-            dismiss();
-          }}
-        >
-          {native
-            ? crash.chunk && crash.chunks
-              ? `接着算（上次到第 ${crash.chunk}/${crash.chunks} 块）`
-              : '接着算'
-            : '再试一次（用降档后的后端）'}
-        </button>
-        <button className="underline" onClick={dismiss}>
-          知道了
-        </button>
-      </div>
-    </div>
+      <details className="text-note">
+        <summary className="cursor-pointer list-none opacity-70">› 取证细节</summary>
+        <p className="mt-1">
+          {planLabel(crash.plan, crash.planStep)} · {crash.platform} · 权重
+          {crash.weights === 'local' ? (crash.ranged ? '随包·分片取' : '随包·整份取') : '来自 CDN'}
+          {crash.heapMB !== undefined && ` · JS 堆 ${crash.heapMB} MB`}
+        </p>
+      </details>
+    </Banner>
   );
 }

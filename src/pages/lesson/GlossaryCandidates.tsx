@@ -91,20 +91,20 @@ export function GlossaryCandidates({ lesson }: { lesson: Lesson }) {
       }
     >
       <Hint>
-        这是 DW 给这一期标的生词，不是「你不认识的词」。挑着接受 —— 有些期次二十多条，
-        全接受会把生词本灌满你本来就认识的词。正文里带虚线下划线的就是它们，点一下即接受。
+        这是 DW 给这一期标的生词，不是「你不认识的词」—— 挑着接受。
+        正文里带虚线下划线的就是它们，点一下即接受。
       </Hint>
-      <ul className="divide-y divide-neutral-100">
+      <ul className="divide-y divide-line">
         {pending.map((candidate) => (
-          <li key={candidate.dwKnowledgeId} className="flex items-start gap-3 py-2 text-sm">
+          <li key={candidate.dwKnowledgeId} className="flex items-start gap-3 py-2 text-ui">
             <div className="min-w-0 flex-1">
               <p>
                 <span className="font-medium">{candidate.surface}</span>
                 {/* FR-14.4：解析不出格式时 title 原样保留，至少还认得出这是什么词条 */}
-                <span className="ml-2 text-neutral-500">{candidate.title}</span>
+                <span className="ml-2 text-muted">{candidate.title}</span>
               </p>
-              {candidate.meaning && <p className="text-neutral-600">{candidate.meaning}</p>}
-              <p className="text-xs text-neutral-400">
+              {candidate.meaning && <p className="text-muted">{candidate.meaning}</p>}
+              <p className="text-note text-faint">
                 {lesson.sentences[candidate.sentenceIndex]?.text.slice(0, 70) ?? '（这一句在重新切句后已不存在）'}
               </p>
             </div>

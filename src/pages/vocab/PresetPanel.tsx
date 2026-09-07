@@ -20,7 +20,7 @@ import { useEffect, useState } from 'react';
 import { dictMeta } from '@/dict/lookup';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
-import { Banner, Button, Hint, Section } from '@/components/ui';
+import { Banner, Button, Disclosure, Hint, Note, Section } from '@/components/ui';
 import type { DictMeta } from '@/dict/types';
 
 export function PresetPanel() {
@@ -81,9 +81,8 @@ export function PresetPanel() {
   // 词典没部署时不装作能用。web 版首次访问、或者忘了跑 build:dict 都会走到这里。
   if (meta === null) {
     return (
-      <Banner tone="warn">
-        <p>内置词典没有就位，预置词库用不了。</p>
-        <p className="mt-1 text-xs">
+      <Banner tone="warn" title="内置词典没有就位，预置词库用不了">
+        <p className="text-note">
           打包版应该随包带 <code>public/dict/</code>；本机开发跑一次 <code>npm run build:dict</code>。
         </p>
       </Banner>
@@ -96,33 +95,33 @@ export function PresetPanel() {
       aside={<Button onClick={() => setOpen(!open)}>{open ? '收起' : '展开'}</Button>}
     >
       {!open ? (
-        <p className="text-sm text-neutral-500">
+        <p className="text-ui text-muted">
           {enrolled.length > 0
             ? `已报名第 ${enrolled.join(' / ')} 档，每天自动发 ${settings.newPerDay} 个新词。`
             : '笔记还不多的时候，从这里报名一整档，之后每天自动发新词。'}
         </p>
       ) : (
         <div className="space-y-3">
-          <Hint tone="warn">
-            这些档位是<b>口语词频名次，不是 CEFR 等级</b>。官方 CEFR 词表只有 A1/A2/B1
-            且有版权，B2/C1/C2 没有官方表，所以这里不用那套标签 —— 免得按 A1/B2 去理解一个别的东西。
-            语料是影视字幕，偏口语，偶尔会混进人名。
-          </Hint>
+          {/* 这三件事会直接影响学习判断，所以第一句留在明面上（§12.3 的一行那一档），
+              细节进折叠块。 */}
+          <Note tone="warn">
+            档位是<b>口语词频名次，不是 CEFR 等级</b>；语料是影视字幕，偏口语。
+          </Note>
 
-          <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+          <ul className="divide-y divide-line overflow-hidden rounded-box border border-line bg-raised">
             {meta.decks.map((deck) => {
               const inBand = entries.filter((e) => e.preset?.band === deck.id).length;
               const isEnrolled = enrolled.includes(deck.id);
               return (
                 <li key={deck.id} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">
+                    <p className="text-ui font-medium">
                       第 {deck.id} 档 · {deck.label} · {deck.count} 词
                       {deck.id === settings.presetBand && (
-                        <span className="ml-2 rounded bg-sky-100 px-1.5 text-xs text-sky-800">推荐起点</span>
+                        <span className="ml-2 rounded-ctl bg-accent-soft px-1.5 text-note text-accent">推荐起点</span>
                       )}
                     </p>
-                    <p className="text-xs text-neutral-500">
+                    <p className="text-note text-muted">
                       {isEnrolled
                         ? `已报名 · 已激活 ${inBand} / 剩余 ${Math.max(0, deck.count - inBand)}`
                         : inBand > 0
@@ -143,21 +142,29 @@ export function PresetPanel() {
               );
             })}
           </ul>
-          {busy && <p className="text-sm text-neutral-500">{busy}</p>}
+          {busy && <p className="text-ui text-muted">{busy}</p>}
 
-          <p className="text-xs text-neutral-500">
-            推荐从第 4 档起：前三档合起来约三千词，C1 的人基本全认识 —— 从第 1 档开始等于要答几千道
-            「这个我早就会了」才挖到有用的地方。报了几档就按档号从小到大发，一档发完接着下一档。
-          </p>
-          <p className="text-xs text-neutral-500">
-            每天发多少由<b>设置里的「每天新卡数」</b>决定（现在 {settings.newPerDay} 个），
-            而且课上标的生词也算在这个额度里 —— 标了 8 个词的那天，预置词库只会再补 2 个。
-            发卡时会顺手把发音下下来（Wiktionary 上的真人录音，自由许可），因为复习多半发生在没网的时候；
-            没有录音的词退到系统合成音。两者都是<b>孤立词</b>发音 —— 练得到词形和读音的对应，
-            练不到连读，而连读要靠课程里的真语料。
-          </p>
+          <Hint>
+            每天发 {settings.newPerDay} 个（设置里的「每天新卡数」），课上标的生词也算在这个额度里。
+          </Hint>
 
-          {result && <Hint tone={result.includes('失败') ? 'error' : 'ok'}>{result}</Hint>}
+          <Disclosure summary="怎么选档、声音从哪来">
+            <p className="text-note text-muted">
+              推荐从第 4 档起：前三档合起来约三千词，C1 的人基本全认识 —— 从第 1 档开始等于要答几千道
+              「这个我早就会了」才挖到有用的地方。报了几档就按档号从小到大发，一档发完接着下一档。
+            </p>
+            <p className="text-note text-muted">
+              官方 CEFR 词表只有 A1/A2/B1 且有版权，B2/C1/C2 没有官方表，所以这里不用那套标签 ——
+              免得按 A1/B2 去理解一个别的东西。语料是 OpenSubtitles，偶尔会混进人名。
+            </p>
+            <p className="text-note text-muted">
+              发卡时顺手把发音下下来（Wiktionary 上的真人录音，自由许可），因为复习多半发生在没网的时候；
+              没有录音的词退到系统合成音。两者都是<b>孤立词</b>发音 —— 练得到词形和读音的对应，
+              练不到连读，而连读要靠课程里的真语料。
+            </p>
+          </Disclosure>
+
+          {result && <Hint tone={result.includes('失败') ? 'danger' : 'ok'}>{result}</Hint>}
         </div>
       )}
     </Section>

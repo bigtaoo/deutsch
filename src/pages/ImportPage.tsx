@@ -10,7 +10,7 @@ import { readAudioDuration } from '@/audio/player';
 import { segmentSentences } from '@/lesson/segment';
 import { navigate } from '@/app/router';
 import { useAlignStore } from '@/state/useAlignStore';
-import { Banner, Button, Hint, Section, formatBytes, formatTime } from '@/components/ui';
+import { Banner, Button, FilePicker, Hint, Section, field, formatBytes, formatTime } from '@/components/ui';
 
 export function ImportPage() {
   const createLesson = useLessonStore((s) => s.createLesson);
@@ -57,22 +57,22 @@ export function ImportPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold">导入课程</h1>
+      <h1 className="text-title font-semibold">导入课程</h1>
 
       <Section title="基本信息">
         <label className="block space-y-1">
-          <span className="text-sm text-neutral-600">标题（必填）</span>
+          <span className="text-ui text-muted">标题（必填）</span>
           <input
-            className="w-full rounded border border-neutral-300 px-3 py-2"
+            className={`${field} w-full px-3 py-2`}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Alltagsdeutsch: Der deutsche Wald"
           />
         </label>
         <label className="block space-y-1">
-          <span className="text-sm text-neutral-600">来源 URL（选填）</span>
+          <span className="text-ui text-muted">来源 URL（选填）</span>
           <input
-            className="w-full rounded border border-neutral-300 px-3 py-2"
+            className={`${field} w-full px-3 py-2`}
             value={sourceUrl}
             onChange={(e) => setSourceUrl(e.target.value)}
             placeholder="https://learngerman.dw.com/de/..."
@@ -84,34 +84,35 @@ export function ImportPage() {
         title="Manuskript"
         aside={
           previewCount !== null ? (
-            <span className="text-sm text-neutral-500">自动切分约 {previewCount} 句</span>
+            <span className="text-ui text-muted">自动切分约 {previewCount} 句</span>
           ) : null
         }
       >
         <textarea
-          className="h-72 w-full rounded border border-neutral-300 p-3 font-mono text-sm leading-relaxed"
+          className={`${field} h-72 w-full p-3 font-mono leading-relaxed`}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onBlur={() => setPreviewCount(text.trim() ? segmentSentences(text).length : null)}
           placeholder="把 Manuskript 粘贴到这里…"
         />
-        <Hint>{text.length} 字符。切句结果保存后还能逐句合并/拆分（FR-2.3），不必现在就完美。</Hint>
+        <Hint>{text.length} 字符。切句结果保存后还能逐句合并、拆分，不必现在就完美。</Hint>
       </Section>
 
-      <Section title="音频（选填，可后补）">
-        <input
-          type="file"
-          accept="audio/*"
-          className="text-sm"
-          onChange={(e) => void pickAudio(e.target.files?.[0])}
-        />
+      <Section title="音频（选填）">
+        <FilePicker accept="audio/*" onPick={(file) => void pickAudio(file)}>
+          选音频文件…
+        </FilePicker>
         {audio && (
           <Hint tone="ok">
             {audio.file.name} · {formatBytes(audio.file.size)} · 时长 {formatTime(audio.duration, 0)}
           </Hint>
         )}
-        {audioError && <Banner tone="error">{audioError}</Banner>}
-        {!audio && !audioError && <Hint>没有音频也能先保存课程，之后在「素材」里补上。</Hint>}
+        {audioError && (
+          <Banner tone="danger" title="这个音频文件读不出来">
+            <p>{audioError}</p>
+          </Banner>
+        )}
+        {!audio && !audioError && <Hint>没有音频也能先保存课程，之后回来补上。</Hint>}
       </Section>
 
       <div className="flex gap-2">

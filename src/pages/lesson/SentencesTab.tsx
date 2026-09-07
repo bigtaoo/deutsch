@@ -15,7 +15,7 @@ import {
   setExcludedFirstN,
   splitSentence,
 } from '@/lesson/sentences';
-import { Banner, Button, Hint } from '@/components/ui';
+import { Banner, Button, Hint, Note, field } from '@/components/ui';
 import type { Lesson, LessonCache, Sentence } from '@/types/models';
 
 interface Props {
@@ -66,9 +66,8 @@ export function SentencesTab({ lesson, cache }: Props) {
 
   if (!plainText) {
     return (
-      <Banner tone="warn">
-        本机没有这一课的原文（缓存层已清除或从备份恢复而来）。补齐素材后才能重新切句；
-        已有的句子与标注不受影响。
+      <Banner tone="warn" title="本机没有这一课的原文，切句用不了">
+        <p>缓存层被清过、或者这一课是从备份恢复来的。补齐素材后才能重新切句 —— 已有的句子与标注不受影响。</p>
       </Banner>
     );
   }
@@ -76,7 +75,7 @@ export function SentencesTab({ lesson, cache }: Props) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm text-neutral-600">
+        <span className="text-ui text-muted">
           共 {lesson.sentences.length} 句，其中 {lesson.sentences.length - includedCount} 句已排除
         </span>
         <HeadControl
@@ -99,21 +98,20 @@ export function SentencesTab({ lesson, cache }: Props) {
 
       <Hint>
         「排除」只留给音频里根本没念的段落（手动粘贴时的文末 Glossar）——
-        排除句不参与对齐、跟读和听写。DW 的标题和导语是<strong>会被念出来</strong>的，
-        所以不再自动排除；早先导入的课里那几句仍是排除态，用上面的「开头 N 句 → 恢复」一次撤掉。
+        排除句不参与对齐、跟读和听写。DW 的标题和导语<strong>会被念出来</strong>，别排除它们。
       </Hint>
 
-      {notice && <Banner tone="info">{notice}</Banner>}
+      {notice && <Note tone="accent">{notice}</Note>}
 
-      <ol className="divide-y divide-neutral-200 rounded-lg border border-neutral-200">
+      <ol className="divide-y divide-line overflow-hidden rounded-box border border-line bg-raised">
         {lesson.sentences.map((sentence, i) => {
           const active = activeIndex === sentence.index;
           return (
             <li
               key={sentence.index}
-              className={`flex gap-3 p-3 ${sentence.excluded ? 'bg-neutral-50 text-neutral-400' : ''}`}
+              className={`flex gap-3 p-3 ${sentence.excluded ? 'bg-sunken text-faint' : ''}`}
             >
-              <span className="w-10 shrink-0 pt-1 text-right text-xs text-neutral-400">
+              <span className="w-10 shrink-0 pt-1 text-right text-note text-faint">
                 {numbers.get(sentence.index) ?? '—'}
               </span>
               <div className="min-w-0 flex-1 space-y-2">
@@ -122,13 +120,13 @@ export function SentencesTab({ lesson, cache }: Props) {
                     ref={textareaRef}
                     readOnly
                     autoFocus
-                    className="w-full resize-y rounded border border-sky-400 bg-white p-2 text-sm leading-relaxed"
+                    className="w-full resize-y rounded-ctl border border-accent bg-raised p-2 text-de"
                     rows={Math.max(2, Math.ceil(sentence.text.length / 80))}
                     value={sentence.text}
                   />
                 ) : (
                   <p
-                    className="cursor-text text-sm leading-relaxed"
+                    className="cursor-text text-de"
                     onClick={() => {
                       setActiveIndex(sentence.index);
                       setNotice(null);
@@ -190,16 +188,16 @@ export function SentencesTab({ lesson, cache }: Props) {
 function HeadControl({ onSet }: { onSet: (n: number, excluded: boolean) => void }) {
   const [n, setN] = useState(0);
   return (
-    <div className="flex items-center gap-2 text-sm">
-      <span className="text-neutral-600">开头</span>
+    <div className="flex items-center gap-2 text-ui">
+      <span className="text-muted">开头</span>
       <input
         type="number"
         min={0}
         value={n}
         onChange={(e) => setN(Math.max(0, Number(e.target.value) || 0))}
-        className="w-16 rounded border border-neutral-300 px-2 py-1"
+        className={`${field} w-16 px-2 py-1`}
       />
-      <span className="text-neutral-600">句</span>
+      <span className="text-muted">句</span>
       <Button disabled={n === 0} onClick={() => onSet(n, false)}>
         恢复
       </Button>
@@ -214,16 +212,16 @@ function HeadControl({ onSet }: { onSet: (n: number, excluded: boolean) => void 
 function ExcludeTailControl({ onExclude }: { onExclude: (n: number) => void }) {
   const [n, setN] = useState(0);
   return (
-    <div className="flex items-center gap-2 text-sm">
-      <span className="text-neutral-600">批量排除文末</span>
+    <div className="flex items-center gap-2 text-ui">
+      <span className="text-muted">批量排除文末</span>
       <input
         type="number"
         min={0}
         value={n}
         onChange={(e) => setN(Math.max(0, Number(e.target.value) || 0))}
-        className="w-16 rounded border border-neutral-300 px-2 py-1"
+        className={`${field} w-16 px-2 py-1`}
       />
-      <span className="text-neutral-600">句</span>
+      <span className="text-muted">句</span>
       <Button disabled={n === 0} onClick={() => onExclude(n)}>
         执行
       </Button>
@@ -257,10 +255,10 @@ function ResegmentPanel({
   }
 
   return (
-    <div className="space-y-3 rounded-lg border border-neutral-300 p-4">
+    <div className="space-y-3 rounded-box border border-line-strong p-4">
       <h3 className="font-semibold">重新编辑原文并重新切句</h3>
       <textarea
-        className="h-64 w-full rounded border border-neutral-300 p-3 font-mono text-sm"
+        className={`${field} h-64 w-full p-3 font-mono`}
         value={draft}
         onChange={(e) => { setDraft(e.target.value); setPreview(null); }}
       />
@@ -285,21 +283,21 @@ function ResegmentPanel({
       </div>
 
       {preview && (
-        <div className="space-y-2 text-sm">
+        <div className="space-y-2 text-ui">
           <p>
             新文稿切出 {preview.sentences.length} 句，其中 {preview.carriedOver.size} 句沿用了原有标注。
           </p>
           {preview.orphaned.length > 0 ? (
-            <Banner tone="warn">
-              下面 {preview.orphaned.length} 句带着标注，但在新文稿里找不到对应句子，确认后其时间戳与挖空将被丢弃：
-              <ul className="mt-2 list-disc space-y-1 pl-5">
+            <Banner tone="warn" title={`确认后会丢掉 ${preview.orphaned.length} 句的标注`}>
+              <p>这些句子带着时间戳与挖空，但在新文稿里找不到对应句子：</p>
+              <ul className="list-disc space-y-1 pl-5">
                 {preview.orphaned.map((s) => (
                   <li key={s.index}>{s.text}</li>
                 ))}
               </ul>
             </Banner>
           ) : (
-            <Banner tone="ok">没有标注会丢失。</Banner>
+            <Note tone="ok">没有标注会丢失。</Note>
           )}
         </div>
       )}
