@@ -178,3 +178,31 @@ describe('mergeSettings（§0 变更 28：整体 last-write-wins）', () => {
     expect(result.summary.settingsUpdated).toBe(false);
   });
 });
+
+describe('mergeBackup：学习记录（FR-18）', () => {
+  const base = { lessons: [] as Lesson[], vocab: [] as VocabEntry[] };
+
+  it('不是 last-write-wins，而是逐格取 max —— 两台设备的时长都保住', () => {
+    const result = mergeBackup(
+      { ...base, studyLog: { days: { '2026-09-15': { a: 900 } }, updatedAt: 9 } },
+      { ...base, studyLog: { days: { '2026-09-15': { b: 420 } }, updatedAt: 1 } },
+    );
+    // 本地的 updatedAt 更大，但远端那一格照样合进来了
+    expect(result.studyLog?.days['2026-09-15']).toEqual({ a: 900, b: 420 });
+    expect(result.summary.studyUpdated).toBe(true);
+  });
+
+  it('老备份文件没有这一项时，本机那份原样留着', () => {
+    const local = { days: { '2026-09-15': { a: 900 } }, updatedAt: 9 };
+    const result = mergeBackup({ ...base, studyLog: local }, { ...base });
+    expect(result.studyLog).toEqual(local);
+    expect(result.summary.studyUpdated).toBe(false);
+  });
+
+  it('空设备导入带记录的备份 —— 整份收下', () => {
+    const incoming = { days: { '2026-09-15': { a: 900 } }, updatedAt: 9 };
+    const result = mergeBackup({ ...base }, { ...base, studyLog: incoming });
+    expect(result.studyLog).toEqual(incoming);
+    expect(result.summary.studyUpdated).toBe(true);
+  });
+});

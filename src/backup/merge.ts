@@ -6,6 +6,7 @@
 // - Settings：**整体** last-write-wins，比 updatedAt（2026-09-02 新增，§0 变更 28）。
 // - 只在本地和导入都存在的 id 上比较；只在一侧存在的 id 直接采用那一侧的版本。
 
+import { mergeStudyLogs, type StudyLog } from '@/study/log';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import type { MergeResult, MergeSummary } from './types';
 
@@ -103,8 +104,8 @@ export function mergeSettings(local: Settings, incoming: Settings): { merged: Se
 }
 
 export function mergeBackup(
-  local: { lessons: Lesson[]; vocab: VocabEntry[]; settings?: Settings },
-  incoming: { lessons: Lesson[]; vocab: VocabEntry[]; settings?: Settings },
+  local: { lessons: Lesson[]; vocab: VocabEntry[]; settings?: Settings; studyLog?: StudyLog },
+  incoming: { lessons: Lesson[]; vocab: VocabEntry[]; settings?: Settings; studyLog?: StudyLog },
 ): MergeResult {
   const summary = emptySummary();
   const { merged: lessons } = mergeLessons(local.lessons, incoming.lessons, summary);
@@ -121,5 +122,17 @@ export function mergeBackup(
     summary.settingsUpdated = Boolean(incoming.settings && !local.settings);
   }
 
-  return { lessons, vocab, settings, summary };
+  // 学习记录（FR-18）：不是 last-write-wins，而是逐格取 max —— 两台设备各占各的格子，
+  // 「谁更新」在这份数据上没有意义（study/log.ts 文件头）。
+  let studyLog: StudyLog | undefined;
+  if (local.studyLog && incoming.studyLog) {
+    const result = mergeStudyLogs(local.studyLog, incoming.studyLog);
+    studyLog = result.merged;
+    summary.studyUpdated = result.changed;
+  } else {
+    studyLog = incoming.studyLog ?? local.studyLog;
+    summary.studyUpdated = Boolean(incoming.studyLog && !local.studyLog);
+  }
+
+  return { lessons, vocab, settings, studyLog, summary };
 }

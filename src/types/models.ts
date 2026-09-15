@@ -181,6 +181,12 @@ export interface Settings {
   enrolledBands: number[];
   /** FR-16.5：内置词典查不到时，允许联网查 de.wiktionary 补齐。默认开。 */
   onlineDictFallback: boolean;
+  /**
+   * FR-18.4：印在分享图上的名字。**没设过就是 undefined**，那时用同步账号的名字 ——
+   * 不给它一个默认值（比如 ''）是因为「没设过」和「特意留空」要分得开：
+   * 后者的意思是「图上别印我的名字」，而那是一个合理的选择。
+   */
+  displayName?: string;
   lastBackupAt?: number; // 备份提醒（FR-11.4 / FR-11.12）
   /**
    * 最后一次改动设置的时间。**设置整体同步之后才需要它**（§0 变更 28）：

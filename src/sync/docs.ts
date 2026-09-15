@@ -2,6 +2,7 @@
 //   vocab        —— 全部生词，一次全量。FSRS 状态不可重建，是整个应用最要命的数据。
 //   lesson:<id>  —— 单课的标注层。按课分片，改一课不用重推全部。
 //   settings     —— 设置，整体一份（2026-09-02 起，§0 变更 28）。
+//   study        —— 学习记录（FR-18），逐日 × 逐设备的秒数。一次全量，几 KB。
 //
 // **设置以前不同步**，理由是「对齐档位、跟读间隔这些跟机器走，跨设备覆盖只会互相打架」。
 // 那条理由被推翻了：用户要求「除了音频和原始文稿，其他都备份和同步」，而且细看之下
@@ -19,6 +20,7 @@ import { syncFetch, SyncApiError } from './client';
 
 export const VOCAB_DOC_ID = 'vocab';
 export const SETTINGS_DOC_ID = 'settings';
+export const STUDY_DOC_ID = 'study';
 
 export function lessonDocId(lessonId: string): string {
   return `lesson:${lessonId}`;

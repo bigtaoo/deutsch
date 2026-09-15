@@ -12,6 +12,7 @@ export type Route =
   | { name: 'vocab' }
   | { name: 'review' }
   | { name: 'cache' }
+  | { name: 'record' }
   | { name: 'settings' };
 
 /**
@@ -57,6 +58,8 @@ function parse(hash: string): Route {
       return { name: 'review' };
     case 'cache':
       return { name: 'cache' };
+    case 'record':
+      return { name: 'record' };
     case 'settings':
       return { name: 'settings' };
     case 'lesson': {

@@ -37,6 +37,7 @@ const ACTIVITIES: Activity[] = [
 const DRAWER: Array<{ label: string; route: Route; note: string }> = [
   { label: '来源', route: { name: 'sources' }, note: '从 DW 拉列表、回填旧刊、补齐素材' },
   { label: '素材', route: { name: 'cache' }, note: '本机音频用量与清理' },
+  { label: '记录', route: { name: 'record' }, note: '学习时长、连续天数与分享图' },
   { label: '设置', route: { name: 'settings' }, note: '账号与同步、备份、词典、对齐后端' },
 ];
 

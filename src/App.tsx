@@ -4,6 +4,9 @@ import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useSyncStore } from '@/state/useSyncStore';
+import { connectStudyClock, useStudyStore } from '@/state/useStudyStore';
+import { attachStudyClockListeners, studyClock } from '@/study/tracker';
+import { isPracticeRoute } from '@/study/surface';
 import { setSyncHooks, startSyncAutoRetry, syncNow } from '@/sync/trigger';
 import { audioPlayer } from '@/audio/player';
 import { hideNativeSplash } from '@/platform/native';
@@ -17,6 +20,7 @@ import { SourcesPage } from '@/pages/SourcesPage';
 import { VocabPage } from '@/pages/VocabPage';
 import { ReviewPage } from '@/pages/ReviewPage';
 import { CachePage } from '@/pages/CachePage';
+import { RecordPage } from '@/pages/RecordPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 
 function App() {
@@ -30,6 +34,7 @@ function App() {
       useLessonStore.getState().load(),
       useVocabStore.getState().load(),
       useSyncStore.getState().hydrate(),
+      useStudyStore.getState().load(),
     ]);
     // 原生壳的启动图等这四张表读完再关（capacitor.config.ts 里 launchAutoHide: false）。
     // allSettled 而不是 all：某张表读挂了也得关，否则用户对着启动图干等。
@@ -57,16 +62,29 @@ function App() {
         void useLessonStore.getState().load();
         void useVocabStore.getState().load();
         void useSettingsStore.getState().load();
+        void useStudyStore.getState().load();
       },
       onSessionExpired: () => useSyncStore.getState().markSessionExpired(),
     });
     const stopRetry = startSyncAutoRetry();
 
+    // FR-18：学习计时。监听挂在 window 上（全局，与路由无关），
+    // 「现在算不算在练」由下面那个 effect 按路由开关。
+    connectStudyClock();
+    const stopClockListeners = attachStudyClockListeners();
+
     return () => {
       stopRetry();
+      stopClockListeners();
       audioPlayer.unload();
     };
   }, []);
+
+  // FR-18.1：进出练习界面就是开表与停表。停表时计时器会把攒着的秒数立刻落库 ——
+  // 所以从跟读页走到记录页，那一页看到的就是刚刚练完的数。
+  useEffect(() => {
+    studyClock.setActive(isPracticeRoute(route));
+  }, [route.name, route.name === 'lesson' ? route.tab : '']);
 
   return (
     <div className="min-h-dvh">
@@ -84,6 +102,7 @@ function App() {
         {route.name === 'vocab' && <VocabPage />}
         {route.name === 'review' && <ReviewPage />}
         {route.name === 'cache' && <CachePage />}
+        {route.name === 'record' && <RecordPage />}
         {route.name === 'settings' && <SettingsPage />}
       </main>
 

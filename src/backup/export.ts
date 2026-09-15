@@ -4,6 +4,7 @@
 import { getAllLessons } from '@/db/lessons';
 import { getAllVocabEntries } from '@/db/vocab';
 import { getSettings } from '@/db/meta';
+import { getStudyLog } from '@/study/log';
 import type { BackupFile } from './types';
 
 export const BACKUP_WARNING =
@@ -13,10 +14,11 @@ export const BACKUP_FORMAT_VERSION = 1 as const;
 
 /** 读取当前 DB 状态，构造一份可写入磁盘的备份对象。纯 I/O，无副作用之外的副作用。 */
 export async function buildBackupJson(): Promise<BackupFile> {
-  const [lessons, vocab, settings] = await Promise.all([
+  const [lessons, vocab, settings, studyLog] = await Promise.all([
     getAllLessons(),
     getAllVocabEntries(),
     getSettings(),
+    getStudyLog(),
   ]);
 
   return {
@@ -26,6 +28,7 @@ export async function buildBackupJson(): Promise<BackupFile> {
     lessons,
     vocab,
     settings,
+    studyLog,
   };
 }
 

@@ -9,6 +9,7 @@
 import { getAllLessons, putLesson } from '@/db/lessons';
 import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
 import { getSettings, putSettings } from '@/db/meta';
+import { getStudyLog, putStudyLog } from '@/study/log';
 import { buildBackupJson } from './export';
 import { mergeBackup } from './merge';
 import type { BackupFile, MergeResult } from './types';
@@ -19,18 +20,25 @@ export interface PreparedImport {
 }
 
 export async function prepareImport(incoming: BackupFile): Promise<PreparedImport> {
-  const [safetySnapshot, localLessons, localVocab, localSettings] = await Promise.all([
-    buildBackupJson(),
-    getAllLessons(),
-    getAllVocabEntries(),
-    getSettings(),
-  ]);
+  const [safetySnapshot, localLessons, localVocab, localSettings, localStudyLog] =
+    await Promise.all([
+      buildBackupJson(),
+      getAllLessons(),
+      getAllVocabEntries(),
+      getSettings(),
+      getStudyLog(),
+    ]);
 
   // 设置也参与合并（§0 变更 28）。**这以前是个缺口**：备份文件里一直带着 settings，
   // 但导入这条路从来不读它 —— 也就是说「换设备恢复」会把设置默默留在默认值上。
   const result = mergeBackup(
-    { lessons: localLessons, vocab: localVocab, settings: localSettings },
-    { lessons: incoming.lessons, vocab: incoming.vocab, settings: incoming.settings },
+    { lessons: localLessons, vocab: localVocab, settings: localSettings, studyLog: localStudyLog },
+    {
+      lessons: incoming.lessons,
+      vocab: incoming.vocab,
+      settings: incoming.settings,
+      studyLog: incoming.studyLog,
+    },
   );
 
   return { safetySnapshot, result };
@@ -43,6 +51,7 @@ export async function commitImport(result: MergeResult): Promise<void> {
     // 只在导入的那份真的赢了时才写 —— 否则每次导入都会白改一次 updatedAt，
     // 而那个字段正是同步比新旧的键。
     ...(result.settings && result.summary.settingsUpdated ? [putSettings(result.settings)] : []),
+    ...(result.studyLog && result.summary.studyUpdated ? [putStudyLog(result.studyLog)] : []),
   ]);
 }
 

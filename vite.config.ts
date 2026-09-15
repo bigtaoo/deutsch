@@ -57,7 +57,11 @@ export default defineConfig(({ mode }) => {
           // 学习数据在 IndexedDB 里，Service Worker 本来也碰不到；真正的风险是
           // 顺手把 DW 的 mp3 或 GitHub API 的响应缓存进来 —— 前者会让缓存层出现第二份副本
           // 且绕过 FR-3.8 的清除，后者会让备份读到过期的 sha。所以不配任何 runtimeCaching。
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          //
+          // webp 是 FR-18 的六张分享底图（约 1.2MB）。**故意预缓存**：
+          // 「练完一课在地铁里把今天的记录发出去」是这个功能的典型场景，
+          // 而底图拉不下来时那张图会退化成一块渐变。原生壳里它们本来就在包里。
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webp}'],
           navigateFallback: '/index.html',
           cleanupOutdatedCaches: true,
           // 200MB 的对齐权重（public/models/，npm run stage:align）不在 globPatterns 里，

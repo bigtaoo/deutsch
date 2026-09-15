@@ -7,12 +7,12 @@
 import { getMeta, putMeta } from '@/db/meta';
 import { generateId } from '@/lib/id';
 
-export type QueuedPushKind = 'vocab' | 'lesson' | 'lesson-delete' | 'settings';
+export type QueuedPushKind = 'vocab' | 'lesson' | 'lesson-delete' | 'settings' | 'study';
 
 export interface QueuedPush {
   id: string;
   kind: QueuedPushKind;
-  /** vocab / settings 推送忽略此字段；lesson 推送时是 Lesson.id，用于同一课多次入队时去重取最新一条 */
+  /** vocab / settings / study 推送忽略此字段；lesson 推送时是 Lesson.id，用于同一课多次入队时去重取最新一条 */
   lessonId?: string;
   enqueuedAt: number;
 }

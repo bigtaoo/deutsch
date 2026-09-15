@@ -5,6 +5,7 @@
 //   scheduleLessonSync(id)  —— 标注/挖空变更后调用，30s 去抖（FR-11.7）
 //   syncVocabNow()          —— 每次复习会话结束调用，不去抖（FR-11.6，不可重建的数据不过夜）
 //   scheduleSettingsSync()  —— 改过设置后调用，5s 去抖（§0 变更 28）
+//   scheduleStudySync()     —— 学习记录落库后调用，60s 去抖（FR-18.3）
 //   syncLessonDeletion(id)  —— 本地删掉一课，远端也删掉
 //   drainSyncQueue()        —— 网络恢复、回前台或启动时调用，把排队的补推出去（FR-11.10）
 //
@@ -22,11 +23,13 @@ import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
 import { META_KEYS } from '@/db/schema';
 import { debounceByKey } from '@/lib/debounce';
 import { mergeSettings, mergeVocabEntries } from '@/backup/merge';
+import { getStudyLog, mergeStudyLogs, putStudyLog, type StudyLog } from '@/study/log';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { SyncAuthError, SyncConflictError } from './client';
 import { getSessionToken } from './session';
 import {
   SETTINGS_DOC_ID,
+  STUDY_DOC_ID,
   VOCAB_DOC_ID,
   deleteRemoteDoc,
   forgetVersion,
@@ -45,6 +48,12 @@ const LESSON_DEBOUNCE_MS = 30_000;
  * 30 秒在这里只会让「在桌面上改完、马上拿起手机」拿不到新值。
  */
 const SETTINGS_DEBOUNCE_MS = 5_000;
+/**
+ * 学习记录的去抖最长：这份数据每 30 秒就落一次库（study/tracker.ts 的 FLUSH_SECONDS），
+ * 而它跨设备的用途只有「合起来算连续天数」—— 差几分钟没有任何影响。
+ * 真正要紧的那两个时刻（离开练习界面、切后台）本来就各会落一次库、各带一次去抖。
+ */
+const STUDY_DEBOUNCE_MS = 60_000;
 
 export interface SyncHooks {
   /** UI 用来刷新 pendingCount / lastSuccessAt / 错误横幅。 */
@@ -154,6 +163,35 @@ async function pushSettings(token: string): Promise<void> {
   await recordSuccess();
 }
 
+// ── 学习记录（FR-18）─────────────────────────────────────────────────────
+
+async function pushStudyLog(token: string): Promise<void> {
+  const local = await getStudyLog();
+  const docId = STUDY_DOC_ID;
+
+  try {
+    const { version } = await putRemoteDoc(token, docId, await getKnownVersion(docId), local);
+    await rememberVersion(docId, version);
+  } catch (err) {
+    if (!(err instanceof SyncConflictError)) throw err;
+
+    // 409：另一台设备也在学。这份数据的合并是**逐格取 max**，没有「谁赢」这回事 ——
+    // 两台设备各占各的格子，合并之后两边的时长都还在（study/log.ts 文件头）。
+    const remote = (err.body ?? null) as StudyLog | null;
+    const { merged, changed } = remote
+      ? mergeStudyLogs(local, remote)
+      : { merged: local, changed: false };
+    if (changed) {
+      await putStudyLog(merged);
+      hooks.onRemoteDataWritten?.();
+    }
+    const { version } = await putRemoteDoc(token, docId, err.version, merged);
+    await rememberVersion(docId, version);
+  }
+
+  await recordSuccess();
+}
+
 // ── 统一的「试一次，失败就进队列」外壳 ───────────────────────────────────
 
 async function runPush(item: QueuedPush): Promise<void> {
@@ -161,6 +199,7 @@ async function runPush(item: QueuedPush): Promise<void> {
   if (!token) throw new SyncAuthError('尚未登录');
   if (item.kind === 'vocab') return pushVocab(token);
   if (item.kind === 'settings') return pushSettings(token);
+  if (item.kind === 'study') return pushStudyLog(token);
   if (!item.lessonId) return;
   if (item.kind === 'lesson') return pushLesson(token, item.lessonId);
   return pushLessonDeletion(token, item.lessonId);
@@ -198,6 +237,8 @@ const settingsDebouncer = debounceByKey<'settings', []>(
   SETTINGS_DEBOUNCE_MS,
 );
 
+const studyDebouncer = debounceByKey<'study', []>(() => attempt('study'), STUDY_DEBOUNCE_MS);
+
 /** FR-11.7：该课导入完成、或标注/挖空变更后触发，去抖 30s。 */
 export function scheduleLessonSync(lessonId: string): void {
   lessonDebouncer.schedule(lessonId);
@@ -208,10 +249,16 @@ export function scheduleSettingsSync(): void {
   settingsDebouncer.schedule('settings');
 }
 
+/** FR-18.3：学习记录落库后触发，去抖 60s。 */
+export function scheduleStudySync(): void {
+  studyDebouncer.schedule('study');
+}
+
 /** 测试与卸载用；正常流程让去抖自然到期。 */
 export function cancelScheduledSyncs(): void {
   lessonDebouncer.cancelAll();
   settingsDebouncer.cancelAll();
+  studyDebouncer.cancelAll();
 }
 
 /** FR-11.6：每次复习会话结束触发。 */
@@ -270,6 +317,7 @@ export async function pullSyncNow(options: { force?: boolean } = {}): Promise<Pu
       // 本地赢了的那部分要回推，否则它一直停在这台设备上（拉不等于远端赢，§2.4）。
       if (result.vocabNeedsPush) await attempt('vocab');
       if (result.settingsNeedsPush) await attempt('settings');
+      if (result.studyNeedsPush) await attempt('study');
       for (const lessonId of result.lessonsNeedPush) await attempt('lesson', lessonId);
 
       // 单个文档坏掉不让整次拉取失败（pull.ts），但也不能一声不响。

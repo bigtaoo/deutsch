@@ -67,4 +67,8 @@ export const META_KEYS = {
   syncVersions: 'syncVersions', // { [docId]: version } —— 本地记的远端版本号，做乐观并发
   syncStatus: 'syncStatus', // FR-11.9：常驻可见的状态
   storagePersistence: 'storagePersistence', // FR-11.16
+  studyLog: 'studyLog', // FR-18：逐日学习时长（标注层，备份 + 同步）
+  // FR-18：这台设备在 studyLog 里占的那一格的名字。**不备份、不同步** ——
+  // 恢复到新设备上就该是一个新名字，否则两台设备会抢同一格（见 study/log.ts）。
+  studyDevice: 'studyDevice',
 } as const;

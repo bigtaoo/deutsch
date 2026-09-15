@@ -15,8 +15,9 @@
 //
 // ── 合并 ──
 // 走 §2.4 的同一套规则，一个字都不改：课程整体比 updatedAt，生词逐条比 fsrs.last_review，
-// 设置整体比 updatedAt。「拉」不等于「远端赢」——本地更新时保留本地，并且回推一次
-// （`vocabNeedsPush` / `settingsNeedsPush`），否则本地那份新数据会一直停在这台设备上。
+// 设置整体比 updatedAt，学习记录逐格取 max（FR-18，见 study/log.ts）。
+// 「拉」不等于「远端赢」——本地更新时保留本地，并且回推一次（`vocabNeedsPush` /
+// `settingsNeedsPush` / `studyNeedsPush`），否则本地那份新数据会一直停在这台设备上。
 //
 // ── 刻意不做的一件事：跟随删除 ──
 // 「本地记着版本号、远端列表里却没有」是「另一台设备删了这一课」的强信号，
@@ -28,11 +29,19 @@ import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
 import { getMeta, getSettings, putMeta, putSettings } from '@/db/meta';
 import { META_KEYS } from '@/db/schema';
 import { mergeSettings, mergeVocabEntries } from '@/backup/merge';
+import {
+  getStudyLog,
+  mergeStudyLogs,
+  putStudyLog,
+  studyLogNeedsPush,
+  type StudyLog,
+} from '@/study/log';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { SyncAuthError } from './client';
 import { getSessionToken } from './session';
 import {
   SETTINGS_DOC_ID,
+  STUDY_DOC_ID,
   VOCAB_DOC_ID,
   getKnownVersion,
   getRemoteDoc,
@@ -51,9 +60,12 @@ export interface PullResult {
   /** 远端赢了、写进本地库的生词条数 */
   vocabWritten: number;
   settingsWritten: boolean;
+  /** 远端那份学习记录里有本地没有的格子，已经合进本地库（FR-18） */
+  studyWritten: boolean;
   /** 本地有远端没有（或本地更新）的生词 —— 调用方该回推一次 */
   vocabNeedsPush: boolean;
   settingsNeedsPush: boolean;
+  studyNeedsPush: boolean;
   /** 本地这几课比远端新（多半是两台设备的钟差）—— 同样要回推，否则它们停在这台设备上 */
   lessonsNeedPush: string[];
   /** 单个文档坏掉不该让整次拉取失败：坏的记在这里，好的照常写入。 */
@@ -67,8 +79,10 @@ function emptyResult(): PullResult {
     lessonsWritten: 0,
     vocabWritten: 0,
     settingsWritten: false,
+    studyWritten: false,
     vocabNeedsPush: false,
     settingsNeedsPush: false,
+    studyNeedsPush: false,
     lessonsNeedPush: [],
     failures: [],
   };
@@ -76,7 +90,12 @@ function emptyResult(): PullResult {
 
 /** 有没有真的往本地库里写进东西 —— 调用方据此决定要不要让内存里的 store 重读。 */
 export function pullWroteData(result: PullResult): boolean {
-  return result.lessonsWritten > 0 || result.vocabWritten > 0 || result.settingsWritten;
+  return (
+    result.lessonsWritten > 0 ||
+    result.vocabWritten > 0 ||
+    result.settingsWritten ||
+    result.studyWritten
+  );
 }
 
 /**
@@ -105,6 +124,8 @@ export async function pullFromServer(options: { force?: boolean } = {}): Promise
         await pullVocab(token, meta.id, result);
       } else if (meta.id === SETTINGS_DOC_ID) {
         await pullSettings(token, meta.id, result);
+      } else if (meta.id === STUDY_DOC_ID) {
+        await pullStudy(token, meta.id, result);
       } else if (lessonIdFromDocId(meta.id) !== null) {
         await pullLesson(token, meta.id, result);
       }
@@ -172,6 +193,24 @@ async function pullSettings(token: string, docId: string, result: PullResult): P
   if (!changed && (local.updatedAt ?? 0) > (doc.body.updatedAt ?? 0)) {
     result.settingsNeedsPush = true;
   }
+}
+
+async function pullStudy(token: string, docId: string, result: PullResult): Promise<void> {
+  const doc = await getRemoteDoc<StudyLog>(token, docId);
+  if (!doc) return;
+  result.fetched++;
+
+  const local = await getStudyLog();
+  const remote = doc.body?.days ? doc.body : { days: {}, updatedAt: 0 };
+  const { merged, changed } = mergeStudyLogs(local, remote);
+  if (changed) {
+    await putStudyLog(merged);
+    result.studyWritten = true;
+  }
+  await rememberVersion(docId, doc.version);
+  // 「远端赢了」和「本地要回推」在这份数据上**可以同时成立** —— 两台设备各占各的
+  // 格子，合并之后双方都拿到了对方没有的东西。所以这里不是 else if。
+  if (studyLogNeedsPush(local, remote)) result.studyNeedsPush = true;
 }
 
 // ── 「上次拉取」的时刻 ────────────────────────────────────────────────────
