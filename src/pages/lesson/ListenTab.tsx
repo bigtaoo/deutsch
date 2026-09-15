@@ -22,11 +22,18 @@ import { Button, Hint } from '@/components/ui';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import type { Lesson, LessonCache } from '@/types/models';
 
+// 手动滚动之后多久自动回到当前句。短到不用等，长到够看完上面那一两句。
+const RESUME_MS = 5000;
+
 export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
   const audio = useLessonAudio(lesson.id);
   const time = useAudioTime();
   const [expanded, setExpanded] = useState(false);
   const [follow, setFollow] = useState(true);
+  // 手动滚动只是**暂时**接管（往回看一眼上文），不是关掉跟随 —— 停手几秒就自己回到当前句。
+  // 旧行为是滚一下就永久变成「不跟随」，而这件事每次展开文本时几乎必然发生一次：
+  // 于是默认值写着 true，用户看到的却总是「不跟随」，文本从此一动不动。
+  const [paused, setPaused] = useState(false);
   const { settings, update } = useSettingsStore();
 
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
@@ -51,23 +58,40 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
     else rows.current.delete(index);
   }, []);
 
-  // 当前行滚到视野中间。滚的是这个框自己（offsetTop 相对它，因为它是 relative），
+  // 当前行停在框高的三分之一处，不是正中间：往下要留出还没读到的那几句（眼睛往前扫着走），
+  // 往上只需要留得下刚读过的一两句。滚的是这个框自己（offsetTop 相对它，因为它是 relative），
   // 不用 scrollIntoView —— 那个会把整页也一起带着跳。
   const scrolled = useRef<number | null>(null);
   useEffect(() => {
-    if (!follow || activeLine === null || scrolled.current === activeLine) return;
+    if (!follow || paused || activeLine === null || scrolled.current === activeLine) return;
     scrolled.current = activeLine;
     const box = boxRef.current;
     const row = rows.current.get(activeLine);
     if (!box || !row) return;
-    box.scrollTo({ top: row.offsetTop - box.clientHeight / 2 + row.clientHeight / 2, behavior: 'smooth' });
-  }, [follow, activeLine]);
+    box.scrollTo({ top: row.offsetTop - box.clientHeight / 3 + row.clientHeight / 2, behavior: 'smooth' });
+  }, [follow, paused, activeLine]);
 
   // 展开、或者重新打开跟随时，忘掉「已经滚过哪一行」—— 否则当前行正好等于上次滚到的那行时
   // 会一动不动，用户点了「跟随播放」却看不见任何反应。
-  const restart = () => {
+  const resume = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restart = useCallback(() => {
     scrolled.current = null;
-  };
+    if (resume.current) clearTimeout(resume.current);
+    resume.current = null;
+    setPaused(false);
+  }, []);
+
+  // 自己滚了一下：暂停跟随，停手 RESUME_MS 之后再把当前句拉回来。
+  const pause = useCallback(() => {
+    setPaused(true);
+    if (resume.current) clearTimeout(resume.current);
+    resume.current = setTimeout(() => {
+      resume.current = null;
+      scrolled.current = null; // 这几秒里可能还是同一句，不清掉就不会滚回去
+      setPaused(false);
+    }, RESUME_MS);
+  }, []);
+  useEffect(() => () => void (resume.current && clearTimeout(resume.current)), []);
 
   const seek = useCallback((to: number) => {
     // 点了词就是要听它，所以直接播。这是一次用户手势，iOS 上也放得出来（§3.2）。
@@ -118,8 +142,8 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
       {expanded && (
         <ol
           ref={boxRef}
-          onWheel={() => setFollow(false)}
-          onTouchMove={() => setFollow(false)}
+          onWheel={pause}
+          onTouchMove={pause}
           className="relative max-h-[60vh] space-y-1 overflow-y-auto rounded-box border border-line bg-raised p-3"
         >
           {lines.map((line) => (
