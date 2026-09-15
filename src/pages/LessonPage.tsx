@@ -25,10 +25,12 @@ import { hasTimings } from '@/align/apply';
 import { SentencesTab } from './lesson/SentencesTab';
 import { AlignStatus } from './lesson/AlignStatus';
 import { ListenTab } from './lesson/ListenTab';
+import { TranslationTab } from './lesson/TranslationTab';
 import { ShadowingTab } from './lesson/ShadowingTab';
 import { StudyTab } from './lesson/StudyTab';
 import { DictationTab } from './lesson/DictationTab';
 import { Banner, Button, EmptyState, FilePicker, Hint, Note, formatBytes, formatTime } from '@/components/ui';
+import { translationCoverage } from '@/lesson/translation';
 import type { Lesson } from '@/types/models';
 
 /** 每个 tab 的前提。缺了它点进去只会看到一句「这里还不能用」。 */
@@ -68,7 +70,9 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
   if (!loaded) return <EmptyState>加载中…</EmptyState>;
   if (!lesson) return <EmptyState>找不到这一课。它可能已被删除。</EmptyState>;
 
-  const onSentences = tab === 'sentences';
+  // 「⋯」里的两页（切句 / 译文）都是一次性的准备工作：不占 tab 条，进去给一条明确的返回。
+  const aside = tab === 'sentences' || tab === 'translation';
+  const coverage = translationCoverage(lesson.sentences);
 
   return (
     <div className="space-y-4">
@@ -90,11 +94,23 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
               <a
                 href={href({ name: 'lesson', lessonId, tab: 'sentences' })}
                 onClick={() => menuRef.current?.removeAttribute('open')}
-                className={`block px-4 py-3 text-ui hover:bg-sunken ${onSentences ? 'text-accent' : 'text-ink'}`}
+                className={`block px-4 py-3 text-ui hover:bg-sunken ${tab === 'sentences' ? 'text-accent' : 'text-ink'}`}
               >
                 切句
                 <span className="block text-note text-faint">
                   {lesson.sentences.length} 句 · 合并、拆分、排除非朗读段落
+                </span>
+              </a>
+              <a
+                href={href({ name: 'lesson', lessonId, tab: 'translation' })}
+                onClick={() => menuRef.current?.removeAttribute('open')}
+                className={`block px-4 py-3 text-ui hover:bg-sunken ${tab === 'translation' ? 'text-accent' : 'text-ink'}`}
+              >
+                译文
+                <span className="block text-note text-faint">
+                  {coverage.translated > 0
+                    ? `${coverage.total} 句里 ${coverage.translated} 句有中文`
+                    : '在外面译好，按编号粘回来'}
                 </span>
               </a>
               <a
@@ -118,13 +134,19 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
 
       {isMaterialMissing(cache) && <MissingMaterialBanner lessonId={lessonId} />}
 
-      {onSentences ? (
-        // 切句不在 tab 条里（它是一次性的准备工作），所以给一条明确的返回。
+      {aside ? (
+        // 这两页不在 tab 条里（都是一次性的准备工作），所以给一条明确的返回。
         <>
           <Note tone="accent" action={<a className="underline" href={href({ name: 'lesson', lessonId, tab: 'listen' })}>回到通听</a>}>
-            切句是一次性的准备工作 —— 改完就不用再来。
+            {tab === 'sentences'
+              ? '切句是一次性的准备工作 —— 改完就不用再来。'
+              : '译文贴一次就够 —— 之后它跟着这一课同步到别的设备。'}
           </Note>
-          <SentencesTab lesson={lesson} cache={cache} />
+          {tab === 'sentences' ? (
+            <SentencesTab lesson={lesson} cache={cache} />
+          ) : (
+            <TranslationTab lesson={lesson} cache={cache} />
+          )}
         </>
       ) : (
         <>

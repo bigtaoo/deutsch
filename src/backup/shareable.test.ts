@@ -43,6 +43,7 @@ function buildLesson(): Lesson {
         blanks: [],
       },
     ],
+    notes: '要点：这篇讲的是一个学德语的小机器人。',
     createdAt: 0,
     updatedAt: 0,
   };
@@ -55,6 +56,18 @@ describe('toShareablePackage', () => {
     expect(json).not.toContain('"text"');
     expect(json).not.toContain('"contextSentence"');
     expect(json).not.toContain('"surface"');
+  });
+
+  it('FR-19 / FR-20：译文和笔记一个字都不进包', () => {
+    const lesson = buildLesson();
+    lesson.sentences[0] = { ...lesson.sentences[0], translation: '小机器人每天早上背十个新词。' };
+    const json = JSON.stringify(toShareablePackage(lesson));
+
+    // 译文是原文的衍生作品，笔记里大概率抄着原句 —— §3.1 那条线对它们同样成立。
+    expect(json).not.toContain('"translation"');
+    expect(json).not.toContain('小机器人');
+    expect(json).not.toContain('"notes"');
+    expect(json).not.toContain('要点：');
   });
 
   it('never includes any 8+ consecutive-word run of the original sentence', () => {

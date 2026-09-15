@@ -74,6 +74,12 @@ function concatWords(
   return merged.length > 0 ? merged : undefined;
 }
 
+/** FR-19：合并时把两段译文接起来。两边都没有就是 undefined。 */
+function joinTranslations(left: string | undefined, right: string | undefined): string | undefined {
+  const merged = [left, right].filter(Boolean).join('');
+  return merged.length > 0 ? merged : undefined;
+}
+
 /**
  * FR-2.3：与下一句合并。文本从 plainText 原样切出来，
  * 这样两句之间的空格/换行按原文保留，charStart/charEnd 也仍然对得上原文。
@@ -97,6 +103,9 @@ export function mergeWithNext(
     endTimeExplicit: second.endTime !== undefined ? second.endTimeExplicit : first.endTimeExplicit,
     blanks: [...first.blanks, ...shiftBlanks(second.blanks, second.charStart - first.charStart)],
     words: concatWords(first.words, shiftWords(second.words, second.charStart - first.charStart)),
+    // FR-19：两句的译文接起来。中间不加空格 —— 各自都带着句末标点，
+    // 接起来正是这个合并句该有的意思；只有一边有译文时就用那一边。
+    translation: joinTranslations(first.translation, second.translation),
     markedDifficult: first.markedDifficult || second.markedDifficult,
     // 只有两句都被排除，合并后才还是排除 —— 否则会把正文悄悄吞掉。
     excluded: first.excluded && second.excluded,
@@ -176,6 +185,11 @@ export function splitSentence(
     startTime: undefined,
     blanks: rightBlanks,
     words: rightWords?.length ? rightWords : undefined,
+    // FR-19：译文切不开（中文语序和德语对不上，没有可靠的切点），整份留给左半句，
+    // 右半句空着。留着比丢掉好：丢掉要整篇重贴一次，而留下的那份至多是「多说了
+    // 后半句的意思」—— 它不会指向别的句子，跟 blanks 横跨切点那种静默错位不是一回事。
+    // 右半句没有译文这件事在译文页的覆盖率上看得见（「48 句里 47 句有译文」）。
+    translation: undefined,
   };
 
   const next = [...sentences.slice(0, index), left, right, ...sentences.slice(index + 1)];

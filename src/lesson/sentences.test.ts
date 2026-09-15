@@ -190,4 +190,17 @@ describe('排除', () => {
     expect(numbers.has(1)).toBe(false);
     expect(numbers.get(2)).toBe(2);
   });
+  it('FR-19：合并时两段译文接起来，拆分时整份留给左半句', () => {
+    const sentences = build();
+    sentences[0] = { ...sentences[0], translation: '森林很大。' };
+    sentences[1] = { ...sentences[1], translation: '树很老。' };
+
+    const merged = mergeWithNext(sentences, 0, PLAIN).sentences;
+    expect(merged[0].translation).toBe('森林很大。树很老。');
+
+    const split = splitSentence(merged, 0, 'Der Wald ist groß.'.length, PLAIN);
+    expect(split.sentences[0].translation).toBe('森林很大。树很老。');
+    // 右半句空着，而不是跟着左半句复制一份 —— 复制出来的那份说的是左半句的事
+    expect(split.sentences[1].translation).toBeUndefined();
+  });
 });

@@ -9,6 +9,7 @@ import { useLessonAudio } from '@/audio/useLessonAudio';
 import { ShadowingMachine, type PlayRange, type ShadowingState } from '@/audio/shadowing';
 import { annotatedSentences, resolveRange } from '@/lesson/timing';
 import { displayNumbers } from '@/lesson/sentences';
+import { hasTranslations } from '@/lesson/translation';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { PLAYBACK_RATES, RateSwitch } from '@/components/AudioBar';
@@ -36,6 +37,8 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
   useEffect(() => () => machine.stop(), [machine]);
 
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
+  // FR-19.4：跟读时的中文和通听共用一个开关 —— 「今天想不想看中文」不该在两页上各答一次。
+  const translated = useMemo(() => hasTranslations(lesson.sentences), [lesson.sentences]);
 
   const queue = useMemo<PlayRange[]>(() => {
     return annotatedSentences(lesson.sentences)
@@ -155,6 +158,7 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
         state={state}
         sentenceIndex={currentSentenceIndex}
         displayNumber={currentSentenceIndex !== null ? numbers.get(currentSentenceIndex) : undefined}
+        showTranslation={translated && settings.showTranslation}
       />
 
       <div className="flex flex-wrap items-center gap-2">
@@ -184,6 +188,14 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
           rate={settings.playbackRate}
           onChange={(r) => void update({ playbackRate: r })}
         />
+        {translated && (
+          <Button
+            variant={settings.showTranslation ? 'primary' : 'ghost'}
+            onClick={() => void update({ showTranslation: !settings.showTranslation })}
+          >
+            {settings.showTranslation ? '显示中文' : '不显示中文'}
+          </Button>
+        )}
       </div>
 
       <Hint>
@@ -199,11 +211,13 @@ function CurrentSentenceCard({
   state,
   sentenceIndex,
   displayNumber,
+  showTranslation,
 }: {
   lesson: Lesson;
   state: ShadowingState;
   sentenceIndex: number | null;
   displayNumber: number | undefined;
+  showTranslation: boolean;
 }) {
   const sentence = sentenceIndex !== null ? lesson.sentences[sentenceIndex] : undefined;
 
@@ -221,6 +235,9 @@ function CurrentSentenceCard({
             </span>
           </div>
           <p className="text-de">{sentence.text}</p>
+          {showTranslation && sentence.translation && (
+            <p className="whitespace-pre-line text-ui text-muted">{sentence.translation}</p>
+          )}
         </>
       ) : (
         <p className="text-faint">按「开始跟读」进入循环。</p>

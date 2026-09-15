@@ -17,7 +17,9 @@ import { audioPlayer } from '@/audio/player';
 import { reviewQueue } from '@/align/apply';
 import { activeAt, buildKaraoke, type KaraokeLine } from '@/lesson/karaoke';
 import { displayNumbers } from '@/lesson/sentences';
+import { hasTranslations } from '@/lesson/translation';
 import { AudioBar } from '@/components/AudioBar';
+import { LessonNotes } from './LessonNotes';
 import { Button, Hint } from '@/components/ui';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import type { Lesson, LessonCache } from '@/types/models';
@@ -45,6 +47,10 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
     () => new Set(reviewQueue(lesson.sentences).map((s) => s.index)),
     [lesson.sentences],
   );
+  // FR-19.4：有译文才有这个开关 —— 没贴过译文的课上摆一个永远没反应的按钮，
+  // 只会让人以为功能坏了。
+  const translated = useMemo(() => hasTranslations(lesson.sentences), [lesson.sentences]);
+  const showTranslation = translated && settings.showTranslation;
 
   const active = expanded ? activeAt(lines, time) : null;
   const activeLine = active?.line ?? null;
@@ -120,6 +126,14 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
             >
               {follow ? '跟随播放' : '不跟随'}
             </Button>
+            {translated && (
+              <Button
+                variant={settings.showTranslation ? 'primary' : 'ghost'}
+                onClick={() => void update({ showTranslation: !settings.showTranslation })}
+              >
+                {settings.showTranslation ? '显示中文' : '不显示中文'}
+              </Button>
+            )}
             <Hint>点任意一个词从那里开始播。</Hint>
           </>
         ) : (
@@ -151,6 +165,7 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
               key={line.index}
               line={line}
               number={numbers.get(line.index)}
+              translation={showTranslation ? lesson.sentences[line.index]?.translation : undefined}
               lowConfidence={lowConfidence.has(line.index)}
               state={line.index === activeLine ? (active!.inside ? 'current' : 'just-read') : 'idle'}
               activeToken={line.index === activeLine ? active!.token : null}
@@ -160,6 +175,9 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
           ))}
         </ol>
       )}
+
+      {/* FR-20：笔记在通听页底部 —— 写和读是同一件事的两半，不该分到两个地方去。 */}
+      <LessonNotes lesson={lesson} />
 
       <AudioBar
         audio={audio}
@@ -182,6 +200,7 @@ const LINE_STATE: Record<LineState, string> = {
 const Line = memo(function Line({
   line,
   number,
+  translation,
   lowConfidence,
   state,
   activeToken,
@@ -190,6 +209,8 @@ const Line = memo(function Line({
 }: {
   line: KaraokeLine;
   number: number | undefined;
+  /** FR-19：中文。开关关着时传 undefined —— memo 因此在关着的时候完全不受译文影响。 */
+  translation: string | undefined;
   lowConfidence: boolean;
   state: LineState;
   activeToken: number | null;
@@ -232,6 +253,12 @@ const Line = memo(function Line({
             {token.text}
           </span>
         ),
+      )}
+      {/* 中文比德语小一级、颜色更淡：德语是主角，这一行只是垫在下面的拐杖（§12.4）。 */}
+      {translation && (
+        <span className="mt-0.5 block whitespace-pre-line pl-6 text-ui text-muted">
+          {translation}
+        </span>
       )}
     </li>
   );

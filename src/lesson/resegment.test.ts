@@ -97,4 +97,17 @@ describe('carryGlossary（FR-14 候选词跟着重切搬迁）', () => {
     const { carriedOver } = resegment(annotated(), segmentSentences(OLD));
     expect(carryGlossary(undefined, carriedOver)).toBeUndefined();
   });
+  it('FR-19：译文跟着搬，只有译文的旧句也算「值得抢救」', () => {
+    const previous = createSentences(segmentSentences(OLD)).map((s, i) =>
+      i === 2 ? { ...s, translation: '下雨了。' } : s,
+    );
+    const next = 'Ein neuer Satz voran. ' + OLD;
+    const { sentences, orphaned } = resegment(previous, segmentSentences(next));
+    expect(sentences[3].translation).toBe('下雨了。');
+    expect(orphaned).toEqual([]);
+
+    // 那一句在新文稿里没了：它只有译文，但照样要报出来让人确认
+    const dropped = resegment(previous, segmentSentences('Der Wald ist groß.'));
+    expect(dropped.orphaned.map((s) => s.translation)).toContain('下雨了。');
+  });
 });

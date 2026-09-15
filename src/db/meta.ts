@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // FR-17.4：默认**不报名任何档**。报名会一路发卡几个月，不该由默认值替用户决定。
   enrolledBands: [],
   onlineDictFallback: true,
+  // FR-19.4：译文默认不显示 —— 和「文本默认折叠」同一个理由，先用耳朵。
+  showTranslation: false,
 };
 
 export async function getSettings(): Promise<Settings> {

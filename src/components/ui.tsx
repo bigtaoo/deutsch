@@ -12,6 +12,7 @@
 // 那个必填的 `title` 是故意的：它逼作者把事情在一行里说完。设计理由留在代码注释
 // 和 SPEC 里 —— 界面上只留「怎么办」。
 
+import { useState } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
@@ -166,9 +167,22 @@ export function Chip({
  *
  * 用原生 `<details>`：键盘可达、无 JS 状态、打印时能全部展开。
  */
-export function Disclosure({ summary, children }: { summary: string; children: ReactNode }) {
+export function Disclosure({
+  summary,
+  defaultOpen = false,
+  children,
+}: {
+  summary: string;
+  /** 有内容时默认展开（FR-20 的笔记）—— 折叠块用来收纳，不是用来藏东西。 */
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  // 展开状态放进 state 并由 onToggle 回写：`open` 这个 prop 是受控的，
+  // 而这个组件会出现在**每帧重渲染**的页面上（通听播放时走 rAF）——
+  // 直接把 defaultOpen 钉在 open 上，用户折叠之后下一帧就会被强行弹开。
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <details className="group">
+    <details className="group" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="cursor-pointer list-none text-note text-muted hover:text-ink">
         <span className="inline-block w-3 transition-transform group-open:rotate-90">›</span> {summary}
       </summary>

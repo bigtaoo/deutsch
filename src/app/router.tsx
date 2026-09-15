@@ -21,11 +21,19 @@ export type Route =
  * 「标注」那一页在 FR-15 之后去掉了：时间戳一律由自动对齐给（导入后立刻跑），
  * 状态与重跑入口在课程页头部的 AlignStatus 里。
  */
-export const LESSON_TABS = ['listen', 'shadowing', 'study', 'dictation', 'sentences'] as const;
+export const LESSON_TABS = [
+  'listen',
+  'shadowing',
+  'study',
+  'dictation',
+  'sentences',
+  'translation',
+] as const;
 export type LessonTab = (typeof LESSON_TABS)[number];
 
 /**
- * 每天要走的那四个。`sentences` **不在其中** —— 它是一次性的准备工作（§12.6）。
+ * 每天要走的那四个。`sentences` 和 `translation` **不在其中** —— 两者都是一次性的
+ * 准备工作（§12.6 / §12.9），收在课程页头部的「⋯」里。
  *
  * 以前五个 tab 平级排着，而且落地页就是 `sentences`：打开一课的默认状态是
  * 「编辑模式」，不是「能练」。切句现在收进课程页头部的「⋯」，深链接照旧有效。
@@ -40,6 +48,7 @@ export const LESSON_TAB_LABELS: Record<LessonTab, string> = {
   study: '学词',
   dictation: '听写',
   sentences: '切句',
+  translation: '译文',
 };
 
 function parse(hash: string): Route {

@@ -17,7 +17,8 @@ export function hasAnnotations(sentence: Sentence): boolean {
     sentence.startTime !== undefined ||
     sentence.blanks.length > 0 ||
     sentence.markedDifficult ||
-    sentence.excluded
+    sentence.excluded ||
+    sentence.translation !== undefined
   );
 }
 
@@ -71,6 +72,9 @@ export function resegment(previous: Sentence[], segments: RawSegment[]): Resegme
       // 词级时间戳同理：它是句内 offset，文本一致（归一化后）就依然对得上。
       // 漏了它，重新切句会静默把逐词高亮降级成整句高亮，而界面上看不出为什么。
       words: old.words,
+      // FR-19：译文跟着搬。认领的前提就是归一化后文本一致，所以那份译文说的
+      // 仍然是这一句。漏了它，改一个错字重切一遍就把整篇译文静默清空了。
+      translation: old.translation,
       blanks: old.blanks,
       markedDifficult: old.markedDifficult,
       excluded: old.excluded,
