@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { applyTimings, hasTimings, isManual, LEAD_SECONDS, reviewQueue, TAIL_SECONDS } from './apply';
+import {
+  applyTimings,
+  flaggedByConfidence,
+  hasTimings,
+  isManual,
+  LEAD_SECONDS,
+  reviewQueue,
+  TAIL_SECONDS,
+  toggleTimingChecked,
+} from './apply';
 import type { Sentence } from '@/types/models';
 import type { SentenceTiming, WordTiming } from './target';
 
@@ -211,6 +220,56 @@ describe('reviewQueue', () => {
 
   it('从未对齐过的句子不进队列', () => {
     expect(reviewQueue([sentence(0)])).toHaveLength(0);
+  });
+});
+
+// FR-15.19：低置信句大多其实是对的（置信度低的原因是台标音乐、英语借词、被丢掉的数字），
+// 所以「听过了，是对的」必须能记下来，否则那条提示永远消不掉。
+describe('timingChecked（人耳确认过，FR-15.19）', () => {
+  const withConfidences = (values: number[]) =>
+    applyTimings(
+      values.map((_, i) => sentence(i)),
+      values.map((c, i) => timing(i, i * 2, i * 2 + 1, c)),
+      {},
+    ).sentences;
+
+  it('确认过的句子从待校对队列里消失', () => {
+    const aligned = withConfidences([-3.5, -2.8, -1, -1, -1]);
+    expect(reviewQueue(aligned).map((s) => s.index)).toEqual([0, 1]);
+
+    const checked = toggleTimingChecked(aligned, 0);
+    expect(reviewQueue(checked).map((s) => s.index)).toEqual([1]);
+  });
+
+  it('确认不影响阈值 —— 剩下那几句的判定不跟着漂', () => {
+    const aligned = withConfidences([-3.5, -2.8, -1, -1, -1]);
+    const before = flaggedByConfidence(aligned).map((s) => s.index);
+    const checked = toggleTimingChecked(toggleTimingChecked(aligned, 0), 1);
+    expect(flaggedByConfidence(checked).map((s) => s.index)).toEqual(before);
+    expect(reviewQueue(checked)).toHaveLength(0);
+  });
+
+  it('再点一下撤销', () => {
+    const aligned = withConfidences([-3.5, -1, -1, -1, -1]);
+    const checked = toggleTimingChecked(aligned, 0);
+    expect(checked[0].timingChecked).toBe(true);
+    const undone = toggleTimingChecked(checked, 0);
+    expect(undone[0].timingChecked).toBeUndefined();
+    expect(reviewQueue(undone).map((s) => s.index)).toEqual([0]);
+  });
+
+  it('重新对齐把确认清掉 —— 确认过的是那一版边界，不是这个句子', () => {
+    const aligned = withConfidences([-3.5, -1, -1, -1, -1]);
+    const checked = toggleTimingChecked(aligned, 0);
+    const again = applyTimings(checked, [timing(0, 9, 10, -3.5)], {}).sentences;
+    expect(again[0].timingChecked).toBeUndefined();
+    expect(again[0].startTime).toBeCloseTo(9 - LEAD_SECONDS);
+  });
+
+  it('人工标注过、被 applyTimings 跳过的句子，确认不会被清掉', () => {
+    const manual = sentence(0, { startTime: 5, endTime: 6, timingSource: 'manual', timingChecked: true });
+    const { sentences } = applyTimings([manual], [timing(0, 1, 2)], {});
+    expect(sentences[0].timingChecked).toBe(true);
   });
 });
 

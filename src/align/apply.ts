@@ -126,6 +126,9 @@ export function applyTimings(
       // 这一句没算出词级时间戳（纯数字句、罗马化后无 token）时保持 undefined，
       // 而不是留着上一轮的旧数组 —— 那会让 UI 拿旧边界去高亮新时间戳。
       words: wordsBySentence.get(sentence.index),
+      // FR-15.19：人耳确认过的是**上一版边界**，不是这个句子。重对之后那份确认作废，
+      // 否则换了后端/改了切句之后，一句真的漂掉了的句子会带着「我核对过」静默躺在那儿。
+      timingChecked: undefined,
     };
   });
 
@@ -175,7 +178,35 @@ export const REVIEW_MARGIN = 0.5;
 export const REVIEW_FLOOR = -2.5;
 
 /**
- * 待校对队列：自动对齐过、且明显比本课典型水平差的句子，最差的排最前。
+ * 阈值判定出的低置信句，最差的排最前 —— **包括已经人耳确认过的那几句**。
+ *
+ * 通听用它决定「哪几行的行号可点」：确认过的行号不再带 `?`，但仍然要能点第二下撤销
+ * （点错了一下就得能退回去，否则那一下是不可逆的）。
+ *
+ * 阈值算在全部自动对齐句上，与确认无关（见 `Sentence.timingChecked` 的注释）。
+ */
+export function flaggedByConfidence(sentences: Sentence[]): Sentence[] {
+  const auto = sentences.filter(
+    (s) => !s.excluded && s.timingSource === 'auto' && s.timingConfidence !== undefined,
+  );
+  if (auto.length === 0) return [];
+
+  const sorted = [...auto].sort((a, b) => a.timingConfidence! - b.timingConfidence!);
+  const median = sorted[Math.floor(sorted.length / 2)].timingConfidence!;
+  const threshold = Math.max(median - REVIEW_MARGIN, REVIEW_FLOOR);
+
+  return sorted.filter((s) => s.timingConfidence! < threshold);
+}
+
+/**
+ * 待校对队列：低置信且**还没人耳确认过**的句子，最差的排最前。
+ *
+ * 「已确认」这一档是 FR-15.19 加的：实测低置信句里大多数其实是对的（置信度低的原因是
+ * 台标音乐、英语借词、被丢掉的数字，而不是边界真的漂了），而一个永远挂着「6 句置信度偏低」
+ * 的头部和一条永远在的提示，教会人的只有忽略它 —— 这正是 §12.3 那条「一切正常就静默」
+ * 要求的反面。确认之后这一课能真的回到静默。
+ *
+ * 排序和阈值都没动，动的只有「什么时候从队列里消失」。
  *
  * 用**相对**基准（本课中位数）而不是绝对阈值，是因为绝对值随模型和语言漂：
  * MMS-FA 吃的是罗马化文本（丢了 ä/ö/ü 的区分、丢了数字标点），每 token
@@ -187,14 +218,17 @@ export const REVIEW_FLOOR = -2.5;
  * 它们都表现为这一句的平均 log-prob 明显掉下来。实测最差那三句正是这几类。
  */
 export function reviewQueue(sentences: Sentence[]): Sentence[] {
-  const auto = sentences.filter(
-    (s) => !s.excluded && s.timingSource === 'auto' && s.timingConfidence !== undefined,
+  return flaggedByConfidence(sentences).filter((s) => !s.timingChecked);
+}
+
+/**
+ * FR-15.19：把第 `index` 句的「听过了，边界是对的」标记翻过来。纯函数，落库在调用方。
+ *
+ * 只对 `flaggedByConfidence` 报出来的句子有意义，但这里不拦：界面上只有那几行有按钮，
+ * 而多一层校验会让「重对之后阈值变了」这种时序问题变成一次静默的无操作。
+ */
+export function toggleTimingChecked(sentences: Sentence[], index: number): Sentence[] {
+  return sentences.map((s) =>
+    s.index === index ? { ...s, timingChecked: s.timingChecked ? undefined : true } : s,
   );
-  if (auto.length === 0) return [];
-
-  const sorted = [...auto].sort((a, b) => a.timingConfidence! - b.timingConfidence!);
-  const median = sorted[Math.floor(sorted.length / 2)].timingConfidence!;
-  const threshold = Math.max(median - REVIEW_MARGIN, REVIEW_FLOOR);
-
-  return sorted.filter((s) => s.timingConfidence! < threshold);
 }

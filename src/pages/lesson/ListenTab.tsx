@@ -14,7 +14,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLessonAudio, useAudioTime } from '@/audio/useLessonAudio';
 import { audioPlayer } from '@/audio/player';
-import { reviewQueue } from '@/align/apply';
+import { flaggedByConfidence, toggleTimingChecked } from '@/align/apply';
 import { activeAt, buildKaraoke, type KaraokeLine } from '@/lesson/karaoke';
 import { displayNumbers } from '@/lesson/sentences';
 import { hasTranslations } from '@/lesson/translation';
@@ -22,6 +22,7 @@ import { AudioBar } from '@/components/AudioBar';
 import { LessonNotes } from './LessonNotes';
 import { Button, Hint } from '@/components/ui';
 import { useSettingsStore } from '@/state/useSettingsStore';
+import { useLessonStore } from '@/state/useLessonStore';
 import type { Lesson, LessonCache } from '@/types/models';
 
 // 手动滚动之后多久自动回到当前句。短到不用等，长到够看完上面那一两句。
@@ -43,10 +44,15 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
     () => buildKaraoke(lesson.sentences, lesson.audioDuration),
     [lesson.sentences, lesson.audioDuration],
   );
-  const lowConfidence = useMemo(
-    () => new Set(reviewQueue(lesson.sentences).map((s) => s.index)),
-    [lesson.sentences],
-  );
+  // FR-15.19：低置信句分两档 —— 还没核对的行号带 `?`，核对过的只剩一个普通行号
+  // （但仍然可点，点第二下撤销）。两档都从同一个阈值判定来，确认与否不影响阈值。
+  const flagged = useMemo(() => {
+    const all = flaggedByConfidence(lesson.sentences);
+    return {
+      pending: new Set(all.filter((s) => !s.timingChecked).map((s) => s.index)),
+      checked: new Set(all.filter((s) => s.timingChecked).map((s) => s.index)),
+    };
+  }, [lesson.sentences]);
   // FR-19.4：有译文才有这个开关 —— 没贴过译文的课上摆一个永远没反应的按钮，
   // 只会让人以为功能坏了。
   const translated = useMemo(() => hasTranslations(lesson.sentences), [lesson.sentences]);
@@ -104,6 +110,19 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
     void audioPlayer.play(to);
   }, []);
 
+  // FR-15.19：「这一句我听过了，起点是对的」。走 patchLesson 而不是 saveLesson，
+  // 因为这一页每帧都在重渲染，闭包里的 lesson 随时是上一帧的快照（见 useLessonStore 的注释）。
+  const patchLesson = useLessonStore((s) => s.patchLesson);
+  const confirm = useCallback(
+    (index: number) => {
+      void patchLesson(lesson.id, (current) => ({
+        ...current,
+        sentences: toggleTimingChecked(current.sentences, index),
+      }));
+    },
+    [patchLesson, lesson.id],
+  );
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -146,6 +165,16 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
           这一课还没有时间戳，展开只是一份文本，不会有任何高亮。去页头点「自动对齐」。
         </Hint>
       )}
+      {/*
+        FR-15.19：这句话必须在这里说，不能只靠行号旁边那个 `?` 的 title ——
+        手机上没有 hover，而「点一下行号」是这个界面上唯一不能靠看出来的操作。
+      */}
+      {expanded && flagged.pending.size > 0 && (
+        <Hint tone="warn">
+          行号带 ? 的 {flagged.pending.size} 句对齐置信度偏低。听着起点对就点一下行号消掉它，
+          点第二下撤销；全部消掉之后课程页头部也不再提。
+        </Hint>
+      )}
       {expanded && timedLines > 0 && wordLines === 0 && (
         <Hint tone="warn">
           只有句级时间戳，所以只能整句高亮 —— 这一课多半是在词级时间戳搬进标注层之前对齐的。
@@ -166,7 +195,14 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
               line={line}
               number={numbers.get(line.index)}
               translation={showTranslation ? lesson.sentences[line.index]?.translation : undefined}
-              lowConfidence={lowConfidence.has(line.index)}
+              check={
+                flagged.pending.has(line.index)
+                  ? 'pending'
+                  : flagged.checked.has(line.index)
+                    ? 'checked'
+                    : null
+              }
+              onConfirm={confirm}
               state={line.index === activeLine ? (active!.inside ? 'current' : 'just-read') : 'idle'}
               activeToken={line.index === activeLine ? active!.token : null}
               onSeek={seek}
@@ -197,69 +233,104 @@ const LINE_STATE: Record<LineState, string> = {
   idle: 'text-muted',
 };
 
+/**
+ * FR-15.19：行号那一格的三种样子。
+ *
+ * `pending` 是警示色带 `?`，`checked` 与从未被标出来的句子**长得一模一样**
+ * —— §12.3 那条「一切正常就静默」：确认过的句子不该在界面上留下一个勾，
+ * 否则消掉 `?` 只是把一种常驻标记换成另一种。可撤销这件事靠热区还在（点第二下），
+ * 不靠画出来。
+ */
+type Check = 'pending' | 'checked' | null;
+
 const Line = memo(function Line({
   line,
   number,
   translation,
-  lowConfidence,
+  check,
   state,
   activeToken,
   onSeek,
+  onConfirm,
   register,
 }: {
   line: KaraokeLine;
   number: number | undefined;
   /** FR-19：中文。开关关着时传 undefined —— memo 因此在关着的时候完全不受译文影响。 */
   translation: string | undefined;
-  lowConfidence: boolean;
+  check: Check;
   state: LineState;
   activeToken: number | null;
   onSeek: (to: number) => void;
+  onConfirm: (index: number) => void;
   register: (index: number, el: HTMLLIElement | null) => void;
 }) {
+  // 行号那一格：被阈值标出来过的句子是按钮（点一下确认/撤销），其余是纯文字。
+  // 整行改成 flex 两列（行号 / 文本）是为了让那个按钮不进文本的行盒 ——
+  // 触屏上 `index.css` 给 button 的 44px 最小热区会撑高它所在的行盒，
+  // 而它作为独立的 flex 项只影响整行高度，不会把句子的第一行推下去。
+  // `items-baseline` 让 13px 的行号仍然坐在 19px 德语正文的基线上（和改造前一样）。
+  const gutter = `w-8 shrink-0 tnum text-note ${check === 'pending' ? 'text-warn' : 'text-faint'}`;
+
   return (
     <li
       ref={(el) => register(line.index, el)}
-      className={`rounded-ctl px-2 py-1 text-de ${
+      className={`flex items-baseline rounded-ctl px-2 py-1 text-de ${
         line.excluded ? 'text-faint' : LINE_STATE[state]
       }`}
     >
-      <span
-        className={`mr-2 text-note ${lowConfidence ? 'text-warn' : 'text-faint'}`}
-        title={lowConfidence ? '这一句的对齐置信度明显低于本课水平，值得亲耳确认' : undefined}
-      >
-        {number ?? '—'}
-        {lowConfidence && '?'}
-      </span>
-      {line.tokens.map((token, i) =>
-        token.time ? (
-          <span
-            key={token.start}
-            onClick={() => onSeek(token.time!.start)}
-            className={`cursor-pointer rounded-ctl hover:bg-sunken ${
-              i === activeToken ? 'bg-warn-soft font-medium' : ''
-            }`}
-          >
-            {token.text}
-          </span>
-        ) : (
-          // 时间戳追不到的部分（标点、空白、没有句级时间戳的整句）不可点也不高亮。
-          // 整句没有时间戳时点句号也没意义 —— 不知道该跳到哪儿。
-          <span
-            key={token.start}
-            onClick={line.range ? () => onSeek(line.range!.start) : undefined}
-            className={line.range ? 'cursor-pointer' : undefined}
-          >
-            {token.text}
-          </span>
-        ),
+      {check ? (
+        <button
+          type="button"
+          onClick={() => onConfirm(line.index)}
+          // display:flex + items-start：触屏上这个按钮有 44px 最小高度，
+          // 默认的垂直居中会把它的基线压到句子基线之下，整句跟着往下掉一截。
+          className={`${gutter} flex items-start justify-start hover:text-ink`}
+          title={
+            check === 'pending'
+              ? '这一句的对齐置信度明显低于本课水平。听着起点对就点一下，? 消掉'
+              : '已确认这一句对齐无误 —— 点一下撤销'
+          }
+          aria-label={
+            check === 'pending' ? `第 ${number} 句：确认对齐无误` : `第 ${number} 句：撤销确认`
+          }
+        >
+          {number ?? '—'}
+          {check === 'pending' && '?'}
+        </button>
+      ) : (
+        <span className={gutter}>{number ?? '—'}</span>
       )}
-      {/* 中文比德语小一级、颜色更淡：德语是主角，这一行只是垫在下面的拐杖（§12.4）。 */}
-      {translation && (
-        <span className="mt-0.5 block whitespace-pre-line pl-6 text-ui text-muted">
-          {translation}
-        </span>
-      )}
+      <div className="min-w-0 flex-1">
+        {line.tokens.map((token, i) =>
+          token.time ? (
+            <span
+              key={token.start}
+              onClick={() => onSeek(token.time!.start)}
+              className={`cursor-pointer rounded-ctl hover:bg-sunken ${
+                i === activeToken ? 'bg-warn-soft font-medium' : ''
+              }`}
+            >
+              {token.text}
+            </span>
+          ) : (
+            // 时间戳追不到的部分（标点、空白、没有句级时间戳的整句）不可点也不高亮。
+            // 整句没有时间戳时点句号也没意义 —— 不知道该跳到哪儿。
+            <span
+              key={token.start}
+              onClick={line.range ? () => onSeek(line.range!.start) : undefined}
+              className={line.range ? 'cursor-pointer' : undefined}
+            >
+              {token.text}
+            </span>
+          ),
+        )}
+        {/* 中文比德语小一级、颜色更淡：德语是主角，这一行只是垫在下面的拐杖（§12.4）。
+            缩进不再靠 pl-6：它已经在行号右边那一列里，自然对齐在编号之后。 */}
+        {translation && (
+          <span className="mt-0.5 block whitespace-pre-line text-ui text-muted">{translation}</span>
+        )}
+      </div>
     </li>
   );
 });

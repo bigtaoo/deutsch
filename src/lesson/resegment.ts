@@ -69,6 +69,10 @@ export function resegment(previous: Sentence[], segments: RawSegment[]): Resegme
       // 重新切句会把「机器给的、还没校过」洗成「看起来人工确认过」—— 静默丢掉待办。
       timingSource: old.timingSource,
       timingConfidence: old.timingConfidence,
+      // FR-15.19 的确认标记同理：认领的前提是归一化后文本一致，时间戳原样搬过来，
+      // 那么「这一版边界我听过」也仍然成立。漏了它，改一个错字重切一遍
+      // 就把已经核对完的几句重新变成待校对。
+      timingChecked: old.timingChecked,
       // 词级时间戳同理：它是句内 offset，文本一致（归一化后）就依然对得上。
       // 漏了它，重新切句会静默把逐词高亮降级成整句高亮，而界面上看不出为什么。
       words: old.words,

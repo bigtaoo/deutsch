@@ -41,6 +41,16 @@ describe('resegment', () => {
     expect(sentences[2].text.slice(r.start, r.end)).toBe('Bäume');
   });
 
+  it('对齐来源、置信度与人耳确认都跟着时间戳搬（FR-15 / FR-15.19）', () => {
+    const old = annotated();
+    old[1] = { ...old[1], timingSource: 'auto', timingConfidence: -2.4, timingChecked: true };
+    const { sentences } = resegment(old, segmentSentences('Ein Satz voran. ' + OLD));
+    expect(sentences[2].timingSource).toBe('auto');
+    expect(sentences[2].timingConfidence).toBe(-2.4);
+    // 漏了这一条，改一个错字重切一遍就把已经核对完的几句重新变成待校对
+    expect(sentences[2].timingChecked).toBe(true);
+  });
+
   it('被改写的句子进 orphaned，等用户确认丢弃', () => {
     const next = 'Der Wald ist groß. Die Bäume sind sehr alt. Es regnet.';
     const { sentences, orphaned } = resegment(annotated(), segmentSentences(next));

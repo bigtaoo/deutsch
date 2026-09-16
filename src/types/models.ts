@@ -69,6 +69,18 @@ export interface Sentence {
   // 该句对齐路径的平均 log-prob（越接近 0 越可信）。只在 timingSource==='auto' 时有意义，
   // 用来把「要人工校对的几句」排到前面。人工改过就清掉。
   timingConfidence?: number;
+  /**
+   * FR-15.19：这一句的低置信度**已经人耳核对过，判定为对的**（通听里点一下行号）。
+   *
+   * 它不是 `timingSource: 'manual'`，这是故意的：那个值的含义是「边界是人给的」，
+   * 会让重新对齐跳过这一句（FR-15.5）。而这里发生的事只是「机器算的这一版我听过，没错」——
+   * 下次重对照旧该重算它，所以 `applyTimings` 写入新时间戳时会把这个标记清掉：
+   * 确认过的是**那一版边界**，不是这个句子永远正确。
+   *
+   * 只影响 `reviewQueue`（待校对队列）的输出，不影响阈值本身 —— 阈值按整课的
+   * 置信度分布算，确认几句不该让剩下那几句的判定跟着漂。
+   */
+  timingChecked?: boolean;
   blanks: Blank[];
   markedDifficult: boolean; // 跟读时跟不上的句子
   excluded: boolean; // 非朗读内容，如 Glossar（FR-1.4）
