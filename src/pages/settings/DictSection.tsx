@@ -96,9 +96,12 @@ export function DictSection() {
           checked={settings.onlineDictFallback}
           onChange={(e) => void update({ onlineDictFallback: e.target.checked })}
         />
-        内置词典查不到时联网查 de.wiktionary
+        联网查 de.wiktionary
       </label>
-      <Hint>直连 Wiktionary，没有任何中转。长尾复合词内置词典覆盖不全，而 Alltagsdeutsch 满篇都是复合词。</Hint>
+      <Hint>
+        直连 Wiktionary，没有任何中转。两处用到它：标记生词时内置词典查不到就联网补（FR-16.5）；
+        生词本的查词面板每次都问一次，补例句、同义词和词源（内置词典只给牌组词带例句）。
+      </Hint>
 
       <p className="text-note text-muted">
         发音缓存：{audio ? `${audio.count} 个词 · ${formatBytes(audio.bytes)}` : '统计中…'}

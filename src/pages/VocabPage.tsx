@@ -2,12 +2,17 @@
 //
 // FR-9.3 的去重降级发生在**新建时**（见 StudyTab 的 MarkPanel），这里只做管理：
 // 编辑、删除、暂停复习、按课程/状态筛选。
+//
+// 页顶还挂着两块「进词」的入口：查词（FR-9.5，课上碰到的词）与预置词库报名（FR-17）。
+// 词条因此有三种来源，列表行必须各说各的 —— 查词加进来的词从来没有过课程，
+// 而 `（课程已删除）` 会让人以为丢了数据。
 
 import { useMemo, useState } from 'react';
 import { href } from '@/app/router';
 import { useLessonStore } from '@/state/useLessonStore';
 import { needsGender, useVocabStore } from '@/state/useVocabStore';
 import { Button, EmptyState, Hint, field } from '@/components/ui';
+import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
 import type { VocabEntry } from '@/types/models';
 
@@ -23,7 +28,13 @@ export function VocabPage() {
   const filtered = useMemo(
     () =>
       entries
-        .filter((e) => (lessonFilter === 'preset' ? Boolean(e.preset) : !lessonFilter || e.lessonId === lessonFilter))
+        .filter((e) =>
+          lessonFilter === 'preset'
+            ? Boolean(e.preset)
+            : lessonFilter === 'lookup'
+              ? Boolean(e.lookup)
+              : !lessonFilter || e.lessonId === lessonFilter,
+        )
         .filter((e) => stateFilter === '' || String(e.fsrs.state) === stateFilter)
         .sort((a, b) => a.fsrs.due - b.fsrs.due),
     [entries, lessonFilter, stateFilter],
@@ -44,6 +55,7 @@ export function VocabPage() {
         >
           <option value="">全部来源</option>
           <option value="preset">预置词库</option>
+          <option value="lookup">查词添加</option>
           {lessons.map((l) => (
             <option key={l.id} value={l.id}>{l.title}</option>
           ))}
@@ -59,6 +71,8 @@ export function VocabPage() {
           ))}
         </select>
       </div>
+
+      <DictLookup />
 
       <PresetPanel />
 
@@ -130,6 +144,8 @@ function Row({
             >
               预置 第{entry.preset.band}档
             </span>
+          ) : entry.lookup ? (
+            <span className="ml-2 rounded-ctl bg-sunken px-1.5 text-note text-muted">查词添加</span>
           ) : (
             !entry.hasTimestamp && (
               <span className="ml-2 rounded-ctl bg-warn-soft px-1.5 text-note text-warn" title="来源句没有时间戳">
@@ -145,6 +161,9 @@ function Row({
             // 预置卡没有出处课程，也没有原句。如实写出来，不要显示「（课程已删除）」
             // —— 那会让人以为丢了数据。
             '预置词库（孤立词发音）'
+          ) : entry.lookup ? (
+            // FR-9.5：查词加进来的词同理 —— 它从来没有过课程，不是课程丢了。
+            '查词添加（孤立词发音）'
           ) : lessonTitle && entry.lessonId ? (
             <a className="hover:underline" href={href({ name: 'lesson', lessonId: entry.lessonId, tab: 'study' })}>
               《{lessonTitle}》

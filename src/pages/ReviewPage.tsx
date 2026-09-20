@@ -281,7 +281,7 @@ function QuizCard({
 
   useEffect(() => {
     let cancelled = false;
-    if (audioStatus !== 'preset-word') return;
+    if (audioStatus !== 'word-only') return;
     setWordSource('loading');
     void (async () => {
       // 先只判**有没有**音源再播：把「查」和「播」并成一步的话，
@@ -305,9 +305,10 @@ function QuizCard({
     };
   }, [entry.id, entry.surface, audioStatus]);
 
-  // 答错时才取例句
+  // 答错时才取例句。`word-only` 这一档就是「没有原句的卡」——
+  // 预置词库与查词加进来的词都在里面，两者都只能靠词典里的例句撑起卡背。
   useEffect(() => {
-    if (phase !== 'revealed' || !entry.preset || examples !== null) return;
+    if (phase !== 'revealed' || audioStatus !== 'word-only' || examples !== null) return;
     let cancelled = false;
     void lookupDict(entry.surface).then((hit) => {
       if (!cancelled) setExamples(hit?.entry.ex ?? []);
@@ -315,7 +316,7 @@ function QuizCard({
     return () => {
       cancelled = true;
     };
-  }, [phase, entry.preset, entry.surface, examples]);
+  }, [phase, audioStatus, entry.surface, examples]);
 
   const choose = (id: string, correct: boolean) => onAnswer(id, correct, Date.now() - startedAt.current);
 
@@ -338,7 +339,7 @@ function QuizCard({
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const noAudio = audioStatus === 'preset-word' && wordSource === 'none';
+  const noAudio = audioStatus === 'word-only' && wordSource === 'none';
 
   return (
     <>
@@ -361,7 +362,7 @@ function QuizCard({
             <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
             <p className="text-note text-faint">听这一句，选出挖掉的那个词</p>
           </div>
-        ) : audioStatus === 'preset-word' ? (
+        ) : audioStatus === 'word-only' ? (
           <div className="flex flex-col items-center gap-2">
             <PlayButton disabled={wordSource === 'loading' || wordSource === 'none'} onClick={() => void playWord()} />
             {noAudio ? (
@@ -545,6 +546,7 @@ function CardBack({
           预置词库 · 口语词频第 {entry.preset.band} 档第 {entry.preset.rank} 名（词频档，不是 CEFR 等级）
         </Hint>
       )}
+      {entry.lookup && <Hint>查词时加进来的词，不来自这里的任何一课</Hint>}
     </div>
   );
 }

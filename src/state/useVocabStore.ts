@@ -79,6 +79,16 @@ interface VocabState {
   attachToExisting: (input: CreateFromSelectionInput & { entryId: string }) => Promise<void>;
 
   /**
+   * FR-9.5：查词面板里的「加入生词本」。
+   *
+   * 与 `createFromSelection` 的区别是**没有句子**：这个词来自课堂、纸上、别的听力材料，
+   * 这个应用里没有它的原句，也就没有挖空可建、没有真语料音频可放。
+   * `dict` 是查词面板已经拿到的那一份（内置或在线），传进来而不是在这里重查 ——
+   * 面板上显示的和落进卡里的必须是同一份，否则用户会看到「查到的和加进去的不一样」。
+   */
+  createFromLookup: (input: { surface: string; dict: DictEntry | null }) => Promise<VocabEntry>;
+
+  /**
    * FR-17.4：把**今天缺的新卡**从已报名的档里补上（惰性激活）。返回真的建出来的条目。
    *
    * 「报名一整档」不等于「建一整档的卡」—— 第 4 档是 3000 个词，那要 60 次
@@ -223,6 +233,33 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     // Q3 记录了这个已知局限：V1 一个词条只挂一个 contextSentence。
   },
 
+  createFromLookup: async ({ surface, dict }) => {
+    const now = Date.now();
+    // 词头用词典给的那一份：查 `Plattformen` 建出来的卡应该是 `Plattform`
+    // —— 卡面要念这个词、卡背要显示 `die Plattform`，而变形没有性也没有复数。
+    const entry: VocabEntry = {
+      id: generateId(),
+      surface: dict?.w ?? surface.trim(),
+      ...(dict ? fieldsFromDict(dict) : {}),
+      // 没有 lessonId / sentenceIndex / contextSentence —— 这个词不来自任何一课。
+      lookup: true,
+      // 与预置卡同理：这里的 false 是如实记账（没有来源句，所以没有时间戳），
+      // 卡面靠 cardAudioStatus 走 'word-only' 那一档说明声音是孤立词发音。
+      hasTimestamp: false,
+      suspended: false,
+      fsrs: newCard(new Date(now)),
+      createdAt: now,
+      updatedAt: now,
+    };
+    await putVocabEntry(entry);
+    set({ entries: [...get().entries, entry] });
+    // FR-17.6 那一条对这里逐字成立：加词是一次必然在线的主动操作（他刚刚查了这个词），
+    // 而复习按 §2.1 是在碎片时间、手机上、很可能没网时做的。所以现在就把发音下下来。
+    // 不 await：卡已经建好了，取发音失败最多是复习时退到合成音（卡面会说明）。
+    void prefetchWordAudio([entry.surface]).catch(() => {});
+    return entry;
+  },
+
   topUpNewCards: async (onProgress) => {
     const { settings } = useSettingsStore.getState();
     // `?? []` 不是多余的：从旧备份恢复出来的 settings 里没有这个字段
@@ -254,7 +291,7 @@ export const useVocabStore = create<VocabState>((set, get) => ({
         // 没有 lessonId / sentenceIndex / contextSentence —— 这张卡不来自任何课程。
         preset: { band: pick.band, rank: pick.r },
         // 预置卡的声音来自 Wiktionary 录音或 TTS，与「来源句有没有时间戳」无关。
-        // 置 false 是如实记账；卡面靠 cardAudioStatus 走 'preset-word' 那一档说明来源。
+        // 置 false 是如实记账；卡面靠 cardAudioStatus 走 'word-only' 那一档说明来源。
         hasTimestamp: false,
         suspended: false,
         fsrs: newCard(new Date(now)),

@@ -84,17 +84,29 @@ export function newCardShortfall(entries: VocabEntry[], opts: Pick<QueueOptions,
 }
 
 /**
+ * 没有来源句的卡：预置词库（FR-17）与查词时直接加进来的词（FR-9.5）。
+ *
+ * 这两种卡在复习页上走同一条路 —— 没有课、没有原句，声音只能是孤立词发音。
+ * 合成一个判据而不是各处写 `e.preset || e.lookup`：漏一处的症状是
+ * 一张卡指着一课不存在的课要你「去重新对齐」。
+ */
+export function isWordCard(entry: VocabEntry): boolean {
+  return Boolean(entry.preset || entry.lookup);
+}
+
+/**
  * FR-10.5：无音频卡要区分原因，给不同出口。
  *
- * `preset-word` 是 FR-17 加的第四种：预置词库的卡没有课、没有原句、也没有真语料音频，
+ * `word-only` 是 FR-17 加的第四种（当时叫 `preset-word`，FR-9.5 之后查词加进来的词
+ * 也走这一档）：这种卡没有课、没有原句、也没有真语料音频，
  * 它的声音来自 Wiktionary 的真人录音或系统 TTS（都是**孤立词**发音）。
  * 单独一档而不是并进 'ok'，是因为 FR-10.5 的要求是「不能静默降级」——
  * 卡面必须说清这是孤立词发音、练不到连读，否则用户会以为自己在练真语料。
  */
-export type CardAudioStatus = 'ok' | 'no-timestamp' | 'no-material' | 'preset-word';
+export type CardAudioStatus = 'ok' | 'no-timestamp' | 'no-material' | 'word-only';
 
 export function cardAudioStatus(entry: VocabEntry, hasMaterial: boolean): CardAudioStatus {
-  if (entry.preset) return 'preset-word';
+  if (isWordCard(entry)) return 'word-only';
   if (!entry.hasTimestamp) return 'no-timestamp';
   if (!hasMaterial) return 'no-material';
   return 'ok';

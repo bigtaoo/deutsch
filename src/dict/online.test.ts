@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseExtract } from './online';
+import { parseExtract, parseOnlineEntry } from './online';
 
 // 固件是 de.wiktionary 的**真实** extract（2026-09-02 取，`prop=extracts&explaintext=1`）。
 // 只保留到影响解析的那几节；例句和译文那一大坨对解析没有作用，删掉免得固件比测试还长。
@@ -152,5 +152,106 @@ describe('parseExtract', () => {
   it('没有德语小节时返回 null，不抛', () => {
     expect(parseExtract('Foo', '== Foo (Englisch) ==\n\n=== Noun ===\n\nBedeutungen:\n[1] a foo')).toBeNull();
     expect(parseExtract('Foo', '')).toBeNull();
+  });
+});
+
+/**
+ * 真实 extract（2026-09-20 取）。为 FR-9.5 的查词面板留的固件：它带着
+ * Komparativ/Superlativ、逗号列表式的 Sinnverwandte/Gegenwörter、
+ * 十几条例句（其中几条是带引号的文学引文），以及 Unterbegriffe / Redewendungen
+ * ——后两段是「看着像内容但不该进任何字段」的东西。
+ * Herkunft 那一大段截短了（原文有五行词源考据），例句留了前六条。
+ */
+const SCHNELL = `
+== schnell (Deutsch) ==
+
+
+=== Adjektiv ===
+
+Worttrennung:
+schnell, Komparativ: schnel·ler, Superlativ: am schnells·ten
+Aussprache:
+IPA: [ʃnɛl]
+Hörbeispiele:  schnell (Info),  schnell (Info)
+Reime: -ɛl
+Bedeutungen:
+[1] eine hohe Geschwindigkeit habend, das Gegenteil von langsam
+[2] nur vergleichsweise wenig Zeit beanspruchend, das Gegenteil von langwierig
+[3] adverbielle Verwendung: wenig Zeit benötigend
+Herkunft:
+althochdeutsch snël → goh, snëlles → goh (in gotisch nicht vorhanden)
+Sinnverwandte Wörter:
+[1, 2] fix, flink, flott, geschwind, hurtig, rapide, rasch, schleunig, unverzüglich, zügig
+[3] eben
+Gegenwörter:
+[1] langsam
+[2] langwierig
+Unterbegriffe:
+[1–3] blitzschnell, rasend, rasant, sekundenschnell
+Beispiele:
+[1] Heute nehme ich den schnelleren Zug.
+[1] „Beim Bodyflying werden Sie durch einen 180 km/h schnellen Luftstrom aufwärts getrieben.“
+[1] Sie ist wirklich schnell, kein anderer schafft soviel an einem Tag.
+[2] Um überzeugen zu können, brauchen wir jetzt schnelle Erfolge!
+[3] Ich will nur noch schnell einen Happen essen.
+[3] „Obergärige Hefen sind zwar empfindlicher als untergärige.“
+Redewendungen:
+schnell wie der Blitz -
+schneller als die Polizei erlaubt -
+`;
+
+describe('parseOnlineEntry（查词面板的那一份）', () => {
+  it('例句、同义词、反义词、词源各归各位', () => {
+    const e = parseOnlineEntry('Zuversicht', ZUVERSICHT)!;
+    expect(e.senses).toHaveLength(1);
+    expect(e.senses[0].ex).toEqual(['Wir gehen mit großer Zuversicht in die Prüfungen.']);
+    expect(e.senses[0].syn).toEqual(['Optimismus']);
+    expect(e.senses[0].origin).toMatch(/^mittelhochdeutsch zuoversiht/);
+    expect(e.senses[0].ant).toEqual([]);
+  });
+
+  it('释义在这个视图里不截到 3 条 —— Mädchen 的 4 条都在', () => {
+    expect(parseOnlineEntry('Mädchen', MAEDCHEN)!.senses[0].de).toHaveLength(4);
+    // DictEntry 那个视图才截：它要变成 VocabEntry.meaning 的一行
+    expect(parseExtract('Mädchen', MAEDCHEN)!.s[0].de).toHaveLength(3);
+  });
+
+  it('动词的 Präteritum 与 Partizip II 收进 forms（内置词典完全没有这一类）', () => {
+    expect(parseOnlineEntry('abwägen', ABWAEGEN)!.senses[0].forms).toBe(
+      'Präteritum: wog ab/wägte ab, Partizip II: abgewogen, abgewägt',
+    );
+  });
+
+  it('只有 Plural 的名词不给 forms —— 复数已经单独成字段了', () => {
+    const s = parseOnlineEntry('Mädchen', MAEDCHEN)!.senses[0];
+    expect(s.pl).toBe('Mädchen');
+    expect(s.forms).toBeUndefined();
+  });
+
+  it('形容词收比较级与最高级', () => {
+    expect(parseOnlineEntry('schnell', SCHNELL)!.senses[0].forms).toBe(
+      'Komparativ: schneller, Superlativ: am schnellsten',
+    );
+  });
+
+  it('同义词/反义词按逗号拆开，不是整行一条', () => {
+    const s = parseOnlineEntry('schnell', SCHNELL)!.senses[0];
+    expect(s.syn.slice(0, 3)).toEqual(['fix', 'flink', 'flott']);
+    expect(s.syn.length).toBeLessThanOrEqual(8);
+    expect(s.ant).toEqual(['langsam', 'langwierig']);
+  });
+
+  it('例句排掉带引号的文学引文（还有普通例句时）', () => {
+    const ex = parseOnlineEntry('schnell', SCHNELL)!.senses[0].ex;
+    expect(ex).toHaveLength(4);
+    expect(ex.some((e) => e.startsWith('„'))).toBe(false);
+    expect(ex[0]).toBe('Heute nehme ich den schnelleren Zug.');
+  });
+
+  it('Unterbegriffe 与 Redewendungen 不混进释义、例句或同义词', () => {
+    const s = parseOnlineEntry('schnell', SCHNELL)!.senses[0];
+    const all = [...s.de, ...s.ex, ...s.syn, ...s.ant].join(' | ');
+    expect(all).not.toMatch(/blitzschnell/);
+    expect(all).not.toMatch(/Polizei/);
   });
 });

@@ -163,6 +163,15 @@ export interface VocabEntry {
    * 词典是缓存层、可重建，而**复习过的卡不可重建**，所以卡自己必须是完整的（§2.3）。
    */
   preset?: { band: number; rank: number };
+  /**
+   * FR-9.5：这个词是在**查词面板**里直接加进来的 —— 课上碰到的词，
+   * 不来自这个应用里的任何一课，也不来自预置词库。
+   *
+   * 值只是个标记（没有可记的来源信息），但它必须存在：没有它，
+   * 这张卡在复习页会走到「来源句还没有时间戳 → 去这一课重新对齐」那条出口，
+   * 而它根本没有课可去（`cardAudioStatus`）。
+   */
+  lookup?: true;
   dwKnowledgeId?: string; // 来自 Glossar 候选（FR-14）；也用于判断候选是否已接受
   hasTimestamp: boolean; // 来源句是否有 startTime（FR-10.5）
   suspended: boolean; // 暂停复习
