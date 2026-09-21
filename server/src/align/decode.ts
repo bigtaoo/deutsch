@@ -1,7 +1,7 @@
 // 音频 → 16kHz 单声道 float32 波形。用容器里那个 ffmpeg。
 //
 // ── 为什么是 ffmpeg，而不是一个 npm 的 mp3 解码器 ──
-// 三条路各自的形状：浏览器用 Web Audio（`decodeToMono16k`），iOS 用 `AVAudioFile`，
+// 两条路各自的形状：浏览器用 Web Audio（`decodeToMono16k`），
 // 这里用 ffmpeg —— 三处都是「把解码交给这个平台上最经得起考验的那个解码器」。
 // 纯 JS 的 mp3 解码器要么慢一个量级，要么在 VBR / ID3 封面图 / 奇怪采样率上翻车，
 // 而 DW 的 mp3 恰好都带 ID3 封面图。

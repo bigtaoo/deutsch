@@ -33,7 +33,6 @@
     "@capgo/capacitor-social-login": "^8.5.3",
     "@capgo/capacitor-updater": "^8.51.20",
     "@huggingface/transformers": "^4.2.0",
-    "deutsch-align-native": "file:native-plugins/align-native",
     "idb": "^8.0.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

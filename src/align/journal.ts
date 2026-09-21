@@ -38,7 +38,7 @@ export interface AlignRunRecord {
    * 权重从哪儿来。`remote` = 压根没在这台设备上（服务器算的，FR-15.17）——
    * 少了这个值的话，服务器那条路只能在这一栏里撒谎说 'local' 或 'cdn'。
    */
-  weights: 'local' | 'cdn' | 'remote';
+  weights: 'local' | 'server' | 'remote';
   /**
    * 随包权重是不是走了「按 Range 分片」那条路（rangedFetch.ts）。
    *
@@ -103,7 +103,7 @@ export function beginRun(info: {
   plan: RunPlan;
   planStep: number;
   platform: string;
-  weights: 'local' | 'cdn' | 'remote';
+  weights: 'local' | 'server' | 'remote';
   ranged?: boolean;
 }): void {
   const now = Date.now();

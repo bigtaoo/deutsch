@@ -5,11 +5,11 @@
 //
 // ── 两个入口，一道缝 ──
 // `alignAudio()`  = 本机全程：算 emissions（要 300M 权重 + GPU）再对齐。
-// `alignEmissions()` = 只做后半段：矩阵已经有了（原生插件算的、远端算的），只跑 viterbi。
+// `alignEmissions()` = 只做后半段：矩阵已经有了（服务器算的），只跑 viterbi。
 // 后者不 import emissions.ts，因此也不连着 transformers.js —— 这道缝的意义见 emissionMatrix.ts。
 
 import { computeEmissions } from './emissions';
-import { MMS_FA, type AlignModelConfig, type DevicePlan } from './config';
+import { GERMAN_CTC, type AlignModelConfig, type DevicePlan } from './config';
 import type { EmissionMatrix, EmissionSource, EmissionsProgress } from './emissionMatrix';
 import { buildTarget, toTimings, type AlignTarget, type Timings } from './target';
 import { alignWindowed } from './windowed';
@@ -25,7 +25,7 @@ export interface AlignProgress {
    * 这一步**在哪儿跑**。`remote` = 服务器（FR-15.17）。
    *
    * 有它是因为阶段名全是设备视角的：远端那条路上照原样显示「加载对齐模型」，
-   * 会让人以为这台手机正在下 230MB 权重 —— 而那恰好是这条路存在的理由
+   * 会让人以为这台手机正在下几百 MB 权重 —— 而那恰好是这条路存在的理由
    * （手机上不该干那件事）。stageLabel() 据此换一套措辞。
    */
   where?: 'remote';
@@ -54,7 +54,7 @@ export interface AlignOutcome extends Timings {
  * 摊平成对齐目标，顺便挡掉「没有可对齐的句子」。
  *
  * **必须在算 emissions 之前调**：否则一整课全被标成排除时，
- * 会先白加载 187MB 权重再发现无事可做。
+ * 会先白加载两百多 MB 权重再发现无事可做。
  */
 export function assertAlignable(sentences: Sentence[]): AlignTarget {
   const target = buildTarget(sentences);
@@ -64,10 +64,16 @@ export function assertAlignable(sentences: Sentence[]): AlignTarget {
   return target;
 }
 
-/** 后半段：矩阵 + 目标 → 时间戳。纯 JS，不需要模型也不需要 GPU。 */
+/**
+ * 后半段：矩阵 + 目标 → 时间戳。纯 JS，不需要模型也不需要 GPU。
+ *
+ * `blankId` 必须与算出这个矩阵的那个模型一致 —— 它是模型的事实，不是可调的参数。
+ * 这一版是 32（`[PAD]`），不是 0（0 是词分隔符 `|`）。
+ */
 function alignTarget(
   target: AlignTarget,
   emissions: EmissionMatrix,
+  blankId: number,
   onProgress?: (p: AlignProgress) => void,
 ): AlignOutcome {
   onProgress?.({ stage: 'align', fraction: 0 });
@@ -76,6 +82,7 @@ function alignTarget(
     emissions.frames,
     emissions.vocabSize,
     target.ids,
+    blankId,
     { onProgress: (fraction) => onProgress?.({ stage: 'align', fraction }) },
   );
 
@@ -98,8 +105,9 @@ export function alignEmissions(
   emissions: EmissionMatrix,
   sentences: Sentence[],
   onProgress?: (p: AlignProgress) => void,
+  config: AlignModelConfig = GERMAN_CTC,
 ): AlignOutcome {
-  return alignTarget(assertAlignable(sentences), emissions, onProgress);
+  return alignTarget(assertAlignable(sentences), emissions, config.blankId, onProgress);
 }
 
 /**
@@ -113,7 +121,7 @@ export async function alignAudio(
   sentences: Sentence[],
   plan: DevicePlan,
   onProgress?: (p: AlignProgress) => void,
-  config: AlignModelConfig = MMS_FA,
+  config: AlignModelConfig = GERMAN_CTC,
 ): Promise<AlignOutcome> {
   const target = assertAlignable(sentences);
 
@@ -121,5 +129,5 @@ export async function alignAudio(
     onProgress?.({ stage: p.stage, fraction: p.fraction, loaded: p.loaded, total: p.total }),
   );
 
-  return alignTarget(target, emissions, onProgress);
+  return alignTarget(target, emissions, config.blankId, onProgress);
 }

@@ -11,15 +11,11 @@ name: release-ios
 #     agvtool 会以「找不到版本号」失败。改成在 xcodebuild 命令行上覆盖
 #     `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION` —— Info.plist 里本来就是
 #     `$(CURRENT_PROJECT_VERSION)`，覆盖会一路传下去。
-#  3. **多一步 `npm run stage:align`。** 200MB 的对齐权重随包带（SPEC Q9 决定做原生壳
-#     的理由之一就是这个），所以构建前必须把权重放进 public/。这一步走 actions/cache，
-#     否则每次 run 都要从 HF 拉 200MB。
-#
-# 2026-09-03 起多了一条隐含依赖：`cap sync ios` 会把 `deutsch-align-native`
-# （native-plugins/align-native，SPEC §0 变更 31）写进 CapApp-SPM/Package.swift，
-# 而它依赖 ONNX Runtime 官方的 SPM 分发 —— 那是一个 **binaryTarget**，
-# SwiftPM 在 resolve 阶段要联网下载一份 xcframework。所以这条流水线现在会因为
-# 「SwiftPM 拉不到那个 zip」失败，症状出现在 xcodebuild 而不在 npm 那几步。
+#  3. **不带对齐权重。** 变更 42 之前这里有一步 `npm run stage:align`，把 418 MiB
+#     的 CTC 权重放进 public/ 随包带走（装机 553.6MB）。iOS 上的本地对齐整条删掉之后
+#     那一步连同 `deutsch-align-native` 那个 ONNX 插件一起没有了 ——
+#     `cap sync ios` 不再往 Package.swift 里写 binaryTarget，SwiftPM 也不再需要
+#     在 resolve 阶段联网拉 xcframework（那曾经是这条流水线唯一一处会莫名失败的地方）。
 #
 # 触发：推 tag `ios-v*`（如 ios-v0.1.0），或手动 Run。
 #
@@ -42,12 +38,6 @@ on:
     tags:
       - 'ios-v*'
   workflow_dispatch:
-    inputs:
-      bundle_model:
-        description: '把 200MB 对齐权重打进包里（关掉可以快速出一个只验壳的小包）'
-        required: true
-        default: true
-        type: boolean
 
 concurrency:
   group: release-ios
@@ -82,23 +72,6 @@ jobs:
           fi
           echo "marketing=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "版本 ${VERSION} 构建号 ${GITHUB_RUN_NUMBER}"
-
-      # 权重的来源是 HF 上的固定 tag，内容不会变；缓存键跟着下载脚本走 ——
-      # 换模型一定要改 scripts/stage-align-assets.mjs 里的 MODEL_ID/文件表，
-      # 所以哈希那个文件就等于哈希「要哪些权重」。
-      - name: cache align weights
-        # 不能写 `inputs.bundle_model != false`：tag 触发时这个值是空字符串，
-        # GitHub 比较不同类型时一律转成数字，'' 和 false 都变 0 —— 判为相等，
-        # 于是整条 tag 发布都会静默跳过权重那一步，出一个「以为带了其实没带」的包。
-        if: github.event_name != 'workflow_dispatch' || inputs.bundle_model
-        uses: actions/cache@v4
-        with:
-          path: public/models
-          key: align-weights-${{ hashFiles('scripts/stage-align-assets.mjs') }}
-
-      - name: stage align weights
-        if: github.event_name != 'workflow_dispatch' || inputs.bundle_model
-        run: npm run stage:align
 
       - name: build web bundle (native mode)
         # 同步后端的地址与 Google 客户端 ID 是**构建期**注入的（见 .env.example）。

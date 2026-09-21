@@ -12,16 +12,15 @@ import { DictSection } from './settings/DictSection';
 import { VersionSection } from './settings/VersionSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import {
-  MMS_FA,
+  GERMAN_CTC,
+  WEIGHTS_BASE,
   LOCAL_MODEL_PATH,
-  NATIVE_PLAN,
   REMOTE_PLAN,
   PLAN_LADDER,
   hasLocalWeights,
   pickDevice,
   planLabel,
 } from '@/align/config';
-import { nativeEmissionsAvailable } from '@/align/nativeEmissions';
 import { remoteEmissionsAvailable } from '@/align/remoteEmissions';
 import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
 import { nativePlatform } from '@/platform/native';
@@ -74,12 +73,12 @@ function StorageSection() {
 }
 
 /**
- * 对齐后端诊断（FR-15）。存在的理由很具体：**IPA 里两份权重只会用到一份**
- * （`pickPlan()` 有 WebGPU 走第 1 档，否则走第 2 档），而装机体积里绝大部分是权重，
- * 砍掉没用的那份是最大的一笔。而「iOS 的 WKWebView 到底有没有 WebGPU」
- * 只能在真机上问，猜不出来 —— 所以把答案显示出来。（问出来了：有，走 q4f16。）
+ * 对齐后端诊断（FR-15）。剩下的用处只有一个：**「为什么这台设备上对齐跑不动」**。
  *
- * 顺便探每份权重在不在包里：砍完之后回来看这里就能确认砍对了。
+ * 它回答的是三个只能在真机上问、猜不出来的问题：这台设备走 WebGPU 还是 wasm、
+ * 权重是从随包拿的还是从权重站下的、以及最近几次运行各自怎么结束的。
+ * 变更 42 之后 iOS 上根本没有本机这条路，所以第一行会先把那句话说清楚 ——
+ * 否则下面每一行说的都是一条这台设备不走的路。
  */
 function AlignBackendSection() {
   const [lines, setLines] = useState<string[] | null>(null);
@@ -94,21 +93,17 @@ function AlignBackendSection() {
       if (remote) {
         out.push(`emissions 由服务器算：${REMOTE_PLAN.device} / ${REMOTE_PLAN.dtype} —— 上行 mp3、下行矩阵，文稿不出设备`);
       }
-      // 原生那一档跟在后面：它一旦可用，下面关于 WebGPU / 降档 / 「下一次加载哪份权重」
-      // 的每一句话在这台设备上都不再成立 —— 权重压根不进 WebView。
-      const native = await nativeEmissionsAvailable();
-      if (native) {
-        out.push(
-          `emissions 由原生插件算：${NATIVE_PLAN.device} / ${NATIVE_PLAN.dtype} —— 权重不进 WebView，也不参与降档`,
-        );
-      }
-      if (native && remote) {
-        out.push('原生插件那条还在（服务器不可用时的手动退路，课程页上那个 ghost 按钮）');
+      const platform = await nativePlatform();
+      // iOS 原生壳上**没有本机这条路**（变更 42）：下面关于 WebGPU / 降档 /
+      // 「下一次加载哪份权重」的每一句话在那台设备上都不成立，所以先把话说清楚。
+      const phone = platform === 'ios';
+      if (phone) {
+        out.push('这台设备不自己算 emissions —— 手机上只有服务器那条路（变更 42）');
       }
       const plan = await pickDevice();
       out.push(
-        native
-          ? `WebView 那条路（现在不走）：${plan.device} / ${plan.dtype}`
+        phone
+          ? `WebView 那条路（不走，仅供参考）：${plan.device} / ${plan.dtype}`
           : `这台设备能跑的最优后端：${plan.device} / ${plan.dtype}`,
       );
       // 崩过就降档（journal.ts）。下面那个「实际用的是这份」的箭头要跟着降档走，
@@ -118,13 +113,20 @@ function AlignBackendSection() {
       if (step > 0) {
         out.push(`⚠️ 第 1 档崩过，下一次会降到第 ${step + 1} 档：${next.device} / ${next.dtype}`);
       }
-      out.push(`平台：${await nativePlatform()}`);
-      out.push(`权重来源：${(await hasLocalWeights(MMS_FA)) ? '随包（public/models/）' : 'HF CDN（首次用时下载）'}`);
+      out.push(`平台：${platform}`);
+      const bundled = await hasLocalWeights(GERMAN_CTC);
+      out.push(
+        bundled
+          ? '权重来源：随包（public/models/）'
+          : WEIGHTS_BASE
+            ? `权重来源：${WEIGHTS_BASE}（首次用时下载约 230MB，之后进 Cache API）`
+            : '权重来源：**没有** —— 这个构建没配同步服务器，本机对齐取不到权重',
+      );
       // 探的就是阶梯上那几档,而不是手写一份名单 ——
       // 手写的那份已经漂过一次（第 2 档从 int8 换成 q4 时这里还在探一份压根不带的权重)。
       for (const dtype of PLAN_LADDER.map((p) => p.dtype)) {
-        const url = `${LOCAL_MODEL_PATH}${MMS_FA.modelId}/onnx/model_${dtype}.onnx`;
-        const mark = dtype === (native ? NATIVE_PLAN.dtype : next.dtype) ? ' ← 下一次实际会加载这份' : '';
+        const url = `${bundled ? LOCAL_MODEL_PATH : WEIGHTS_BASE}${GERMAN_CTC.modelId}/onnx/model_${dtype}.onnx`;
+        const mark = !phone && dtype === next.dtype ? ' ← 下一次实际会加载这份' : '';
         out.push(`　model_${dtype}.onnx：${await probeSize(url)}${mark}`);
       }
       setLines(out);
@@ -169,7 +171,7 @@ function AlignBackendSection() {
               {' · '}
               {planLabel(run.plan, run.planStep)}{' · '}
               {run.platform}
-              {run.weights === 'local' ? (run.ranged ? ' · 分片取权重' : ' · 整份取权重') : ' · CDN 权重'}
+              {run.weights === 'local' ? (run.ranged ? ' · 分片取权重' : ' · 整份取权重') : run.weights === 'server' ? ' · 权重站' : ' · 权重在服务器上'}
               {run.heapMB !== undefined ? ` · 堆 ${run.heapMB}MB` : ''}
               {' · '}
               {Math.round(((run.finishedAt ?? run.updatedAt) - run.startedAt) / 1000)}s

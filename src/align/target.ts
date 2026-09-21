@@ -8,9 +8,15 @@
 //
 // 2. **charOffset 是句内 UTF-16 offset**，和 Sentence.text 的下标同一套坐标，
 //    因此也和 Blank.ranges 同一套（见 models.ts）。这样词级时间戳能直接和挖空对上。
+//    句间那个分隔符没有出处，记 -1。
 
 import type { Sentence } from '@/types/models';
-import { FRAME_SECONDS, romanizeSentence } from './vocab';
+import {
+  FRAME_SECONDS,
+  SEPARATOR_WORD_INDEX,
+  WORD_DELIM_ID,
+  tokenizeSentence,
+} from './vocab';
 import type { TokenSpan } from './viterbi';
 
 export interface AlignTarget {
@@ -18,6 +24,7 @@ export interface AlignTarget {
   /** 每个 token 属于哪句（Sentence.index，不是数组下标） */
   sentenceIndex: Int32Array;
   charOffset: Int32Array;
+  /** 第几个词；`SEPARATOR_WORD_INDEX`（-1）= 词分隔符 `|`，不属于任何词也不属于任何句 */
   wordIndex: Int32Array;
   /** 参与对齐的句子（Sentence.index），按文本顺序 */
   covered: number[];
@@ -32,10 +39,19 @@ export function buildTarget(sentences: Sentence[]): AlignTarget {
 
   for (const sentence of sentences) {
     if (sentence.excluded) continue;
-    const tokens = romanizeSentence(sentence.text);
-    // 罗马化后什么都不剩的句子（纯标点、纯数字）拿不到时间戳。
+    const tokens = tokenizeSentence(sentence.text);
+    // 映射后什么都不剩的句子（纯标点、纯数字）拿不到时间戳。
     // 硬塞进去只会污染邻句边界。
     if (tokens.length === 0) continue;
+    // **句与句之间也要一个词分隔符。** 那里一定存在词边界（多半还有一段停顿），
+    // 不给的话上一句的末字母和下一句的首字母在 CTC 路径上直接相邻，而模型在那几帧上
+    // 给的是 `|`。它记在上一句名下，但 toTimings 会跳过它 —— 所以两句的边界都不受影响。
+    if (covered.length > 0) {
+      ids.push(WORD_DELIM_ID);
+      sentenceIndex.push(covered[covered.length - 1]);
+      charOffset.push(-1);
+      wordIndex.push(SEPARATOR_WORD_INDEX);
+    }
     covered.push(sentence.index);
     for (const t of tokens) {
       ids.push(t.id);
@@ -84,6 +100,7 @@ export interface Timings {
  * 句/词的边界取「其首个 token 的起帧」到「其末个 token 的止帧」。
  * 不去吞掉词间和句间的静音：宁可播放时略掉一点前导静音，
  * 也不要让上一句的尾音混进下一句 —— 后者在跟读时是直接听错。
+ * 词分隔符 `|` 正是那段静音，所以整段跳过（见循环里那一句）。
  */
 export function toTimings(target: AlignTarget, spans: TokenSpan[]): Timings {
   if (spans.length !== target.ids.length) {
@@ -107,6 +124,9 @@ export function toTimings(target: AlignTarget, spans: TokenSpan[]): Timings {
   };
 
   for (let i = 0; i < spans.length; i++) {
+    // 词分隔符不属于任何词，也不该参与任何一句的起止与 confidence ——
+    // 它占的正是词间/句间那段静音，算进去只会把边界往静音里拉、把分数拉低。
+    if (target.wordIndex[i] === SEPARATOR_WORD_INDEX) continue;
     const span = spans[i];
     const si = target.sentenceIndex[i];
     const wi = target.wordIndex[i];
@@ -132,7 +152,8 @@ export function toTimings(target: AlignTarget, spans: TokenSpan[]): Timings {
       wordCursor = { sentenceIndex: si, wordIndex: wi, charStart: off, charEnd: off + 1, start, end };
     }
     // charEnd 右开：token 由第 off 个字符产生，所以词覆盖到 off+1。
-    // ß→ss 会让两个 token 共享同一个 off，取 max 而不是累加。
+    // 取 max 而不是累加：映射是一对一的，但万一哪天某个字符映射成两个 token，
+    // 累加会让词尾跑到句子外面去。
     wordCursor.charEnd = Math.max(wordCursor.charEnd, off + 1);
     wordCursor.end = end;
   }

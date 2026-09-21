@@ -12,7 +12,7 @@ import {
   noteStage,
   readHistory,
 } from './journal';
-import { NATIVE_PLAN, NATIVE_PLAN_STEP, PLAN_LADDER, planLabel } from './config';
+import { PLAN_LADDER, REMOTE_PLAN, REMOTE_PLAN_STEP, planLabel } from './config';
 
 const base = {
   lessonId: 'l1',
@@ -121,11 +121,11 @@ describe('黑匣子', () => {
   });
 });
 
-// 原生那一档（变更 31）不在阶梯上。这两条测的就是「不在阶梯上」这句话的具体含义 ——
+// 服务器那一档（变更 35）不在阶梯上。这两条测的就是「不在阶梯上」这句话的具体含义 ——
 // 它一旦被算进 crashedSteps()，第 0 档会被误判成崩过，桌面上的降档判据就跟着坏了。
-describe('原生那一档不参与降档', () => {
-  it('原生崩了不影响阶梯：第 0 档仍然是下一次的选择', () => {
-    beginRun({ ...base, plan: NATIVE_PLAN, planStep: NATIVE_PLAN_STEP });
+describe('服务器那一档不参与降档', () => {
+  it('服务器那次崩了不影响阶梯：第 0 档仍然是下一次的选择', () => {
+    beginRun({ ...base, plan: REMOTE_PLAN, planStep: REMOTE_PLAN_STEP });
     detectCrash(); // 没收尾 = 被杀
     expect(readHistory()[0].status).toBe('crashed');
     expect(nextPlanStep(PLAN_LADDER.length)).toBe(0);
@@ -134,6 +134,6 @@ describe('原生那一档不参与降档', () => {
 
   it('「第几档」这句话只对浏览器那两档说', () => {
     expect(planLabel(PLAN_LADDER[1], 1)).toBe('wasm/q4（第 2 档）');
-    expect(planLabel(NATIVE_PLAN, NATIVE_PLAN_STEP)).toBe('native/q4（原生插件，不在阶梯上）');
+    expect(planLabel(REMOTE_PLAN, REMOTE_PLAN_STEP)).toBe('remote/fp32（服务器，不在阶梯上）');
   });
 });

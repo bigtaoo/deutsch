@@ -11,12 +11,18 @@ function emissions(frames: number[], vocabSize: number): Float32Array {
 }
 
 const V = 8;
+/**
+ * 这些合成矩阵里 blank 是 0。**真实模型不是**（德语那个是 32，见 vocab.ts）——
+ * forcedAlign 因此不给 blankId 默认值，这里显式写出来，免得哪天默认值悄悄变了
+ * 而测试还在过。
+ */
+const BLANK = 0;
 
 describe('forcedAlign', () => {
   it('把每个 token 对到它实际出现的帧上', () => {
     // 目标 [4,5,6]；帧序列 blank blank 4 4 4 blank 5 6 6 blank
     const frames = [0, 0, 4, 4, 4, 0, 5, 6, 6, 0];
-    const { spans } = forcedAlign(emissions(frames, V), frames.length, V, [4, 5, 6]);
+    const { spans } = forcedAlign(emissions(frames, V), frames.length, V, [4, 5, 6], BLANK);
     expect(spans.map((s) => [s.startFrame, s.endFrame])).toEqual([
       [2, 5],
       [6, 7],
@@ -28,14 +34,14 @@ describe('forcedAlign', () => {
     // 目标 [5,5]（如 "ll"）。只有 5 5 是非法的：解码时会折叠成一个 5。
     // 合法的最短形式是 5 blank 5，所以两个 span 必须分居 blank 两侧。
     const frames = [5, 5, 0, 5, 5];
-    const { spans } = forcedAlign(emissions(frames, V), frames.length, V, [5, 5]);
+    const { spans } = forcedAlign(emissions(frames, V), frames.length, V, [5, 5], BLANK);
     expect(spans[0].endFrame).toBeLessThanOrEqual(2);
     expect(spans[1].startFrame).toBeGreaterThanOrEqual(3);
   });
 
   it('不同字母之间可以不夹 blank', () => {
     const frames = [4, 5];
-    const { spans } = forcedAlign(emissions(frames, V), frames.length, V, [4, 5]);
+    const { spans } = forcedAlign(emissions(frames, V), frames.length, V, [4, 5], BLANK);
     expect(spans.map((s) => [s.startFrame, s.endFrame])).toEqual([
       [0, 1],
       [1, 2],
@@ -47,7 +53,7 @@ describe('forcedAlign', () => {
     // 故意给一段完全模糊的音频：全帧等概率，逼它在无信息时也产出合法路径
     const frames = 40;
     const flat = new Float32Array(frames * V).fill(Math.log(1 / V));
-    const { spans } = forcedAlign(flat, frames, V, targets);
+    const { spans } = forcedAlign(flat, frames, V, targets, BLANK);
     expect(spans).toHaveLength(targets.length);
     let prevEnd = 0;
     for (const s of spans) {
@@ -60,17 +66,17 @@ describe('forcedAlign', () => {
   it('帧数放不下目标时报错，而不是编一条路径出来', () => {
     const flat = new Float32Array(3 * V).fill(-1);
     // [4,4,4] 需要 4 4 之间各一个 blank，至少 5 帧
-    expect(() => forcedAlign(flat, 3, V, [4, 4, 4])).toThrow(/帧数不足/);
+    expect(() => forcedAlign(flat, 3, V, [4, 4, 4], BLANK)).toThrow(/帧数不足/);
   });
 
   it('空目标返回空结果', () => {
-    expect(forcedAlign(new Float32Array(0), 0, V, []).spans).toEqual([]);
+    expect(forcedAlign(new Float32Array(0), 0, V, [], BLANK).spans).toEqual([]);
   });
 
   it('对齐得上的段落分数明显高于对不上的', () => {
     const frames = [4, 4, 0, 5, 5, 0, 6, 6];
-    const good = forcedAlign(emissions(frames, V), frames.length, V, [4, 5, 6]);
-    const bad = forcedAlign(emissions(frames, V), frames.length, V, [7, 7, 7]);
+    const good = forcedAlign(emissions(frames, V), frames.length, V, [4, 5, 6], BLANK);
+    const bad = forcedAlign(emissions(frames, V), frames.length, V, [7, 7, 7], BLANK);
     expect(good.score).toBeGreaterThan(bad.score);
   });
 });

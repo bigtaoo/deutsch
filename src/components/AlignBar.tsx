@@ -212,7 +212,7 @@ export function AlignBar() {
  * 是在跟我自己对账，不是在练听力。
  */
 export function AlignCrashBanner() {
-  const { crash, blocked, native, dismiss, enqueue } = useAlignStore();
+  const { crash, blocked, phone, dismiss, enqueue } = useAlignStore();
   if (!crash) return null;
 
   const elapsed = Math.round((crash.updatedAt - crash.startedAt) / 1000);
@@ -226,11 +226,7 @@ export function AlignCrashBanner() {
           chunks: crash.chunks,
         })}`;
 
-  const retryLabel = native
-    ? crash.chunk && crash.chunks
-      ? `接着算（上次到第 ${crash.chunk}/${crash.chunks} 块）`
-      : '接着算'
-    : '再试一次（用降档后的后端）';
+  const retryLabel = phone ? '再试一次' : '再试一次（用降档后的后端）';
 
   return (
     <Banner
@@ -260,8 +256,8 @@ export function AlignCrashBanner() {
         《{crash.title}》死在「{where}」，已经跑了 {elapsed} 秒。
       </p>
       <p>
-        {native
-          ? '这台设备走原生插件算 emissions —— 那 230MB 权重不再进 WebView。已经算完的块存在断点里，接着算不会从头开始。'
+        {phone
+          ? '手机上不自己算对齐 —— emissions 在服务器上算，被系统终止的只是在这头等结果的那一端。再试一次即可。'
           : blocked
             ? '两档后端都被杀过了 —— 这台设备跑不动这个模型。自动对齐已停掉，请在桌面上对齐，句级时间戳会跟着备份同步回来。'
             : '下一次会自动换一档更保守的后端重试（同一档不会连试两次）。'}
@@ -270,7 +266,7 @@ export function AlignCrashBanner() {
         <summary className="cursor-pointer list-none opacity-70">› 取证细节</summary>
         <p className="mt-1">
           {planLabel(crash.plan, crash.planStep)} · {crash.platform} · 权重
-          {crash.weights === 'local' ? (crash.ranged ? '随包·分片取' : '随包·整份取') : '来自 CDN'}
+          {crash.weights === 'local' ? (crash.ranged ? '随包·分片取' : '随包·整份取') : crash.weights === 'server' ? '来自权重站' : '在服务器上'}
           {crash.heapMB !== undefined && ` · JS 堆 ${crash.heapMB} MB`}
         </p>
       </details>

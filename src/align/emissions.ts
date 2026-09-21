@@ -1,6 +1,6 @@
 // 波形 → 帧级 log-prob 的**本机实现**：`EmissionsProvider` 的第一个（目前唯一一个）实现，
 // 跑在浏览器运行时（WASM/WebGPU）上。产物的形状与那道缝的契约在 emissionMatrix.ts ——
-// 换地方算（原生插件、远端）就是换一个 provider，下游一行都不用改。
+// 换地方算（远端）就是换一个 provider，下游一行都不用改。
 //
 // 这是唯一需要浏览器运行时的一层，因此单测只覆盖里面的纯函数
 // （logSoftmaxInPlace / planChunks），模型本身靠手动跑真实素材验。
@@ -106,7 +106,16 @@ let cached: { key: string; model: CtcModel; processor: unknown } | null = null;
 async function loadModel(config: AlignModelConfig, plan: DevicePlan, onProgress?: (p: EmissionsProgress) => void) {
   const key = `${config.modelId}|${plan.device}|${plan.dtype}`;
   if (cached?.key === key) return cached;
-  await configureRuntime(config);
+  // 两处都没有权重时**自己报错**：交给 transformers.js 会得到
+  // 「`env.allowRemoteModels=false` and file was not found locally at …」，
+  // 那句话对着一个空 URL，看不出真正的原因是「这个构建没配同步服务器」。
+  const { weights } = await configureRuntime(config);
+  if (weights === 'none') {
+    throw new Error(
+      '取不到对齐权重：这个构建既没有随包权重，也没有配同步服务器（权重站在那台机器上）。' +
+        '手机上可以让服务器直接算，桌面上要先配 VITE_SYNC_API_BASE。',
+    );
+  }
   const progress_callback = (p: { status?: string; loaded?: number; total?: number }) => {
     if (p.status === 'progress') onProgress?.({ stage: 'model', loaded: p.loaded, total: p.total });
   };

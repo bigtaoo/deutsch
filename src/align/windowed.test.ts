@@ -8,6 +8,8 @@ import {
 import { forcedAlign } from './viterbi';
 
 const V = 16;
+/** 合成矩阵里 blank 是 0。真实模型是 32 —— 见 viterbi.test.ts 里那段。 */
+const BLANK = 0;
 
 /**
  * 造一段有已知真值的音频：token i 占 dur 帧，之后插 gap 帧 blank。
@@ -52,15 +54,15 @@ describe('alignWindowed', () => {
   it('格子数够小时走整段对齐，结果与 forcedAlign 完全一致', () => {
     const targets = targetsOf(20);
     const { logProbs, frames } = synth([...targets], 3, 2);
-    const full = forcedAlign(logProbs, frames, V, targets);
-    const windowed = alignWindowed(logProbs, frames, V, targets, { fullAlignCells: 1e9 });
+    const full = forcedAlign(logProbs, frames, V, targets, BLANK);
+    const windowed = alignWindowed(logProbs, frames, V, targets, BLANK, { fullAlignCells: 1e9 });
     expect(windowed.spans).toEqual(full.spans);
   });
 
   it('被迫滑窗时仍然恢复出全部 token 的真实边界', () => {
     const targets = targetsOf(600);
     const { logProbs, frames, truth } = synth([...targets], 3, 2);
-    const { spans } = alignWindowed(logProbs, frames, V, targets, {
+    const { spans } = alignWindowed(logProbs, frames, V, targets, BLANK, {
       fullAlignCells: 20_000, // 强制滑窗
       windowFrames: 250,
     });
@@ -76,8 +78,8 @@ describe('alignWindowed', () => {
   it('滑窗结果与整段对齐结果一致（同一批输入两条路径互校）', () => {
     const targets = targetsOf(300);
     const { logProbs, frames } = synth([...targets], 3, 2);
-    const full = forcedAlign(logProbs, frames, V, targets);
-    const windowed = alignWindowed(logProbs, frames, V, targets, {
+    const full = forcedAlign(logProbs, frames, V, targets, BLANK);
+    const windowed = alignWindowed(logProbs, frames, V, targets, BLANK, {
       fullAlignCells: 10_000,
       windowFrames: 200,
     });
@@ -92,7 +94,7 @@ describe('alignWindowed', () => {
     const logProbs = new Float32Array(frames * V);
     logProbs.set(slow.logProbs, 0);
     logProbs.set(fast.logProbs, slow.frames * V);
-    const { spans } = alignWindowed(logProbs, frames, V, targets, {
+    const { spans } = alignWindowed(logProbs, frames, V, targets, BLANK, {
       fullAlignCells: 20_000,
       windowFrames: 250,
     });
@@ -108,7 +110,7 @@ describe('alignWindowed', () => {
   it('区间始终单调不重叠，且覆盖每一个 token', () => {
     const targets = targetsOf(500);
     const { logProbs, frames } = synth([...targets], 4, 3);
-    const { spans } = alignWindowed(logProbs, frames, V, targets, {
+    const { spans } = alignWindowed(logProbs, frames, V, targets, BLANK, {
       fullAlignCells: 15_000,
       windowFrames: 300,
     });
@@ -122,7 +124,7 @@ describe('alignWindowed', () => {
     const targets = targetsOf(300);
     const { logProbs, frames } = synth([...targets], 3, 2);
     const seen: number[] = [];
-    alignWindowed(logProbs, frames, V, targets, {
+    alignWindowed(logProbs, frames, V, targets, BLANK, {
       fullAlignCells: 10_000,
       windowFrames: 200,
       onProgress: (f) => seen.push(f),
@@ -134,7 +136,7 @@ describe('alignWindowed', () => {
   });
 
   it('空目标返回空结果', () => {
-    expect(alignWindowed(new Float32Array(0), 0, V, new Int32Array(0)).spans).toEqual([]);
+    expect(alignWindowed(new Float32Array(0), 0, V, new Int32Array(0), BLANK).spans).toEqual([]);
   });
 });
 

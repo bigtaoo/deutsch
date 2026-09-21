@@ -38,14 +38,16 @@ export interface AlignResult {
 
 /**
  * @param logProbs 帧优先的扁平数组，长度 frames * vocabSize，已做过 log-softmax
- * @param targets  目标 token id 序列（不含 blank）
+ * @param targets  目标 token id 序列（不含 blank，但**含词分隔符** `|`）
+ * @param blankId  CTC 的 blank。**没有默认值**：这个模型的 blank 是 32（`[PAD]`），
+ *   而上一个模型是 0 —— 给错等于把 blank 当成一个普通字母，路径全错而且不报错。
  */
 export function forcedAlign(
   logProbs: Float32Array,
   frames: number,
   vocabSize: number,
   targets: ArrayLike<number>,
-  blankId = 0,
+  blankId: number,
 ): AlignResult {
   const T = targets.length;
   if (T === 0) return { spans: [], score: 0 };

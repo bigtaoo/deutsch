@@ -11,9 +11,7 @@
 //
 // 把 ① 的产物定成一个「可序列化、不带任何运行时依赖」的数据结构,直接的后果是
 // ① 可以换地方跑而 ② 一行都不用改:
-//   · 本机 ORT（`emissions.ts`,目前唯一实现)
-//   · 原生插件（Capacitor + onnxruntime-objc/-android —— WebView 的 jetsam 线远低于
-//     原生进程,而原生可以 mmap 那份 .onnx,峰值从「约 3 倍模型体积」掉到「约 1 倍」)
+//   · 本机 ORT（`emissions.ts`)
 //   · 远端（`remoteEmissions.ts` + `server/src/align/`,2026-09-03 落地）：只上行音频、
 //     下行这个矩阵。因为 ① 不看文稿,**德语正文一个字都不出设备** ——
 //     SPEC §3.1 那一整套关于正文的约束因此完全不受影响,要认的只剩「音频经手」一条)
@@ -32,14 +30,12 @@
 // 累加这些数 —— 压了之后同一课在服务器上算和在桌面上算会得到细微不同的边界，
 // 那正是这条路最不该引入的差别。3MB 一课、一周一课，不值得拿可复现性去换。
 
-import type { AlignModelConfig, DevicePlan, NativePlan } from './config';
+import type { AlignModelConfig, DevicePlan } from './config';
 
 /** 这个矩阵是谁算出来的。只给诊断和黑匣子看 —— 对齐算法不读它。 */
 export type EmissionSource =
-  /** 本机 ORT（WASM/WebGPU),权重在设备上。目前唯一实现,见 emissions.ts */
+  /** 本机 ORT（WASM/WebGPU),权重在设备上，见 emissions.ts */
   | { kind: 'local'; plan: DevicePlan }
-  /** 原生插件算的（Capacitor + onnxruntime，见 native-plugins/align-native) */
-  | { kind: 'native'; plan: NativePlan }
   /** 远端算的（FR-15.17，见 remoteEmissions.ts）。只记 origin,不记路径与参数 */
   | { kind: 'remote'; origin: string };
 
@@ -59,8 +55,8 @@ export interface EmissionMatrix {
 
 export interface EmissionsProgress {
   /**
-   * `decode` 只有**自己解码的 provider** 会报（原生那条：mp3 过桥、AVAudioFile 在
-   * 原生侧解）。本机 provider 收到的已经是波形,它从 `model` 开始。
+   * `decode` 只有**自己解码的 provider** 会报（服务器那条：mp3 上传、ffmpeg 在服务器上解）。
+   * 本机 provider 收到的已经是波形,它从 `model` 开始。
    */
   stage: 'decode' | 'model' | 'infer';
   /** 0..1,仅 infer 阶段有意义 */
@@ -84,7 +80,7 @@ export interface EmissionsProgress {
  * ① 那一半的契约。换地方跑就是换一个这个。
  *
  * @param audio 单声道、`config.sampleRate` 采样率的波形（主线程 decodeToMono16k 产出)
- * @param plan 本机/原生 provider 用哪套后端。**由主线程决定**（client.ts) ——
+ * @param plan 本机 provider 用哪套后端。**由主线程决定**（client.ts) ——
  *   崩溃降档要靠 localStorage 里的黑匣子,而 Worker 里没有 localStorage。
  *   远端 provider 忽略它。
  */
