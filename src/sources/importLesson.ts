@@ -15,6 +15,7 @@ import { getLessonCache, putAudioBlob, putLessonCache } from '@/db/cache';
 import { segmentSentences } from '@/lesson/segment';
 import { createSentences } from '@/lesson/sentences';
 import { resegment } from '@/lesson/resegment';
+import { readAudioDuration } from '@/audio/player';
 import { manuscriptHash } from '@/lib/hash';
 import { generateId } from '@/lib/id';
 import { scheduleLessonSync } from '@/sync/trigger';
@@ -111,6 +112,9 @@ export async function importFromDw(
     // 音频本身不进备份，地址进（§0 变更 27）。抓失败时也记 —— 那正是最需要它的时候。
     audioSrc: dw.audio?.mp3Src,
     audioDuration: dw.audio?.duration || undefined,
+    // 补齐素材时拿它比「DW 换没换过音频」（§0 变更 43）。抓失败时没有这个数，
+    // 那种课的第一次补齐会退回到比时长。
+    audioBytes: audioBlob?.size,
     manuscriptHash: manuscriptHash(dw.plainText),
     sentences,
     glossary: buildCandidates(dw, sentences),
@@ -146,15 +150,63 @@ export interface RehydrateOutcome {
   audioRestored: boolean;
   audioError?: string;
   /**
-   * 重新抓到的音频时长和标注层记着的那个明显不同 —— DW 换过音频，
-   * 时间戳大概率整体作废，这一课要重对。差 1 秒以内当成同一份（时长是页面上报的，会抖）。
+   * 重新抓到的音频和标注层记着的那份不是同一个 —— DW 换过音频，
+   * 时间戳大概率整体作废，这一课要重对。
    *
    * 这一位是「补齐之后要不要重对」的**唯一**依据（变更 34）：
-   * 以前是无条件重对，而在有同步的世界里那等于「在手机上花十几分钟重算桌面刚算好的值」。
+   * 以前是无条件重对，而在有同步的世界里那等于「在手机上重算桌面刚算好的值」。
+   * 判据见 `audioChanged()` —— 变更 43 从「比时长」换成了「比字节数」。
    */
-  audioDurationChanged: boolean;
+  audioChanged: boolean;
   /** manuscriptChanged 时，按新文稿重切的预览结果，等用户决定 */
   fresh?: { plainText: string; dw: DwLesson };
+}
+
+/**
+ * 读一下这份音频的真实时长，读不出来就算了（返回 undefined）。
+ *
+ * 带超时：`readAudioDuration` 等的是 `<audio>` 的 loadedmetadata，而那个事件在
+ * 某些 WebView / 某些损坏文件上既不来也不报错。补齐素材这条路上它只是个**辅助判据**
+ * （老课程才用得上），不值得让「正在补齐」永远转下去。
+ */
+const DURATION_PROBE_TIMEOUT_MS = 10_000;
+
+async function probeDuration(blob: Blob): Promise<number | undefined> {
+  const timeout = new Promise<undefined>((resolve) =>
+    setTimeout(() => resolve(undefined), DURATION_PROBE_TIMEOUT_MS),
+  );
+  return Promise.race([readAudioDuration(blob).catch(() => undefined), timeout]);
+}
+
+/** 老课程没记过 audioBytes 时退回去比时长，容差放到这么宽。理由见 `audioChanged`。 */
+export const DURATION_FALLBACK_TOLERANCE_SECONDS = 2;
+
+/**
+ * 补齐回来的这份音频，和标注层记着的是不是同一个（§0 变更 43）。
+ *
+ * **首选比字节数**：`Lesson.audioBytes` 是上一次下载时记下的，跟着同步走，
+ * 两边同源，一个字节都不差才叫同一份。
+ *
+ * 老课程（变更 43 之前导入的）没有这个数，只好退回去比时长 —— 但要比对地方：
+ * 拿**这次解码出来的**值去比标注层记着的，而不是拿 DW 页面上报的整数秒去比。
+ * 后者正是这次要修的 bug：对齐完会把解码出来的精确值写回 audioDuration
+ * （align/client.ts），于是一门在桌面上对齐过的课到了手机上，比的是
+ * 「解码值 vs 页面整数」，差过 1 秒就被判成 DW 换过音频，白重对一次。
+ * 容差也顺手放宽到 2 秒：漏不掉「DW 换了一版」——那种差的是分钟，不是秒。
+ *
+ * 两样都没有（既没记字节数，也没有旧时长）就一律当没变：这一课本来就没有时间戳，
+ * 要不要对齐由 `hasTimings` 那一支回答，不该由这里猜。
+ */
+export function audioChanged(
+  lesson: Pick<Lesson, 'audioBytes' | 'audioDuration'>,
+  downloaded: { bytes: number; duration?: number } | undefined,
+  pageDuration?: number,
+): boolean {
+  if (!downloaded) return false; // 这次压根没下到音频，无从比较
+  if (lesson.audioBytes !== undefined) return downloaded.bytes !== lesson.audioBytes;
+  const fresh = downloaded.duration ?? pageDuration;
+  if (lesson.audioDuration === undefined || fresh === undefined) return false;
+  return Math.abs(fresh - lesson.audioDuration) > DURATION_FALLBACK_TOLERANCE_SECONDS;
 }
 
 /**
@@ -176,10 +228,16 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
 
   let audioRestored = false;
   let audioError: string | undefined;
+  /** 这次真的下到了音频时才有；用来判断 DW 换没换过版本，以及回填 audioBytes。 */
+  let downloaded: { bytes: number; duration?: number } | undefined;
   if (mp3Src) {
     try {
       const blob = await politely(() => downloadAudio(mp3Src));
       await putAudioBlob(lesson.id, blob);
+      // 解码出来的时长和对齐写回的那个同源（align/client.ts）——
+      // 老课程没记过 audioBytes 时，退回去比时长的那一支靠它才比得准。
+      // 读不出来不算错：判据会退到页面上报的那个整数秒。
+      downloaded = { bytes: blob.size, duration: await probeDuration(blob) };
       const existing = await getLessonCache(lesson.id);
       await putLessonCache({
         ...existing,
@@ -200,19 +258,30 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
     audioError = '页面里没有找到音频直链，这一课也没有记录过原始下载地址';
   }
 
-  // 标注层这边要更新的三样：刷新音频地址（CDN 直链会变）、刷新时长，以及文稿没变时刷新候选词。
-  // 文稿变了就不动候选词 —— 它的 offset 基于旧文稿，等用户在 FR-3.7 里做完决定。
+  // 标注层这边要更新的几样：刷新音频地址（CDN 直链会变）、记下字节数、必要时刷新时长，
+  // 以及文稿没变时刷新候选词。文稿变了就不动候选词 —— 它的 offset 基于旧文稿，
+  // 等用户在 FR-3.7 里做完决定。
   const nextAudioSrc = dw.audio?.mp3Src ?? lesson.audioSrc;
-  const nextDuration = dw.audio?.duration || lesson.audioDuration;
-  const audioDurationChanged =
-    lesson.audioDuration !== undefined &&
-    nextDuration !== undefined &&
-    Math.abs(nextDuration - lesson.audioDuration) > 1;
-  if (nextAudioSrc !== lesson.audioSrc || nextDuration !== lesson.audioDuration || !manuscriptChanged) {
+  const changed = audioChanged(lesson, downloaded, dw.audio?.duration);
+  // **时长只在「确实换过音频」或「本来就没有」时才改写**（§0 变更 43）：
+  // 对齐写回的是解码出来的精确值，比 DW 页面上报的整数秒可靠 —— 补齐一次素材
+  // 就把它降级回整数，等于每台设备各记一个值，下次比起来又像是换过音频。
+  const nextDuration =
+    changed || lesson.audioDuration === undefined
+      ? (downloaded?.duration ?? dw.audio?.duration ?? lesson.audioDuration)
+      : lesson.audioDuration;
+  const nextBytes = downloaded?.bytes ?? lesson.audioBytes;
+  if (
+    nextAudioSrc !== lesson.audioSrc ||
+    nextDuration !== lesson.audioDuration ||
+    nextBytes !== lesson.audioBytes ||
+    !manuscriptChanged
+  ) {
     await useLessonStore.getState().saveLesson({
       ...lesson,
       audioSrc: nextAudioSrc,
       audioDuration: nextDuration,
+      audioBytes: nextBytes,
       glossary: manuscriptChanged ? lesson.glossary : buildCandidates(dw, lesson.sentences),
     });
   }
@@ -222,7 +291,7 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
     manuscriptChanged,
     audioRestored,
     audioError,
-    audioDurationChanged,
+    audioChanged: changed,
     fresh: { plainText: dw.plainText, dw },
   };
 }

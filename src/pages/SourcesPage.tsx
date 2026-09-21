@@ -251,7 +251,7 @@ function RehydratePanel() {
         setConflict({ lesson, dw: outcome.fresh.dw });
       } else if (outcome.audioError) {
         setMessage(`《${lesson.title}》的音频没抓到：${outcome.audioError}`);
-      } else if (!hasTimings(lesson.sentences) || outcome.audioDurationChanged) {
+      } else if (!hasTimings(lesson.sentences) || outcome.audioChanged) {
         // **不再无条件重对**（§0 变更 34）。以前这里的理由是「补齐等于刚下载完，
         // 时间戳可能因为换过音频而全部作废，重对一遍最省心」—— 那条理由在同步落地之后
         // 站不住了：常态是「桌面算完 → 手机补齐素材」，标注层里那份时间戳正是桌面刚算出来的，

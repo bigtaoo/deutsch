@@ -232,7 +232,7 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
         setMessage('DW 改过稿：音频补齐了，但正文要你选一条路（重切还是保留旧标注）。');
       } else if (outcome.audioError) {
         setMessage(`音频没抓到：${outcome.audioError}`);
-      } else if (!hasTimings(lesson.sentences) || outcome.audioDurationChanged) {
+      } else if (!hasTimings(lesson.sentences) || outcome.audioChanged) {
         // 只有「压根没有时间戳」和「音频换过了」才值得对齐，见 align/apply.ts 的 hasTimings。
         enqueueAlign(lessonId);
         setMessage(

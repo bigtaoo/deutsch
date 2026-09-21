@@ -244,8 +244,14 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       lesson.audioDuration !== undefined &&
       Math.abs(lesson.audioDuration - duration) > DURATION_TOLERANCE_SECONDS;
 
-    if (lesson.audioDuration === undefined) {
-      await get().saveLesson({ ...lesson, audioDuration: duration });
+    // 时长只在本来没有时才写（FR-3.6：对不上只警告，不静默改标注层），
+    // 字节数则一律记上 —— 它是「下次补齐时音频换没换过」的判据（§0 变更 43）。
+    if (lesson.audioDuration === undefined || lesson.audioBytes !== file.size) {
+      await get().saveLesson({
+        ...lesson,
+        audioDuration: lesson.audioDuration ?? duration,
+        audioBytes: file.size,
+      });
     }
     return { duration, mismatch };
   },

@@ -19,7 +19,15 @@ vi.mock('./session', () => ({
   getSessionToken: () => getSessionToken(),
 }));
 
-const { syncVocabNow, syncLessonDeletion, drainSyncQueue, setSyncHooks } = await import('./trigger');
+const {
+  syncVocabNow,
+  syncLessonDeletion,
+  drainSyncQueue,
+  setSyncHooks,
+  scheduleLessonSync,
+  cancelScheduledSyncs,
+  syncNow,
+} = await import('./trigger');
 
 function vocab(overrides: Partial<VocabEntry>): VocabEntry {
   return {
@@ -318,5 +326,65 @@ describe('设置推送（§0 变更 28）', () => {
 
     expect((await getSettings()).newPerDay).toBe(10);
     expect(bodyOf(fetchMock, 1).body).toMatchObject({ newPerDay: 10 });
+  });
+});
+
+describe('标脏（§0 变更 43：去抖窗口里的改动不该跟着页面一起消失）', () => {
+  it('scheduleLessonSync 立刻把这一课标脏落库，不等那 30 秒', async () => {
+    await putLesson(lesson({ id: 'l1' }));
+    respondWith();
+
+    scheduleLessonSync('l1');
+    await vi.waitFor(async () => expect(await getQueue()).toHaveLength(1));
+    cancelScheduledSyncs(); // 别把那个 30 秒的定时器留给下一个用例
+
+    expect((await getQueue())[0]).toMatchObject({ kind: 'lesson', lessonId: 'l1', deferred: true });
+  });
+
+  it('没登录不标脏 —— 与「不排队」同一条理由', async () => {
+    getSessionToken.mockResolvedValue(undefined);
+    await putLesson(lesson({ id: 'l1' }));
+
+    scheduleLessonSync('l1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    cancelScheduledSyncs();
+
+    expect(await getQueue()).toHaveLength(0);
+  });
+
+  it('推成功之后标脏项消失，待推送数不会一直挂着', async () => {
+    await putVocabEntry(vocab({ id: 'v1' }));
+    const { markPending } = await import('./queue');
+    await markPending('vocab');
+    respondWith(jsonResponse(200, { version: 1, updatedAt: 1 }));
+
+    await syncVocabNow();
+
+    expect(await getQueue()).toHaveLength(0);
+  });
+});
+
+describe('一次性修复（§0 变更 43：把变更之前丢掉的那些补推一遍）', () => {
+  it('第一次同步把本地每一课都推一遍，之后不再重复', async () => {
+    await putLesson(lesson({ id: 'l1', updatedAt: 10 }));
+    await putLesson(lesson({ id: 'l2', updatedAt: 20 }));
+    // 两次 PUT + 一次拉取（拉取没有预备响应，会失败 —— pullSyncNow 自己吞掉）
+    const fetchMock = respondWith(
+      jsonResponse(200, { version: 1, updatedAt: 1 }),
+      jsonResponse(200, { version: 1, updatedAt: 1 }),
+    );
+
+    await syncNow();
+
+    // respondWith 的 mock 声明成无参，这里要的是真实调用里的 URL。
+    const urls = (fetchMock.mock.calls as unknown as [string, RequestInit][]).map(([url]) => url);
+    expect(urls.filter((u) => u.includes('lesson%3A'))).toHaveLength(2);
+    expect(await getQueue()).toHaveLength(0);
+
+    // 第二次：没有任何课要推（拉取那一次照旧失败，被吞掉）
+    const again = respondWith();
+    await syncNow({ force: true });
+    const urlsAgain = (again.mock.calls as unknown as [string, RequestInit][]).map(([url]) => url);
+    expect(urlsAgain.filter((u) => u.includes('lesson%3A'))).toHaveLength(0);
   });
 });

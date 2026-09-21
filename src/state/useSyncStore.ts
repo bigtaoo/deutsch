@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import { getMeta, putMeta } from '@/db/meta';
 import { META_KEYS } from '@/db/schema';
 import { isSyncConfigured } from '@/sync/config';
-import { getQueue } from '@/sync/queue';
+import { alarmingCount, getQueue } from '@/sync/queue';
 import { forgetAllVersions } from '@/sync/docs';
 import {
   getSession,
@@ -73,7 +73,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       account: session?.account ?? null,
       lastSuccessAt: persisted?.lastSuccessAt ?? null,
       lastPullAt: persisted?.lastPullAt ?? null,
-      pendingCount: queue.length,
+      pendingCount: alarmingCount(queue),
     });
 
     // 向服务器确认一次令牌还认不认。离线时 refreshAccount 保持原状，
@@ -114,7 +114,7 @@ export const useSyncStore = create<SyncState>((set, get) => ({
       getMeta<PersistedSyncStatus>(META_KEYS.syncStatus),
     ]);
     set({
-      pendingCount: queue.length,
+      pendingCount: alarmingCount(queue),
       lastSuccessAt: persisted?.lastSuccessAt ?? null,
       lastPullAt: persisted?.lastPullAt ?? null,
     });

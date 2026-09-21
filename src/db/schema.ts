@@ -66,6 +66,9 @@ export const META_KEYS = {
   syncSession: 'syncSession', // { token, expiresAt, account } —— 同步服务器的会话令牌
   syncVersions: 'syncVersions', // { [docId]: version } —— 本地记的远端版本号，做乐观并发
   syncStatus: 'syncStatus', // FR-11.9：常驻可见的状态
+  // §0 变更 43：「本地每一课都补推了一遍」的一次性标记（sync/trigger.ts 的 repairUnpushed）。
+  // 存时间戳而不是 true，是为了排障时看得出它是哪一天跑的。
+  syncRepairedAt: 'syncRepairedAt',
   storagePersistence: 'storagePersistence', // FR-11.16
   studyLog: 'studyLog', // FR-18：逐日学习时长（标注层，备份 + 同步）
   // FR-18：这台设备在 studyLog 里占的那一格的名字。**不备份、不同步** ——

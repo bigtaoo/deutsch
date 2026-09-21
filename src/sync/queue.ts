@@ -15,6 +15,14 @@ export interface QueuedPush {
   /** vocab / settings / study 推送忽略此字段；lesson 推送时是 Lesson.id，用于同一课多次入队时去重取最新一条 */
   lessonId?: string;
   enqueuedAt: number;
+  /**
+   * 「去抖窗口还没到」而不是「推失败了」（§0 变更 43，见 markPending）。
+   *
+   * 两者在队列里长得一样、drain 起来也一样，区别只在**要不要报警**：
+   * 失败项是故障（FR-11.9 的「待推送 N 项」数的就是它），标脏项是每次改动后
+   * 都会出现几十秒的正常状态，数进去只会让那个数字一直黄着。
+   */
+  deferred?: boolean;
 }
 
 const QUEUE_META_KEY = 'syncPushQueue';
@@ -45,6 +53,47 @@ export async function enqueuePush(kind: QueuedPushKind, lessonId?: string): Prom
   const withoutStale = queue.filter((item) => !conflicts(item, kind, lessonId));
   withoutStale.push({ id: generateId(), kind, lessonId, enqueuedAt: Date.now() });
   await putMeta(QUEUE_META_KEY, withoutStale);
+}
+
+/**
+ * 标脏：这一项本地改过、还没推上去。
+ *
+ * **为什么要落库**：去抖的定时器只活在内存里（trigger.ts，课程 30 秒、学习记录 60 秒）。
+ * 窗口没到就关掉页面 / 切走被系统回收，那次推送整个蒸发，而且**以后也补不回来** ——
+ * 拉取那条「本地比远端新就回推」的兜底看不见它：远端那份没被别人改过，
+ * 版本号一致，pull.ts 连全文都不会取，自然无从比较 updatedAt。
+ * 真实症状是「桌面上对齐完就关掉，手机上拉下来还是空的，于是又对一遍」（§0 变更 43）。
+ *
+ * 落了库就有人管：启动、回前台、网络恢复各会 drain 一次。
+ *
+ * 幂等 —— 同一项已经在队列里就不再写库。打点时每敲一次回车都会调到这里。
+ */
+export async function markPending(kind: QueuedPushKind, lessonId?: string): Promise<void> {
+  const queue = await getQueue();
+  if (queue.some((item) => item.kind === kind && item.lessonId === lessonId)) return;
+  const withoutStale = queue.filter((item) => !conflicts(item, kind, lessonId));
+  withoutStale.push({ id: generateId(), kind, lessonId, enqueuedAt: Date.now(), deferred: true });
+  await putMeta(QUEUE_META_KEY, withoutStale);
+}
+
+/**
+ * 推成功之后把对应的标脏项清掉。
+ *
+ * 残留窗口说清楚：推送**进行中**又改了一次的话，那次改动不会新写一条（上面是幂等的），
+ * 于是这里会把它的标脏项一起清掉 —— 它仍然由内存里的去抖定时器负责推。
+ * 也就是说「改动落在一次 PUT 的往返里 + 紧接着杀掉应用」仍会丢一次推送。
+ * 没有为它再加一层记账：窗口从 30 秒缩到了几百毫秒，而下一次改动会把它一起带上去。
+ */
+export async function clearPending(kind: QueuedPushKind, lessonId?: string): Promise<void> {
+  const queue = await getQueue();
+  const next = queue.filter((item) => !(item.kind === kind && item.lessonId === lessonId));
+  if (next.length === queue.length) return;
+  await putMeta(QUEUE_META_KEY, next);
+}
+
+/** FR-11.9 的「待推送 N 项」：只数要报警的那些，标脏项是正常状态。 */
+export function alarmingCount(queue: QueuedPush[]): number {
+  return queue.filter((item) => !item.deferred).length;
 }
 
 async function removeFromQueue(id: string): Promise<void> {

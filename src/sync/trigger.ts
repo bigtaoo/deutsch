@@ -18,7 +18,7 @@
 // vocab 是逐条 last-write-wins（比 fsrs.last_review），课程与设置是整体比 updatedAt。
 
 import { getMeta, getSettings, putMeta, putSettings } from '@/db/meta';
-import { getLesson, putLesson } from '@/db/lessons';
+import { getAllLessons, getLesson, putLesson } from '@/db/lessons';
 import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
 import { META_KEYS } from '@/db/schema';
 import { debounceByKey } from '@/lib/debounce';
@@ -38,7 +38,14 @@ import {
   putRemoteDoc,
   rememberVersion,
 } from './docs';
-import { drainQueue, enqueuePush, onNetworkRestored, type QueuedPush } from './queue';
+import {
+  clearPending,
+  drainQueue,
+  enqueuePush,
+  markPending,
+  onNetworkRestored,
+  type QueuedPush,
+} from './queue';
 import { pullFromServer, pullWroteData, type PullResult } from './pull';
 
 const LESSON_DEBOUNCE_MS = 30_000;
@@ -213,6 +220,8 @@ async function attempt(kind: QueuedPush['kind'], lessonId?: string): Promise<voi
 
   try {
     await runPush({ id: '', kind, lessonId, enqueuedAt: Date.now() });
+    // 推上去了，标脏项（markPending，§0 变更 43）就没用了。
+    await clearPending(kind, lessonId);
   } catch (err) {
     if (err instanceof SyncAuthError) {
       // 会话没了：排队等重新登录之后一起补推，同时让 UI 立刻说清楚。
@@ -239,18 +248,38 @@ const settingsDebouncer = debounceByKey<'settings', []>(
 
 const studyDebouncer = debounceByKey<'study', []>(() => attempt('study'), STUDY_DEBOUNCE_MS);
 
+/**
+ * 去抖窗口一开始就把这一项标脏落库（§0 变更 43）。
+ *
+ * 去抖定时器只活在内存里，窗口没到就关页面 = 那次推送连同它要推的改动一起消失，
+ * 而且再也没人想起来（理由见 queue.ts 的 markPending）。落一次库，
+ * 下次启动的 drain 就会把它补推出去。
+ *
+ * 没登录时什么都不做 —— 与 attempt() 同一条理由：一个永远推不出去的队列
+ * 只会让 pendingCount 无意义地涨，而手动导出（FR-11.11）始终是另一道保险。
+ */
+function markDirty(kind: QueuedPush['kind'], lessonId?: string): void {
+  void (async () => {
+    if (!(await getSessionToken())) return;
+    await markPending(kind, lessonId);
+  })();
+}
+
 /** FR-11.7：该课导入完成、或标注/挖空变更后触发，去抖 30s。 */
 export function scheduleLessonSync(lessonId: string): void {
+  markDirty('lesson', lessonId);
   lessonDebouncer.schedule(lessonId);
 }
 
 /** §0 变更 28：改过设置后触发，去抖 5s。 */
 export function scheduleSettingsSync(): void {
+  markDirty('settings');
   settingsDebouncer.schedule('settings');
 }
 
 /** FR-18.3：学习记录落库后触发，去抖 60s。 */
 export function scheduleStudySync(): void {
+  markDirty('study');
   studyDebouncer.schedule('study');
 }
 
@@ -344,8 +373,28 @@ export async function pullSyncNow(options: { force?: boolean } = {}): Promise<Pu
  * 于是拉回来的合并结果不会把刚要推的东西判成「本地更旧」。
  */
 export async function syncNow(options: { force?: boolean } = {}): Promise<void> {
+  await repairUnpushed();
   await drainSyncQueue();
   await pullSyncNow(options);
+}
+
+/**
+ * 一次性修复（§0 变更 43）：把本地每一课都标一次脏，让 drain 补推一遍。
+ *
+ * 变更 43 之前，去抖窗口里关掉页面的那次推送会整个丢掉，**而且没有任何补救路径**
+ * （queue.ts 的 markPending 说明了为什么拉取那条兜底看不见它）。已经丢掉的那些
+ * 不会因为「以后不再丢」而回来 —— 最典型的受害者是「桌面上对齐完就关」：
+ * 时间戳留在了桌面本地，手机拉到的还是导入时那份空的，于是在手机上又对一遍。
+ *
+ * 覆盖别人的风险：没有。远端更新的那几课由 pushLesson 的 409 分支照常让位。
+ * 代价是升级后第一次同步会把每一课推一遍（几十课 × 几十 KB），只此一次。
+ */
+async function repairUnpushed(): Promise<void> {
+  if (await getMeta<number>(META_KEYS.syncRepairedAt)) return;
+  // 没登录就先不记「修过了」：下次启动（或登录之后）再补这一遍。
+  if (!(await getSessionToken())) return;
+  for (const lesson of await getAllLessons()) await markPending('lesson', lesson.id);
+  await putMeta(META_KEYS.syncRepairedAt, Date.now());
 }
 
 /** 启动时调一次：网络恢复即自动推 + 拉。返回取消订阅函数。 */

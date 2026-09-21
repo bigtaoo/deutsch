@@ -28,6 +28,18 @@ export interface Lesson {
    */
   audioSrc?: string;
   audioDuration?: number; // 秒；补齐或重绑定时校验时长
+  /**
+   * 音频文件的字节数（§0 变更 43）。**「DW 是不是换了一版音频」的判据。**
+   *
+   * 音频本身在缓存层，这一个数在标注层：它要跨设备用 —— 桌面下过一次记下来，
+   * 手机补齐素材时拿新下到的那份比一比，就知道该不该重对齐。
+   *
+   * 为什么不拿 `audioDuration` 比：那个字段有两个来源 —— DW 页面上报的整数秒，
+   * 和解码出来的精确值（对齐完会写回，align/client.ts）。一门在桌面上对齐过的课
+   * 到了手机上，比的就是「解码值 vs 页面整数」，差一点就被判成换过音频，
+   * 白重对一次（手机上那是走服务器的两分钟）。字节数两边同源，没有这个歧义。
+   */
+  audioBytes?: number;
   manuscriptHash?: string; // plainText 的 hash；补齐后校验 DW 是否改过稿（FR-3.7）
   sentences: Sentence[];
   /**

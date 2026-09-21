@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { getDB, _resetDBForTests } from '@/db';
 import { DB_NAME } from '@/db/schema';
-import { enqueuePush, getQueue, drainQueue } from './queue';
+import { alarmingCount, clearPending, enqueuePush, getQueue, drainQueue, markPending } from './queue';
 
 afterEach(async () => {
   const db = await getDB();
@@ -62,5 +62,48 @@ describe('drainQueue (FR-11.10: 离线排队、恢复网络后自动重试)', ()
     const remaining = await getQueue();
     expect(remaining).toHaveLength(1);
     expect(remaining[0].kind).toBe('lesson');
+  });
+});
+
+describe('markPending / clearPending（§0 变更 43：去抖窗口里的改动也要落库）', () => {
+  it('标脏项会落库，drain 时照常推 —— 这正是「关掉页面那次推送不再蒸发」的全部机制', async () => {
+    await markPending('lesson', 'l1');
+    expect(await getQueue()).toEqual([expect.objectContaining({ kind: 'lesson', deferred: true })]);
+
+    const pushed: string[] = [];
+    await drainQueue(async (item) => {
+      pushed.push(item.lessonId!);
+    });
+    expect(pushed).toEqual(['l1']);
+    expect(await getQueue()).toHaveLength(0);
+  });
+
+  it('幂等：同一课连标多次只写一条（打点时每敲一次回车都会调到它）', async () => {
+    await markPending('lesson', 'l1');
+    await markPending('lesson', 'l1');
+    await markPending('lesson', 'l1');
+    expect(await getQueue()).toHaveLength(1);
+  });
+
+  it('推送失败会把标脏项升级成要报警的那一种', async () => {
+    await markPending('lesson', 'l1');
+    await enqueuePush('lesson', 'l1');
+    const queue = await getQueue();
+    expect(queue).toHaveLength(1);
+    expect(queue[0].deferred).toBeUndefined();
+  });
+
+  it('clearPending 只清掉那一项', async () => {
+    await markPending('lesson', 'l1');
+    await markPending('lesson', 'l2');
+    await clearPending('lesson', 'l1');
+    expect((await getQueue()).map((q) => q.lessonId)).toEqual(['l2']);
+  });
+
+  it('alarmingCount 不数标脏项：改完东西等去抖是正常状态，不是故障', async () => {
+    await markPending('lesson', 'l1');
+    await enqueuePush('vocab');
+    expect(await getQueue()).toHaveLength(2);
+    expect(alarmingCount(await getQueue())).toBe(1);
   });
 });
