@@ -11,6 +11,9 @@ import { RestoreSection, StudySettingsSection } from './settings/RestoreSection'
 import { DictSection } from './settings/DictSection';
 import { VersionSection } from './settings/VersionSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
+import { useLessonStore } from '@/state/useLessonStore';
+import { useVocabStore } from '@/state/useVocabStore';
+import { useStudyStore } from '@/state/useStudyStore';
 import {
   GERMAN_CTC,
   WEIGHTS_BASE,
@@ -368,6 +371,16 @@ function ManualBackupSection() {
   const handleConfirmImport = async () => {
     if (!pendingResultRef.current) return;
     await commitImport(pendingResultRef.current);
+    // commitImport 写的是 IndexedDB，内存里的 store 要重读一遍才看得到 ——
+    // 不重读的话，点完「确认导入」界面上**什么都不会变**，课程列表照旧是空的，
+    // 要手动刷新一次才出现。从服务器恢复那一条（RestoreSection）一直是这么做的，
+    // 这一条以前漏了。学习记录也在内：它同样由 commitImport 写。
+    await Promise.all([
+      useLessonStore.getState().load(),
+      useVocabStore.getState().load(),
+      useSettingsStore.getState().load(),
+      useStudyStore.getState().load(),
+    ]);
     pendingResultRef.current = null;
     setPendingSummary(null);
   };

@@ -10,6 +10,7 @@ import { useSyncStore } from '@/state/useSyncStore';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
+import { useStudyStore } from '@/state/useStudyStore';
 import { Banner, Button, Hint, Note, Section, field } from '@/components/ui';
 
 const DRILL_META_KEY = 'lastRestoreDrillAt';
@@ -35,11 +36,13 @@ export function RestoreSection() {
       setResult(outcome);
       await putMeta(DRILL_META_KEY, Date.now());
       setLastDrillAt(Date.now());
-      // 恢复写的是 IndexedDB，内存里的 store 要重新读一遍才能看到（设置也在内，§0 变更 28）
+      // 恢复写的是 IndexedDB，内存里的 store 要重新读一遍才能看到（设置也在内，§0 变更 28；
+      // 学习记录同理 —— restoreFromServer 会合并它，不重读的话记录页停在恢复前的数）
       await Promise.all([
         useLessonStore.getState().load(),
         useVocabStore.getState().load(),
         useSettingsStore.getState().load(),
+        useStudyStore.getState().load(),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
