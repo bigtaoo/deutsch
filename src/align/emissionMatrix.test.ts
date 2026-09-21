@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { alignEmissions } from './align';
 import { emissionTransferables, type EmissionMatrix } from './emissionMatrix';
-import { MMS_FA } from './config';
+import { GERMAN_CTC } from './config';
 import { buildTarget } from './target';
 import { FRAME_SECONDS } from './vocab';
 import type { Sentence } from '@/types/models';
@@ -32,7 +32,7 @@ function sentence(index: number, text: string, charStart: number): Sentence {
  * 所以每个 token 后面都跟一帧 blank —— 这样任何输入文本都有合法路径。
  */
 function certainMatrix(sentences: Sentence[], framesPerToken: number): EmissionMatrix {
-  const { vocabSize, blankId } = MMS_FA;
+  const { vocabSize, blankId } = GERMAN_CTC;
   const ids = buildTarget(sentences).ids;
   const frames = ids.length * (framesPerToken + 1);
   const logProbs = new Float32Array(frames * vocabSize).fill(Math.log(0.001));

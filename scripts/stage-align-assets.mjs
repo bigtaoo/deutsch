@@ -1,21 +1,30 @@
-// 把对齐模型的权重下载进 public/models/，让打包版（Electron/Capacitor）随包带上、
-// 从第一次使用起就完全离线。
+// 把对齐权重放进 public/models/，让打包版（Android）随包带上、从第一次使用起完全离线。
+//
+// ── 权重从哪儿来 ──
+// 两处，按顺序试：
+//   ① `.cache/align/<modelId>/onnx/model_q4.onnx` —— 本机量化过的那份
+//      （scripts/quantize-align-model.py）。有它就直接抄，不走网络。
+//   ② 权重站 —— 同步服务器的 `/v1/align/weights/`（server/src/align/weights.ts）。
+//      CI 里走的是这条：环境变量 `WEIGHTS_BASE` 或 `VITE_SYNC_API_BASE` 给出地址。
+// **HF 不在这个列表里**：那上面只有 fp32 那一份（1204 MiB），浏览器跑不动它，
+// 而 4-bit 这份是我们自己量化的。
+//
+// 两个配置文件也**不从 HF 下**，从 `scripts/align-model/` 拷 —— 那里那份
+// preprocessor_config.json 被我们改过一处，理由见那个目录的 README。
 //
 // ORT 的 wasm **不在这里** —— 它由 src/align/runtime.ts 里的 Vite `?url` 导入，
-// 构建时自动进 dist/assets/。曾经在这里复制到 public/ort/，结果 dist 里出现两份
-// 同样的 23MB wasm（Vite 分析 onnxruntime-web 时还会自己打一份），白占一倍体积。
+// 构建时自动进 dist/assets/。
 //
-// 纯 web 版可以完全不跑这个脚本：首次对齐时 transformers.js 会从 HF CDN 取权重，
-// 之后自己存进 Cache API（env.useBrowserCache 默认 true），所以只有第一次需要联网。
-// 但随包发布的版本一定要跑，否则用户第一次用必须联网下 200MB。
+// 纯 web 版完全不需要跑这个脚本：浏览器会直接从权重站取，transformers.js 自己存进
+// Cache API，所以只有第一次需要联网。
 //
 // 用法：npm run stage:align
 //
-// public/models/ 在 .gitignore 里：200MB 不该进 git，而且它完全可从 HF 重建 ——
+// public/models/ 在 .gitignore 里：230MB 不该进 git，而且它完全可重建 ——
 // 就是 §6 说的「丢了能重建」。
 
 import { createWriteStream } from 'node:fs';
-import { mkdir, stat } from 'node:fs/promises';
+import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -23,26 +32,23 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-// 必须与 src/align/config.ts 的 MMS_FA.modelId 一致 —— transformers.js 在
+// 必须与 src/align/config.ts 的 GERMAN_CTC.modelId 一致 —— transformers.js 在
 // env.localModelPath 下按 modelId 找目录。
-const MODEL_ID = 'onnx-community/mms-300m-1130-forced-aligner-ONNX';
+const MODEL_ID = 'oliverguhr/wav2vec2-large-xlsr-53-german-cv9';
 
-// 两种权重都要带：pickDevice() 有 WebGPU 时走 q4f16，退到 WASM 时走 q4。
-// 只带一个的话，换台没有 WebGPU 的设备就又得联网。
-//
-// 曾经第二份是 int8（302.6 MiB）。换成 q4（230.3 MiB）是 2026-09-02 实测的结果：
-// int8 那份在 WASM 上加载即被系统杀掉，第 2 档以前是必死的。理由见 src/align/config.ts
-// 的 PLAN_LADDER —— 两个文件必须同步改，这里带的文件就是那里选的档。
-const MODEL_FILES = [
-  'config.json',
-  'preprocessor_config.json',
-  'tokenizer.json',
-  'tokenizer_config.json',
-  'special_tokens_map.json',
-  'vocab.json',
-  'onnx/model_q4f16.onnx',
-  'onnx/model_q4.onnx',
-];
+// 只带 4-bit 那一份：阶梯上的两档（webgpu/wasm）用的是同一个文件，
+// 理由见 src/align/config.ts 的 PLAN_LADDER。
+const MODEL_FILES = ['config.json', 'preprocessor_config.json', 'onnx/model_q4.onnx'];
+
+const weightsBase = (process.env.WEIGHTS_BASE ?? process.env.VITE_SYNC_API_BASE ?? '').replace(
+  /\/+$/,
+  '',
+);
+const remoteBase = weightsBase
+  ? weightsBase.endsWith('/v1/align/weights')
+    ? `${weightsBase}/`
+    : `${weightsBase}/v1/align/weights/`
+  : '';
 
 const mib = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 
@@ -63,7 +69,9 @@ async function download(url, dest) {
 }
 
 const destDir = join(ROOT, 'public', 'models', MODEL_ID);
-console.log(`下载 ${MODEL_ID} → public/models/（约 200MB，取决于网速要几分钟）…`);
+const cacheDir = join(ROOT, '.cache', 'align', MODEL_ID);
+
+console.log(`把 ${MODEL_ID} 放进 public/models/（约 230MB）…`);
 let total = 0;
 for (const name of MODEL_FILES) {
   const dest = join(destDir, name);
@@ -73,12 +81,40 @@ for (const name of MODEL_FILES) {
     total += existing;
     continue;
   }
-  const size = await download(`https://huggingface.co/${MODEL_ID}/resolve/main/${name}`, dest);
+
+  // ① 两个配置文件在仓库里（改过一处，见 scripts/align-model/README.md）
+  if (name.endsWith('.json')) {
+    await mkdir(dirname(dest), { recursive: true });
+    await copyFile(join(ROOT, 'scripts', 'align-model', name), dest);
+    const size = await sizeOf(dest);
+    total += size;
+    console.log(`  ✓ ${name}  ${mib(size)}（来自 scripts/align-model/）`);
+    continue;
+  }
+
+  // ② 本机量化过的那份
+  const cached = join(cacheDir, name);
+  if (await sizeOf(cached)) {
+    await mkdir(dirname(dest), { recursive: true });
+    await copyFile(cached, dest);
+    const size = await sizeOf(dest);
+    total += size;
+    console.log(`  ✓ ${name}  ${mib(size)}（来自 .cache/align/）`);
+    continue;
+  }
+
+  // ③ 权重站
+  const url = remoteBase ? `${remoteBase}${MODEL_ID}/${name}` : null;
+  if (!url) {
+    console.error(
+      `\n${name} 取不到：没有本机量化的产物，也没配权重站地址。\n` +
+        '  · 本机量化：python scripts/quantize-align-model.py\n' +
+        '  · 或者给地址：WEIGHTS_BASE=https://sync.gamestao.com npm run stage:align',
+    );
+    process.exit(1);
+  }
+  const size = await download(url, dest);
   total += size;
   console.log(`  ✓ ${name}  ${mib(size)}`);
 }
-console.log(`模型就位：共 ${mib(total)}`);
-console.log(
-  '\n注意：这个模型是 CC-BY-NC-4.0（非商用）。自用与免费分发没问题，\n' +
-    '要商用得换成宽松许可的德语 CTC 模型 —— 换法见 src/align/config.ts 顶部。',
-);
+console.log(`权重就位：共 ${mib(total)}`);

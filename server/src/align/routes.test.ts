@@ -29,6 +29,8 @@ const config: Config = {
   align: {
     enabled: true,
     modelDir: ':memory:',
+    idleMs: 0,
+    serveWeights: false,
     dtype: 'q4',
     threads: 1,
     maxAudioBytes: 1024,

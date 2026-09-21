@@ -76,6 +76,7 @@ export function alignWindowed(
   frames: number,
   vocabSize: number,
   targets: Int32Array,
+  blankId: number,
   opts: WindowedOptions = {},
 ): AlignResult {
   const { windowFrames, rateSlack, tailDiscard, fullAlignCells } = { ...WINDOW_DEFAULTS, ...opts };
@@ -84,7 +85,7 @@ export function alignWindowed(
 
   if (frames * (2 * T + 1) <= fullAlignCells) {
     opts.onProgress?.(1);
-    return forcedAlign(logProbs, frames, vocabSize, targets);
+    return forcedAlign(logProbs, frames, vocabSize, targets, blankId);
   }
 
   const spans: TokenSpan[] = [];
@@ -118,6 +119,7 @@ export function alignWindowed(
       winFrames,
       vocabSize,
       targets.subarray(tokenCursor, tokenCursor + winTokens),
+      blankId,
     );
     // 退让过的话，这一窗实际只对上了 aligned 个 token，剩下的下一窗重排。
     winTokens = aligned;
@@ -164,12 +166,16 @@ function alignWindowSafely(
   winFrames: number,
   vocabSize: number,
   targets: Int32Array,
+  blankId: number,
 ): { result: AlignResult; aligned: number } {
   const slice = logProbs.subarray(frameStart * vocabSize, (frameStart + winFrames) * vocabSize);
   let n = targets.length;
   for (;;) {
     try {
-      return { result: forcedAlign(slice, winFrames, vocabSize, targets.subarray(0, n)), aligned: n };
+      return {
+        result: forcedAlign(slice, winFrames, vocabSize, targets.subarray(0, n), blankId),
+        aligned: n,
+      };
     } catch (err) {
       if (n <= 1) throw err;
       n = Math.floor(n / 2);

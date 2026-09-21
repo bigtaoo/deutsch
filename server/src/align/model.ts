@@ -1,17 +1,22 @@
 // 权重的落地与 ORT 会话。
 //
 // ── 权重不进镜像 ──
-// 230MB 的 `.onnx` 放进 Docker 镜像意味着每次 `docker compose up --build` 都要重下一遍
+// 1.2GB 的 `.onnx` 放进 Docker 镜像意味着每次 `docker compose up --build` 都要重下一遍
 // （CI 每次部署都会跑那一行），而它是一个**永远不变的文件**。所以它落在挂进来的
 // `/data/models/` 里：镜像重建不碰它，容器重启不碰它，`docker compose down` 也不碰它。
-// 第一次用的时候自己去 HF 取；想省那几分钟就 `scp` 一份进去（deploy/README.md §对齐）。
+// 第一次用的时候自己去 HF 取（fp32 那份在 HF 上是现成的）。
 //
-// ── 为什么是 q4 ──
-// 与手机原生插件那一档同一份权重（230.3 MiB，`MatMulNBits`）。选它不是为了省内存 ——
-// 这台机器有 5G 可用 —— 而是为了**三条路算出同一份时间戳**：dtype 一换，
-// 量化误差就换，同一课在桌面/手机/服务器上会得到细微不同的边界。
-// 真要换（比如 ORT 的 node 分发里没有 `MatMulNBits`），改 `ALIGN_MODEL_DTYPE`，
-// 并且要明白从那一刻起服务器算的和另外两条路不再逐位相同。
+// ── 为什么是 fp32（变更 42）──
+// 以前是 q4（230 MiB），理由是「三条路算出同一份时间戳」—— 手机原生插件、桌面浏览器、
+// 服务器共用一份权重。手机那条路删掉之后这个理由只剩一半，而**服务器这边本来就没有
+// 省内存的必要**：它不是手机，1.2GB 的权重在一台 8G 的机器上放得下。
+// 所以服务器跑未量化的那一份，浏览器跑自己量化的 q4。
+// 代价写在明处：同一课在服务器上算和在桌面上算，边界会有几十毫秒级的出入。
+//
+// ── 代价之二：常驻内存 ──
+// fp32 的会话一旦建起来就是 1.3GB 常驻，而这台机器上还跑着公司的东西。
+// 所以 engine.ts 给它加了**闲置释放**（ALIGN_IDLE_MS，默认 10 分钟）：
+// 一周用一次的东西没有理由 7×24 占着那 1.3GB，重新加载十几秒完全可以接受。
 
 import { mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -19,8 +24,20 @@ import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 
-/** 与 src/align/config.ts 的 MMS_FA.modelId 一致。 */
-export const MODEL_ID = 'onnx-community/mms-300m-1130-forced-aligner-ONNX';
+/** 与 src/align/config.ts 的 GERMAN_CTC.modelId 一致。 */
+export const MODEL_ID = 'oliverguhr/wav2vec2-large-xlsr-53-german-cv9';
+
+/**
+ * 每种权重变体的文件名与「下到一半」的判据。
+ *
+ * fp32 那份在 HF 上叫 `model.onnx`（没有 dtype 后缀）—— 这是模型作者自己导出的那一份，
+ * 不是 optimum 的命名习惯。其余变体是**我们自己量化的**，HF 上没有，
+ * 只能由 `scripts/quantize-align-model.py` 产出之后 scp 上来（deploy/README.md §对齐）。
+ */
+const VARIANTS: Record<string, { file: string; minBytes: number; onHub: boolean }> = {
+  fp32: { file: 'onnx/model.onnx', minBytes: 1_000_000_000, onHub: true },
+  q4: { file: 'onnx/model_q4.onnx', minBytes: 100_000_000, onHub: false },
+};
 
 export interface ModelOptions {
   /** 权重放哪（`${DATA_DIR}/models`） */
@@ -33,10 +50,21 @@ export interface ModelOptions {
 export interface CtcSession {
   /** 跑一块，返回 [frames, vocabSize] 与扁平 logits（**未** log-softmax）。 */
   run(samples: Float32Array): Promise<{ logits: Float32Array; frames: number; vocabSize: number }>;
+  /** 把那 1.3GB 还给系统。闲置释放用，见 engine.ts。 */
+  release(): Promise<void>;
 }
 
-function modelPath(options: ModelOptions): string {
-  return join(options.dir, MODEL_ID, `onnx/model_${options.dtype}.onnx`);
+function variantOf(dtype: string) {
+  const variant = VARIANTS[dtype];
+  if (!variant) {
+    throw new Error(`不认识的权重变体 ${dtype} —— 可选：${Object.keys(VARIANTS).join(' / ')}`);
+  }
+  return variant;
+}
+
+/** 权重在 `/data/models/` 下的绝对路径。权重站（weights.ts）也按这个布局对外提供。 */
+export function modelPath(dir: string, dtype: string): string {
+  return join(dir, MODEL_ID, variantOf(dtype).file);
 }
 
 async function sizeOf(path: string): Promise<number | null> {
@@ -54,14 +82,20 @@ async function sizeOf(path: string): Promise<number | null> {
  * 和「模型不兼容」长得一模一样，那是最费时间的一种误判。
  */
 export async function ensureWeights(options: ModelOptions): Promise<string> {
-  const dest = modelPath(options);
+  const variant = variantOf(options.dtype);
+  const dest = modelPath(options.dir, options.dtype);
   const existing = await sizeOf(dest);
-  // 100MB 是个下限哨兵：这个仓库里最小的那份变体是 212 MiB，
-  // 比这还小说明上次下到一半就断了。
-  if (existing !== null && existing > 100 * 1024 * 1024) return dest;
+  // 下限哨兵：比这还小说明上次下到一半就断了。
+  if (existing !== null && existing > variant.minBytes) return dest;
   if (existing !== null) await unlink(dest).catch(() => {});
+  if (!variant.onHub) {
+    throw new Error(
+      `${variant.file} 不在 HF 上（它是我们自己量化的）—— ` +
+        `跑 scripts/quantize-align-model.py 产出之后放到 ${dest}`,
+    );
+  }
 
-  const url = `https://huggingface.co/${MODEL_ID}/resolve/main/onnx/model_${options.dtype}.onnx`;
+  const url = `https://huggingface.co/${MODEL_ID}/resolve/main/${variant.file}`;
   const part = `${dest}.part`;
   await mkdir(dirname(dest), { recursive: true });
   const res = await fetch(url);
@@ -72,8 +106,8 @@ export async function ensureWeights(options: ModelOptions): Promise<string> {
 }
 
 /**
- * 建一个 ORT 会话。**权重加载一次就留着** —— 这个函数由 engine.ts 缓存，
- * 一次加载 230MB 要十几秒，而这台服务器是常驻进程，没有理由每课重来。
+ * 建一个 ORT 会话。加载一次要十几秒，所以 engine.ts 会把它缓存一段时间
+ * （闲置超过 ALIGN_IDLE_MS 才放掉，见那边）。
  *
  * `onnxruntime-node` 是 optionalDependency：装不上（平台没有预编译产物）时
  * 这里抛，路由把它翻译成 503 + 明确原因，而**同步那一半照常工作**。
@@ -103,6 +137,7 @@ export async function createSession(options: ModelOptions): Promise<CtcSession> 
   const outputName = session.outputNames[0];
 
   return {
+    release: () => session.release(),
     async run(samples: Float32Array) {
       const tensor = new ort.Tensor('float32', samples, [1, samples.length]);
       const output = await session.run({ [inputName]: tensor });

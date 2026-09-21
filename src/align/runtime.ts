@@ -3,7 +3,7 @@
 // 纯配置在 config.ts。
 
 import { env } from '@huggingface/transformers';
-import { LOCAL_MODEL_PATH, hasLocalWeights, type AlignModelConfig } from './config';
+import { LOCAL_MODEL_PATH, WEIGHTS_BASE, hasLocalWeights, type AlignModelConfig } from './config';
 import { createStreamingWeightsCache } from './rangedFetch';
 
 // ORT 的 wasm 走 Vite 的 ?url，而不是自己复制一份到 public/ort/。
@@ -18,7 +18,10 @@ import asyncifyMjs from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url
 import plainWasm from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import plainMjs from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 
-let configured: Promise<{ weights: 'local' | 'cdn' }> | null = null;
+/** 权重这一次是从哪儿取的。`none` = 两处都没有，本机对齐这条路走不通。 */
+export type WeightsSource = 'local' | 'server' | 'none';
+
+let configured: Promise<{ weights: WeightsSource }> | null = null;
 
 /**
  * 配置 transformers.js 的取件路径。只做一次。
@@ -28,12 +31,15 @@ let configured: Promise<{ weights: 'local' | 'cdn' }> | null = null;
  * 不覆盖它，断网时模型压根起不来 —— 而离线可用是这个功能存在的理由之一。
  * 所以无条件指到构建产出的那四个文件。
  *
- * 权重本身则要探一下再决定：见 hasLocalWeights 里关于 SPA fallback 的那段。
+ * 权重本身要探一下再决定，顺序是**随包 → 自己的权重站**（config.ts 的 WEIGHTS_BASE）。
+ * 没有「退到 HF CDN」那一档了：浏览器要的 4-bit 权重是我们自己量化的，HF 上没有。
+ * 所以 `allowRemoteModels` 一律 false —— 让它去 HF 只会拿到 404，而报错会说成
+ * 「模型不存在」，把人引到完全错误的方向。
  *
  * Safari 用非 asyncify 版 —— 这也是 transformers.js 自己的默认分支逻辑
  * （transformers.web.js 里同样按 IS_SAFARI 分叉）。
  */
-export function configureRuntime(config: AlignModelConfig): Promise<{ weights: 'local' | 'cdn' }> {
+export function configureRuntime(config: AlignModelConfig): Promise<{ weights: WeightsSource }> {
   if (configured) return configured;
   configured = (async () => {
     const isSafari =
@@ -52,26 +58,35 @@ export function configureRuntime(config: AlignModelConfig): Promise<{ weights: '
       env.backends.onnx.wasm.numThreads = 1;
     }
 
-    env.localModelPath = LOCAL_MODEL_PATH;
-    // 只有真的探到本地权重才允许走本地。打开 allowLocalModels 却没有权重时，
+    // 只有真的探到权重才允许走「本地」那条路。打开 allowLocalModels 却没有权重时，
     // 静态托管的 SPA fallback 会把 /models/**/config.json 回成一份 200 的 index.html，
     // transformers.js 拿去 JSON.parse 直接炸 —— 而且报的是「配置解析失败」，
     // 跟真正的原因（权重没放）完全对不上号。
-    const local = await hasLocalWeights(config);
-    env.allowLocalModels = local;
-    // 纯 web 版第一次用会去 HF CDN 取，之后 transformers.js 自己存进 Cache API
-    // （env.useBrowserCache 默认为 true），所以只有第一次需要联网。
-    env.allowRemoteModels = true;
+    //
+    // 探两处：随包（打包版）→ 自己的权重站（浏览器）。两处都是同一套目录结构，
+    // 所以差别只有 env.localModelPath 这个前缀。
+    const bundled = await hasLocalWeights(config, LOCAL_MODEL_PATH);
+    const base = bundled
+      ? LOCAL_MODEL_PATH
+      : (await hasLocalWeights(config, WEIGHTS_BASE))
+        ? WEIGHTS_BASE
+        : '';
+    env.localModelPath = base;
+    env.allowLocalModels = base !== '';
+    // HF 上没有我们量化的那一份，去那儿只会 404。见上面那段。
+    env.allowRemoteModels = false;
 
-    if (local) {
+    if (bundled) {
       // 随包权重：接管取件，并**关掉浏览器缓存** —— 见 rangedFetch.ts 顶部那段事故分析，
-      // 把安装包里已有的 187MB 再抄一份进 Cache API 是那次崩溃的最大一笔无谓开销。
+      // 把安装包里已有的两百多 MB 再抄一份进 Cache API 是那次崩溃的最大一笔无谓开销。
       env.useBrowserCache = false;
       env.useCustomCache = true;
       env.customCache = createStreamingWeightsCache(LOCAL_MODEL_PATH);
     }
+    // 从权重站取的那一份**要**进 Cache API（env.useBrowserCache 默认 true）：
+    // 230MB 下一次，之后离线可用 —— 这是「服务器挂了我自己算」成立的前提。
 
-    return { weights: local ? ('local' as const) : ('cdn' as const) };
+    return { weights: bundled ? 'local' : base ? 'server' : 'none' };
   })();
   return configured;
 }

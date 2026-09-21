@@ -27,8 +27,20 @@ export interface Config {
     enabled: boolean;
     /** 权重放哪。默认 `${dataDir}/models` —— 挂进来的卷，镜像重建不碰它。 */
     modelDir: string;
-    /** 权重变体。默认 q4，与手机原生插件那一档同一份（见 align/model.ts 顶部）。 */
+    /** 权重变体。默认 fp32 —— 服务器上没有将就 4-bit 的理由（见 align/model.ts 顶部）。 */
     dtype: string;
+    /**
+     * 闲置多久放掉会话（毫秒）。默认 10 分钟，0 = 永不放。
+     * fp32 的会话常驻 1.3GB，而这台机器上还跑着别人的东西。
+     */
+    idleMs: number;
+    /**
+     * 把 `${modelDir}` 当静态目录对外提供（`GET /v1/align/weights/**`）。
+     *
+     * 浏览器要的 4-bit 权重是我们自己量化的，HF 上没有，而 Cloudflare 那边单文件
+     * 上限 25 MiB —— 230MB 只能放在这台本来就要有的服务器上。整块可关。
+     */
+    serveWeights: boolean;
     /** ORT 的 intra-op 线程数。4 vCPU 的机器上默认留一个给别人。 */
     threads: number;
     /** 上传音频的字节上限。一课 6~10MB，40MB 挡的是误传和恶意。 */
@@ -82,7 +94,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     align: {
       enabled: flag(env.ALIGN_ENABLED, true),
       modelDir: env.ALIGN_MODEL_DIR ?? `${dataDir}/models`,
-      dtype: env.ALIGN_MODEL_DTYPE ?? 'q4',
+      dtype: env.ALIGN_MODEL_DTYPE ?? 'fp32',
+      idleMs: Number(env.ALIGN_IDLE_MS ?? 10 * 60_000),
+      serveWeights: flag(env.ALIGN_SERVE_WEIGHTS, true),
       threads: Number(env.ALIGN_THREADS ?? 3),
       maxAudioBytes: Number(env.ALIGN_MAX_AUDIO_BYTES ?? 40 * 1024 * 1024),
       maxSeconds: Number(env.ALIGN_MAX_SECONDS ?? 1800),

@@ -1,7 +1,6 @@
 // 主线程侧：选后端、起 Worker、跑对齐、把结果落库，并全程往黑匣子里记面包屑。
 //
-// 一次只允许跑一个对齐任务。两个并行会各自占一份 187MB+ 的权重，
-// 手机上直接 OOM，桌面上也只是互相抢 CPU。
+// 一次只允许跑一个对齐任务。两个并行会各自占一份 230MB 的权重，只是互相抢内存和 CPU。
 
 import { getAudioBlob } from '@/db/cache';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -11,9 +10,7 @@ import { applyTimings, type ApplyResult } from './apply';
 import { decodeToMono16k } from './decode';
 import {
   LOCAL_MODEL_PATH,
-  MMS_FA,
-  NATIVE_PLAN,
-  NATIVE_PLAN_STEP,
+  GERMAN_CTC,
   PLAN_LADDER,
   REMOTE_PLAN,
   REMOTE_PLAN_STEP,
@@ -21,12 +18,7 @@ import {
   pickPlan,
 } from './config';
 import { emissionTransferables } from './emissionMatrix';
-import {
-  cancelNativeEmissions,
-  computeNativeEmissions,
-  nativeEmissionsAvailable,
-} from './nativeEmissions';
-import { computeRemoteEmissions, remoteEmissionsAvailable } from './remoteEmissions';
+import { computeRemoteEmissions } from './remoteEmissions';
 import { probeRanged } from './rangedFetch';
 import { buildTarget } from './target';
 import { beginRun, finishRun, nextPlanStep, noteStage } from './journal';
@@ -56,13 +48,8 @@ let worker: Worker | null = null;
 let nextId = 1;
 let running = false;
 /**
- * 原生 emissions 正在跑。`running` 管不了这一段 —— 那十几分钟里 Worker 还没起，
- * 所以「停止」要靠这一位才知道该往插件那边递取消（见 cancelAlignment）。
- */
-let nativeRunning = false;
-/**
- * 远端那条路正在跑。和 `nativeRunning` 同一个道理：那一两分钟里 Worker 还没起，
- * `running` 是 false，所以「停止」要靠这一位才知道该去 abort 那次轮询
+ * 远端那条路正在跑。那一两分钟里 Worker 还没起、`running` 是 false，
+ * 所以「停止」要靠这一位才知道该去 abort 那次轮询
  * （顺带让 remoteEmissions 把服务器上那个任务 DELETE 掉）。
  */
 let remoteAbort: AbortController | null = null;
@@ -76,7 +63,7 @@ function ensureWorker(): Worker {
   return worker;
 }
 
-/** 换模型、或者想把那 187MB 从内存里放掉时用。下一次对齐会重新起。 */
+/** 换模型、或者想把那 230MB 从内存里放掉时用。下一次对齐会重新起。 */
 export function terminateAlignWorker(): void {
   worker?.terminate();
   worker = null;
@@ -90,15 +77,13 @@ export function isAligning(): boolean {
 /**
  * 用户点「停止」。
  *
- * 两条路要分别停，而且**原生那条必须先停**：
- *   · Worker（浏览器那条）：整个干掉是唯一可靠的中断方式，ORT 的 run() 不可打断。
- *   · 原生那条：`running` 在算 emissions 的那十几分钟里**是 false** —— Worker 那时
- *     还没起。所以以前这个函数会在第一行就 return，「停止」在手机上整整十几分钟
- *     是个死按钮。现在它给插件递一个标志，插件在下一个块边界停下，
- *     已经算完的块留在断点里（变更 33）。
+ * 两条路要分别停：
+ *   · Worker（本机那条）：整个干掉是唯一可靠的中断方式，ORT 的 run() 不可打断。
+ *   · 服务器那条：`running` 在等结果的那一两分钟里**是 false** —— Worker 那时还没起。
+ *     所以不能在第一行就按 `running` return，否则「停止」在那一段里是个死按钮。
+ *     abort 会顺带让 remoteEmissions 把服务器上那个任务 DELETE 掉。
  */
 export function cancelAlignment(): void {
-  if (nativeRunning) void cancelNativeEmissions();
   remoteAbort?.abort();
   if (!running) return;
   const reject = cancelCurrent;
@@ -182,9 +167,8 @@ export interface AlignLessonResult extends ApplyResult {
 export interface AlignLessonOptions {
   overwriteManual?: boolean;
   /**
-   * 在哪儿算。`auto`（默认）按设备判：手机上有服务器就用服务器，桌面用本机。
-   * `remote` / `local` 是人在课程页上显式选的那两条 —— 服务器挂了要能自己上，
-   * 桌面想验一下服务器算得对不对也要能。
+   * 在哪儿算。`auto`（默认）按设备判：iOS 原生壳一律送服务器，桌面用本机。
+   * `remote` / `local` 是人显式选的 —— 桌面想验一下服务器算得对不对要能。
    */
   backend?: 'auto' | 'remote' | 'local';
 }
@@ -198,35 +182,38 @@ export async function alignLesson(
   if (!blob) throw new Error('本机没有这一课的音频，先去「素材」里下载');
 
   // ── 选在哪儿算 ──
-  // 三条路，判据只有两条（SPEC §0 变更 35 / FR-15.18）：
+  // 两条路，判据只有一条（SPEC §0 变更 42 / FR-15.18）：
   //
-  //   · 手机（原生壳）+ 登录了 → **服务器**。手机本地要十几分钟且必须一直亮屏，
-  //     服务器一两分钟且手机可以锁屏；桌面则相反 —— 26 秒的事没理由上传 7MB。
-  //   · 手机 + 没登录 / 服务器不做对齐 → 原生插件（变更 33 起只在手动那一次跑）。
-  //   · 其余（桌面浏览器）→ 本机 WebView。
+  //   · iOS 原生壳 → **只有服务器**。变更 42 之前这里还有第三条「原生 ONNX 插件」，
+  //     它连着 418 MiB 随包权重，而实际上十有八九跑不完（一课十几分钟满载 +
+  //     必须一直亮屏，而 iOS 三十秒就锁屏、锁屏即挂起）。整条删掉，
+  //     手机上时间戳只有两个来源：服务器算，或者桌面算完同步过来。
+  //   · 其余（桌面浏览器）→ 本机。26 秒的事没理由上传 7MB。
   //
-  // `backend` 显式指定时压过上面全部：课程页那两个按钮就是拿它把选择交回给人
-  // （「在这台手机上算」/「送到服务器算」）。
+  // `backend` 显式指定时压过上面：桌面上那个「送到服务器算」按钮就是拿它把选择交回给人。
   const backend = options.backend ?? 'auto';
-  const native = await nativeEmissionsAvailable();
-  const useRemote =
-    backend === 'remote' || (backend === 'auto' && native && (await remoteEmissionsAvailable()));
-  if (useRemote) return alignLessonRemote(lesson, blob, onProgress, options);
-  // `local` 在**这台设备上**的意思是「原生插件」，不是「WebView」——
-  // iPhone 的 WebView 里两档都会被系统杀掉（变更 21/31），把 local 解释成 WebView
-  // 等于给那个按钮接了一条必死的路。
-  if (native) return alignLessonNative(lesson, blob, onProgress, options);
+  const platform = await nativePlatform();
+  const iosShell = platform === 'ios';
+  if (backend === 'remote' || (backend === 'auto' && iosShell)) {
+    return alignLessonRemote(lesson, blob, onProgress, options);
+  }
+  // 手机上 `local` 无路可走：WebView 里那两档都会被系统杀掉（变更 21），
+  // 而原生插件那条已经删了。与其接一条必死的路，不如把主路径说清楚。
+  if (iosShell) {
+    throw new Error(
+      '这台手机不自己算对齐 —— 登录同步之后由服务器算，或者在桌面上对一次，时间戳会同步过来',
+    );
+  }
 
   // 后端与「随包还是 CDN」都在主线程定：黑匣子在 localStorage 里，Worker 读不到。
   const { plan, step } = await pickPlan(nextPlanStep(PLAN_LADDER.length));
-  const platform = await nativePlatform();
-  const weights = (await hasLocalWeights(MMS_FA)) ? 'local' : 'cdn';
+  const weights = (await hasLocalWeights(GERMAN_CTC)) ? 'local' : 'server';
   // 随包权重会不会走分片那条路（rangedFetch.ts）。Worker 里那次探测的结果拿不出来，
   // 而这一位正是那次 iPhone 崩溃修复的验收凭据 —— 所以这里自己探一次。
   // 代价是一个 1 字节的请求（body 当场掐掉），URL 与 Worker 要取的那份完全一致。
   const ranged =
     weights === 'local'
-      ? (await probeRanged(`${LOCAL_MODEL_PATH}${MMS_FA.modelId}/onnx/model_${plan.dtype}.onnx`)) !== null
+      ? (await probeRanged(`${LOCAL_MODEL_PATH}${GERMAN_CTC.modelId}/onnx/model_${plan.dtype}.onnx`)) !== null
       : undefined;
   // 手机上跑完就把权重放掉（连着 Worker 一起干掉最彻底）。见 worker.ts 的 release。
   const release = platform !== 'web';
@@ -241,10 +228,10 @@ export async function alignLesson(
     report({ stage: 'decode' });
     // 解码必须在主线程（Web Audio 在 Worker 里不存在）。6 分钟 mp3 大约 1 秒，
     // 之后波形直接 transfer 进 Worker，主线程就空出来了。
-    const audio = await decodeToMono16k(blob, MMS_FA.sampleRate);
+    const audio = await decodeToMono16k(blob, GERMAN_CTC.sampleRate);
     // ── 这里就是那道缝在应用层的位置 ──
-    // 今天只有一条：把波形交给 Worker，让本机 provider（emissions.ts）算完再对齐。
-    // 接原生插件或远端时，改的是这一行 —— 先拿到 EmissionMatrix，再用
+    // 本机这条：把波形交给 Worker，让本机 provider（emissions.ts）算完再对齐。
+    // 服务器那条（alignLessonRemote）换掉的就是这一行 —— 先拿到 EmissionMatrix，再用
     // `{ input: 'emissions', emissions }` 进同一个 Worker 跑 viterbi。
     // 下游（applyTimings → saveLesson → 同步）一行都不用动。
     const outcome = await runAlignment(
@@ -274,7 +261,7 @@ export async function alignLesson(
  * 两条路共用的收尾：写回时间戳 → 落库 → 触发同步。
  *
  * 抽出来是因为**它必须两条路逐字相同**：这一段决定了「一次对齐的产出有哪些」
- * （句级 + 词级都进标注层，见变更 26），原生那条路上任何一项漏掉，
+ * （句级 + 词级都进标注层，见变更 26），服务器那条路上任何一项漏掉，
  * 失败方式都是静默的 —— 界面照样说「对齐完成」，只是词级高亮不动。
  */
 async function saveOutcome(
@@ -302,74 +289,16 @@ async function saveOutcome(
 }
 
 /**
- * 原生那一条（iOS）。与上面那条的差别只有前半截：
- *
- *   · **不解码**。mp3 原样交给插件，`AVAudioFile` 在原生侧解 —— 桥上过 9MB 而不是 41MB，
- *     理由写在 nativeEmissions.ts 顶部。所以这条路上压根没有 `decode` 阶段。
- *   · **不选后端、不探分片、不降档**。planStep 记 `NATIVE_PLAN_STEP`（-1），
- *     它撞不上阶梯里的 0/1，`crashedSteps()` 因此不会把原生的失败算到那两档头上。
- *   · Worker 只跑 viterbi（`input: 'emissions'`），所以 `release` 没有意义 ——
- *     那 230MB 从来没进过 WebView。
- *
- * 后半截（viterbi → applyTimings → 落库 → 同步）与浏览器那条完全一样，走 saveOutcome。
- * 黑匣子照记：原生进程也会被 jetsam 杀，只是那条线高得多。
- */
-async function alignLessonNative(
-  lesson: Lesson,
-  blob: Blob,
-  onProgress?: (p: AlignProgress) => void,
-  options: AlignLessonOptions = {},
-): Promise<AlignLessonResult> {
-  beginRun({
-    lessonId: lesson.id,
-    title: lesson.title,
-    plan: NATIVE_PLAN,
-    planStep: NATIVE_PLAN_STEP,
-    platform: 'ios',
-    // 原生只可能读包里那份 —— 插件是从 Bundle.main 里按路径打开文件的，
-    // 没有「退到 CDN」这回事（那也正是它离线可用的原因）。
-    weights: 'local',
-  });
-  const report = (p: AlignProgress) => {
-    noteStage(p);
-    onProgress?.(p);
-  };
-
-  try {
-    // **必须在算 emissions 之前挡这一下。** 浏览器那条路上这件事由 Worker 里的
-    // `assertAlignable()` 做，而原生这条路是「先算完矩阵再进 Worker」——
-    // 不挡的话，一整课全被标成排除时会先在手机上白算几分钟再报「无事可做」。
-    // 这里不 import align.ts 的 assertAlignable：那个文件静态连着 emissions.ts
-    // → transformers.js，主线程一 import 主包就涨 500KB（README「已知的坑」那条）。
-    if (buildTarget(lesson.sentences).ids.length === 0) {
-      throw new Error('没有可对齐的句子：要么全被标成了非朗读内容，要么正文里没有字母');
-    }
-    // 键用 lesson id：断点跟着「这一课」走，而不是跟着这一次运行。
-    // 插件那边还会拿音频长度和参数做指纹，换了音频的话旧中间态自己作废。
-    nativeRunning = true;
-    const emissions = await computeNativeEmissions(blob, MMS_FA, report, lesson.id).finally(() => {
-      nativeRunning = false;
-    });
-    const outcome = await runAlignment({ input: 'emissions', emissions }, lesson.sentences, report);
-    const applied = await saveOutcome(lesson, outcome, options, report);
-    finishRun('done');
-    return { ...applied, outcome };
-  } catch (err) {
-    finishRun('error', err instanceof Error ? err.message : String(err));
-    throw err;
-  }
-}
-
-/**
- * 服务器那一条（FR-15.17）。前半截与原生那条几乎一样，差别只有三处：
+ * 服务器那一条（FR-15.17）。与本机那条的差别有三处：
  *
  *   · **不解码**。mp3 原样 POST 上去，ffmpeg 在服务器上解 —— 上行 7MB 而不是 30MB
- *     的波形（与原生那条选择 mp3 过桥是同一笔账，见 remoteEmissions.ts 顶部）。
+ *     的波形（理由见 remoteEmissions.ts 顶部）。
  *   · **可以中断而不白费**：计算在服务器上跑，手机锁屏、切走、甚至退出 App 都不影响
- *     那一两分钟。这正是本地那条路在手机上跑不完的原因（变更 33）。
- *   · 黑匣子记 `remote/q4` + planStep -1。它不在阶梯上，理由与原生同一条。
+ *     那一两分钟。这正是手机上唯一一条能跑完的路（变更 42）。
+ *   · 黑匣子记 `remote/q4` + planStep -1 —— 它不在阶梯上。
  *     黑匣子照记不是为了防崩溃（服务器崩不了这台设备），而是为了让「这一课的时间戳
- *     是哪儿算的」在诊断页上查得到 —— 三条路算出来的东西应该一样，而
+ *     是哪儿算的」在诊断页上查得到 —— 变更 42 之后两条路用的**不是同一份权重**
+ *     （服务器 fp32、浏览器 q4），边界会有几十毫秒级的出入，而
  *     「应该一样」的事情最需要留证据。
  *
  * 后半截（viterbi → applyTimings → 落库 → 同步）与另外两条完全一样，走 saveOutcome。
@@ -397,14 +326,14 @@ async function alignLessonRemote(
   };
 
   try {
-    // 与原生那条同一个理由：**先挡「没有可对齐的句子」**，否则一整课全被排除时
+    // 与本机那条同一个理由：**先挡「没有可对齐的句子」**，否则一整课全被排除时
     // 会先白传 7MB、让服务器白算一两分钟，最后才报「无事可做」。
     if (buildTarget(lesson.sentences).ids.length === 0) {
       throw new Error('没有可对齐的句子：要么全被标成了非朗读内容，要么正文里没有字母');
     }
 
     remoteAbort = new AbortController();
-    const emissions = await computeRemoteEmissions(blob, MMS_FA, {
+    const emissions = await computeRemoteEmissions(blob, GERMAN_CTC, {
       signal: remoteAbort.signal,
       // 阶段名带上 where，界面才不会说「加载对齐模型」——
       // 那句话在这条路上是假的（见 AlignProgress.where）。

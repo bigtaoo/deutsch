@@ -212,7 +212,8 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId))!;
   const attachAudio = useLessonStore((s) => s.attachAudio);
   const enqueueAlign = useAlignStore((s) => s.enqueue);
-  const native = useAlignStore((s) => s.native);
+  const phone = useAlignStore((s) => s.phone);
+  const remote = useAlignStore((s) => s.remote);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** 文稿 hash 变了（FR-3.7）：那两个选项的界面在「来源」页，这里只能把人送过去。 */
@@ -235,8 +236,8 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
         // 只有「压根没有时间戳」和「音频换过了」才值得对齐，见 align/apply.ts 的 hasTimings。
         enqueueAlign(lessonId);
         setMessage(
-          native
-            ? '素材已补齐。这一课还没有时间戳 —— 手机上不自动对齐，在桌面上对一次会同步回来。'
+          phone && !remote
+            ? '素材已补齐。这一课还没有时间戳 —— 手机上不自己算对齐，登录同步后由服务器算，或者在桌面上对一次会同步回来。'
             : '素材已补齐，正在自动对齐（进度在页面底部）。',
         );
       } else {

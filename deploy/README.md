@@ -196,6 +196,19 @@ Android 客户端登记的包名**逐字一致**（含任何 `.debug` 后缀）�
 这台服务器现在还替手机算 emissions（音频 → 帧级 log-prob）。**同步不依赖它** ——
 装不上、关掉、算挂了都只让对齐那三条路由回 503，同步照常。
 
+> **2026-09-21（SPEC §0 变更 42）改了三处，重装时照新的走：**
+> ① 模型换成 `oliverguhr/wav2vec2-large-xlsr-53-german-cv9`，服务器跑 **fp32**（1204 MiB，
+> 自己从 HF 取）；② `mem_limit` 从 2g 提到 **4g**，并加了 `ALIGN_IDLE_MS`（闲置 10 分钟
+> 把那 1.3GB 还给系统）；③ 这台机器多了一个身份 —— **权重站**：
+> `GET /v1/align/weights/**` 把 `data/models/` 当只读静态目录对外提供，
+> **桌面浏览器的 4-bit 权重只有这儿有**（HF 上没有，Cloudflare 单文件上限 25 MiB 放不下）。
+> 所以哪怕 `ALIGN_ENABLED=false`，这份文件也要放上去。
+>
+> **⚠️ 顺序不能反：先把权重放上去、compose 改好，再 `push main`。** 推 main 会同时发前端和后端，
+> 而新前端第一次对齐就会去权重站取那 230MB —— 文件还没上去的话，**线上桌面浏览器的本地对齐
+> 会直接报「取不到对齐权重」**；同时新后端第一次对齐要下 1.2GB fp32，在旧的 `mem_limit: 2g`
+> 下很可能被 OOM 杀掉，**连着把同步也带走一次**（restart 会拉回来，但那一次推送会失败）。
+
 ### 一次性：改 compose 并放好权重
 
 **这两步 CI 干不了**（部署脚本只搬 `src/`、`package.json`、`package-lock.json`、`Dockerfile`，
@@ -204,31 +217,43 @@ compose 与 `.env` 一律不动，理由见 §6），所以第一次上线要手
 权重是让服务器自己从 HF 取的（那一次 60.7 秒）。下面这些留着，是为了重装或换机器时照着走：
 
 ```bash
-# ① mem_limit 必须从 256m 提到 2g，否则第一次对齐会把容器 OOM 掉（连同步一起带走）。
-#    仓库里 server/docker-compose.yml 已经是新的，把它同步过去即可：
+# ① compose 变了（mem_limit 4g）。仓库里 server/docker-compose.yml 已经是新的，同步过去：
 scp server/docker-compose.yml wnet-server:~/deutsch-sync/docker-compose.yml
 ```
 
 ```bash
-# ② 权重（241MB 的 model_q4.onnx）。不放也能用 —— 第一次对齐时服务器自己去 HF 取，
-#    只是那一次要多等几分钟。本机已经有一份（npm run stage:align 下过），直接送过去更快：
-# 一行，别加反斜杠续行 —— 这些命令是在 PowerShell 里跑的
-scp public/models/onnx-community/mms-300m-1130-forced-aligner-ONNX/onnx/model_q4.onnx wnet-server:~/deutsch-sync/data/models/onnx-community/mms-300m-1130-forced-aligner-ONNX/onnx/
+# ② 目标目录先建出来（属主是跑容器那个用户）
+ssh wnet-server 'mkdir -p ~/deutsch-sync/data/models/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/onnx'
 ```
 
 ```bash
-# 目标目录要先建出来（属主是跑容器那个用户）
-ssh wnet-server 'mkdir -p ~/deutsch-sync/data/models/onnx-community/mms-300m-1130-forced-aligner-ONNX/onnx'
+# ③ 浏览器要的 4-bit 权重（230MB）+ 两个配置文件。**必须从本机送**：
+#    那份 .onnx 是我们自己量化的（python scripts/quantize-align-model.py），HF 上没有；
+#    两个 json 里 preprocessor_config.json 被改过一处（见 scripts/align-model/README.md）。
+#    一行，别加反斜杠续行 —— 这些命令是在 PowerShell 里跑的
+scp public/models/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/onnx/model_q4.onnx wnet-server:~/deutsch-sync/data/models/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/onnx/
 ```
 
 ```bash
-# ③ 重建并起来（Dockerfile 变了：多了 ffmpeg + libgomp1 + onnxruntime-node）
+scp scripts/align-model/config.json scripts/align-model/preprocessor_config.json wnet-server:~/deutsch-sync/data/models/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/
+```
+
+```bash
+# ④ fp32 那份（1204 MiB，服务器自己推理用）不用送 —— 第一次对齐时它自己去 HF 取。
+#    想省那几分钟就让服务器先取：
+ssh wnet-server 'cd ~/deutsch-sync/data/models/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/onnx && curl -L -o model.onnx https://huggingface.co/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/resolve/main/onnx/model.onnx'
+```
+
+```bash
+# ⑤ 重建并起来
 ssh wnet-server 'cd ~/deutsch-sync && docker compose up -d --build'
 ```
 
 `.env` 里**什么都不用加**：对齐默认开着，其余全有默认值。想调的话有这些
-（改完 `docker compose up -d`）：`ALIGN_ENABLED`、`ALIGN_MODEL_DTYPE`（默认 q4，
-**换它意味着服务器算的和手机/桌面算的不再逐位相同**）、`ALIGN_THREADS`（默认 3）、
+（改完 `docker compose up -d`）：`ALIGN_ENABLED`、`ALIGN_MODEL_DTYPE`（默认 **fp32**；
+改成 `q4` 就是跟浏览器用同一份权重，那时两边逐位相同、但精度低一档）、
+`ALIGN_IDLE_MS`（默认 10 分钟，0 = 永不放会话）、`ALIGN_SERVE_WEIGHTS`（默认开，
+关掉之后桌面浏览器取不到权重）、`ALIGN_THREADS`（默认 3）、
 `ALIGN_MAX_AUDIO_BYTES`（40MB）、`ALIGN_MAX_SECONDS`（1800）、`ALIGN_MAX_QUEUED`（3）、
 `ALIGN_RESULT_TTL_MS`（30 分钟）。
 
@@ -248,7 +273,14 @@ ssh wnet-server 'cd ~/deutsch-sync && docker compose exec sync node src/align/pr
 
 第 ③ 个数（一块几秒）× 27 就是「一课要等多久」。
 探针最后打的那份指纹（frames + 前 5 个 log-prob + 全局均值）是拿来和桌面浏览器
-算同一课时的结果对比的：**三条路应该给出同一份矩阵**。
+算同一课时的结果对比的：**变更 42 之后两条路的权重不同**（这里 fp32、浏览器 q4），
+所以指纹不会逐位相同 —— 但量级和走向必须一致，差出一个数量级就是哪儿接错了。
+
+```bash
+# ③ 权重站真的在提供文件（桌面浏览器的对齐要靠它）
+curl -sI https://sync.gamestao.com/v1/align/weights/oliverguhr/wav2vec2-large-xlsr-53-german-cv9/onnx/model_q4.onnx
+# 要看到 200、content-length 约 241400000、accept-ranges: bytes
+```
 
 **没有真实 mp3 也能验** —— 探针要的三个数与音频内容无关，现场生成一段正弦波就行：
 

@@ -17,7 +17,7 @@ vi.mock('@/sync/session', () => ({
   getSessionToken: () => getSessionToken(),
 }));
 
-const { MMS_FA } = await import('./config');
+const { GERMAN_CTC } = await import('./config');
 const {
   computeRemoteEmissions,
   decodeMatrix,
@@ -99,7 +99,7 @@ describe('能不能用', () => {
     routeFetch({
       'POST /v1/align/jobs': () => json(503, { code: 'align_off', error: '没开对齐' }),
     });
-    await expect(computeRemoteEmissions(AUDIO, MMS_FA)).rejects.toThrow('没开对齐');
+    await expect(computeRemoteEmissions(AUDIO, GERMAN_CTC)).rejects.toThrow('没开对齐');
     expect(await remoteEmissionsAvailable()).toBe(false);
   });
 });
@@ -111,14 +111,14 @@ describe('一次完整的对齐', () => {
       'GET /v1/align/jobs/job-1': () => json(200, { id: 'job-1', status: 'done' }),
       'GET /v1/align/jobs/job-1/result': () =>
         matrixResponse(
-          { frames: 2, vocabSize: MMS_FA.vocabSize, duration: 0.04 },
-          new Array(2 * MMS_FA.vocabSize).fill(-1.25),
+          { frames: 2, vocabSize: GERMAN_CTC.vocabSize, duration: 0.04 },
+          new Array(2 * GERMAN_CTC.vocabSize).fill(-1.25),
         ),
     });
 
-    const matrix = await computeRemoteEmissions(AUDIO, MMS_FA);
+    const matrix = await computeRemoteEmissions(AUDIO, GERMAN_CTC);
     expect(matrix.frames).toBe(2);
-    expect(matrix.vocabSize).toBe(MMS_FA.vocabSize);
+    expect(matrix.vocabSize).toBe(GERMAN_CTC.vocabSize);
     expect(matrix.duration).toBeCloseTo(0.04);
     expect(matrix.logProbs[0]).toBeCloseTo(-1.25, 6);
     expect(matrix.source).toEqual({ kind: 'remote', origin: BASE });
@@ -134,9 +134,9 @@ describe('一次完整的对齐', () => {
       'POST /v1/align/jobs': () => json(202, { id: 'j', status: 'running' }),
       'GET /v1/align/jobs/j': () => json(200, { id: 'j', status: 'done' }),
       'GET /v1/align/jobs/j/result': () =>
-        matrixResponse({ frames: 1, vocabSize: MMS_FA.vocabSize, duration: 0.02 }, new Array(MMS_FA.vocabSize).fill(0)),
+        matrixResponse({ frames: 1, vocabSize: GERMAN_CTC.vocabSize, duration: 0.02 }, new Array(GERMAN_CTC.vocabSize).fill(0)),
     });
-    await computeRemoteEmissions(AUDIO, MMS_FA);
+    await computeRemoteEmissions(AUDIO, GERMAN_CTC);
     const init = fetchMock.mock.calls[0][1] as RequestInit & { headers: Record<string, string> };
     expect(init.method).toBe('POST');
     expect(init.headers['Content-Type']).toBe('audio/mpeg');
@@ -156,11 +156,11 @@ describe('一次完整的对齐', () => {
         return json(200, { id: 'j', status: 'done' });
       },
       'GET /v1/align/jobs/j/result': () =>
-        matrixResponse({ frames: 1, vocabSize: MMS_FA.vocabSize, duration: 0.02 }, new Array(MMS_FA.vocabSize).fill(0)),
+        matrixResponse({ frames: 1, vocabSize: GERMAN_CTC.vocabSize, duration: 0.02 }, new Array(GERMAN_CTC.vocabSize).fill(0)),
     });
 
     const seen: string[] = [];
-    const promise = computeRemoteEmissions(AUDIO, MMS_FA, {
+    const promise = computeRemoteEmissions(AUDIO, GERMAN_CTC, {
       onProgress: (p) => seen.push(`${p.stage}:${p.chunk ?? '-'}/${p.chunks ?? '-'}`),
     });
     await vi.advanceTimersByTimeAsync(6000);
@@ -181,7 +181,7 @@ describe('出错与取消', () => {
       'GET /v1/align/jobs/j': () => json(404, { error: '没有这个对齐任务' }),
       'DELETE /v1/align/jobs/j': () => json(200, { cancelled: true }),
     });
-    await expect(computeRemoteEmissions(AUDIO, MMS_FA)).rejects.toThrow('重新提交');
+    await expect(computeRemoteEmissions(AUDIO, GERMAN_CTC)).rejects.toThrow('重新提交');
   });
 
   it('服务器算挂了：把它的原因原样抛出来', async () => {
@@ -190,7 +190,7 @@ describe('出错与取消', () => {
       'GET /v1/align/jobs/j': () => json(200, { id: 'j', status: 'error', error: 'ffmpeg 退出码 1' }),
       'DELETE /v1/align/jobs/j': () => json(200, { cancelled: true }),
     });
-    await expect(computeRemoteEmissions(AUDIO, MMS_FA)).rejects.toThrow('ffmpeg 退出码 1');
+    await expect(computeRemoteEmissions(AUDIO, GERMAN_CTC)).rejects.toThrow('ffmpeg 退出码 1');
   });
 
   it('出错时顺手 DELETE 掉服务器上那个任务 —— 别让它白算完', async () => {
@@ -199,7 +199,7 @@ describe('出错与取消', () => {
       'GET /v1/align/jobs/j': () => json(200, { id: 'j', status: 'error', error: '炸了' }),
       'DELETE /v1/align/jobs/j': () => json(200, { cancelled: true }),
     });
-    await expect(computeRemoteEmissions(AUDIO, MMS_FA)).rejects.toThrow();
+    await expect(computeRemoteEmissions(AUDIO, GERMAN_CTC)).rejects.toThrow();
     await Promise.resolve();
     expect(calls).toContain('DELETE /v1/align/jobs/j');
   });
@@ -207,7 +207,7 @@ describe('出错与取消', () => {
   it('没登录时压根不发请求', async () => {
     getSessionToken.mockResolvedValue(undefined);
     const { fetchMock } = routeFetch({});
-    await expect(computeRemoteEmissions(AUDIO, MMS_FA)).rejects.toThrow('尚未登录');
+    await expect(computeRemoteEmissions(AUDIO, GERMAN_CTC)).rejects.toThrow('尚未登录');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -216,28 +216,28 @@ describe('decodeMatrix（线缆格式）', () => {
   it('照文档手写的编码器编出来的东西能解开 —— 两边格式对得上', () => {
     const values = [-0.5, -1.5, -2.5, -3.5];
     const buffer = frame({ frames: 2, vocabSize: 2, duration: 0.04 }, values);
-    const matrix = decodeMatrix(buffer, { ...MMS_FA, vocabSize: 2 });
+    const matrix = decodeMatrix(buffer, { ...GERMAN_CTC, vocabSize: 2 });
     expect(Array.from(matrix.logProbs)).toEqual(values);
     expect(matrix.frames).toBe(2);
   });
 
   it('词表大小对不上就当场炸 —— 按错的列数读会得到「看起来正常」的错时间戳', () => {
     const buffer = frame({ frames: 1, vocabSize: 7, duration: 0.02 }, [0, 0, 0, 0, 0, 0, 0]);
-    expect(() => decodeMatrix(buffer, MMS_FA)).toThrow('词表大小');
+    expect(() => decodeMatrix(buffer, GERMAN_CTC)).toThrow('词表大小');
   });
 
   it('负载被截断就当场炸 —— 短了的矩阵会让后半课的时间戳静默落在均匀分布上', () => {
     const buffer = frame({ frames: 10, vocabSize: 2, duration: 0.2 }, [0, 0]);
-    expect(() => decodeMatrix(buffer, { ...MMS_FA, vocabSize: 2 })).toThrow('长度对不上');
+    expect(() => decodeMatrix(buffer, { ...GERMAN_CTC, vocabSize: 2 })).toThrow('长度对不上');
   });
 
   it('头部长度不是 4 的倍数（对不上补齐约定）也当场炸，而不是抛一个看不懂的 RangeError', () => {
     const bad = new Uint8Array(16);
     new DataView(bad.buffer).setUint32(0, 5, true); // 4 + 5 = 9，不是 4 的倍数
-    expect(() => decodeMatrix(bad.buffer, MMS_FA)).toThrow('格式对不上');
+    expect(() => decodeMatrix(bad.buffer, GERMAN_CTC)).toThrow('格式对不上');
   });
 
   it('空响应也不会解出一个空矩阵', () => {
-    expect(() => decodeMatrix(new ArrayBuffer(2), MMS_FA)).toThrow('空的');
+    expect(() => decodeMatrix(new ArrayBuffer(2), GERMAN_CTC)).toThrow('空的');
   });
 });

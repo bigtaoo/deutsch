@@ -10,6 +10,7 @@ import { signSession, verifySession } from './session.ts';
 import { extensionOf, type Engine } from './align/engine.ts';
 import type { JobQueue } from './align/jobs.ts';
 import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
+import { serveWeights } from './align/weights.ts';
 
 /** 文档 id 直接进 URL 路径，字符集收紧到「课程 id 用得到的那些」。 */
 const DOC_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -27,6 +28,13 @@ export interface AppDeps {
    * 路由回 503 并说清原因，而同步照常工作。备份是本职，不能被它拖下水。
    */
   align?: { engine: Engine; queue: JobQueue; maxAudioBytes: number };
+  /**
+   * 权重站的根目录（`${DATA_DIR}/models`）。给了就开 `GET /v1/align/weights/**`。
+   *
+   * **它和 `align` 是分开的两件事**：关掉对齐（ALIGN_ENABLED=false）之后，
+   * 这台服务器仍然可以只当权重站 —— 桌面浏览器那条路要靠它才拿得到权重。
+   */
+  weightsDir?: string;
   /** 测试里可以拨快时钟。 */
   now?: () => number;
 }
@@ -82,6 +90,16 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
   );
 
   // ── 登录 ──────────────────────────────────────────────────────────────
+  // ── 权重站（不要求登录，见 align/weights.ts 顶部）──────────────────────
+  // **必须注册在下面那道会话中间件之前**：Hono 按注册顺序组合处理器，
+  // 这个处理器直接返回、不调 next()，鉴权那一层就不会跑到。
+  if (deps.weightsDir) {
+    const prefix = '/v1/align/weights/';
+    app.get('/v1/align/weights/*', (c) =>
+      serveWeights(deps.weightsDir!, c.req.path.slice(prefix.length), c.req.header('range')),
+    );
+  }
+
   app.post('/v1/auth/google', async (c) => {
     const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
     if (!allowAuthAttempt(ip)) return c.json({ error: '登录尝试过于频繁，稍后再试' }, 429);

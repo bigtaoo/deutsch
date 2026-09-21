@@ -77,7 +77,7 @@ export function applyTimings(
   const byIndex = new Map(timings.map((t) => [t.index, t]));
 
   // 词级时间戳按句归拢，顺手扔掉对齐器内部那两个字段（sentenceIndex 已经是键、
-  // wordIndex 数的是罗马化后的词，存下来会误导 —— 见 models.ts 的 WordSpan）。
+  // wordIndex 数的是映射后的词，存下来会误导 —— 见 models.ts 的 WordSpan）。
   const wordsBySentence = new Map<number, WordSpan[]>();
   for (const w of words ?? []) {
     const span: WordSpan = { charStart: w.charStart, charEnd: w.charEnd, start: w.start, end: w.end };
@@ -123,7 +123,7 @@ export function applyTimings(
       endTimeExplicit: true,
       timingSource: 'auto' as const,
       timingConfidence: timing.confidence,
-      // 这一句没算出词级时间戳（纯数字句、罗马化后无 token）时保持 undefined，
+      // 这一句没算出词级时间戳（纯数字句、映射后无 token）时保持 undefined，
       // 而不是留着上一轮的旧数组 —— 那会让 UI 拿旧边界去高亮新时间戳。
       words: wordsBySentence.get(sentence.index),
       // FR-15.19：人耳确认过的是**上一版边界**，不是这个句子。重对之后那份确认作废，
@@ -165,6 +165,16 @@ export function applyTimings(
  * "Mitte der 1950er-Jahre" -1.46）。坏的从来不是排序，是阈值的尺度。
  *
  * 换模型要重标一次：整条分布会整体平移（见 reviewQueue 里那段）。
+ *
+ * ── 2026-09-21 换成德语原生模型之后的复测（变更 42）──
+ * 同一课（6:16，45 句，webgpu/q4）：**中位数 -0.02 / p25 -0.03 / p75 -0.01 / 最差 -1.59**。
+ * 也就是说整条分布从「-1.1 上下、跨度 1~2」挪到了「贴着 0、只有几个真正的离群值」——
+ * 罗马化丢掉的那些区分（ä/ö/ü、ß）和缺失的词分隔符，原来一直在给每个 token 交税。
+ * 0.5 这个余量在新分布上报 **3 句**，而那三句正是**采访同期声**
+ * （-1.59 „Australien, weil ich…"、-0.63、-0.54 都是受访者的自然口语）——
+ * 排序仍然指着真正难的地方，只是「难」的定义从「模型看不懂的字符」变成了「真的不好念」。
+ * 3 句在「四到九句」那个量级的下沿，但它是诚实的：p75 到 median 只差 0.01，
+ * 这一课除了那三句以外真的没有可看的。
  */
 export const REVIEW_MARGIN = 0.5;
 
@@ -208,10 +218,10 @@ export function flaggedByConfidence(sentences: Sentence[]): Sentence[] {
  *
  * 排序和阈值都没动，动的只有「什么时候从队列里消失」。
  *
- * 用**相对**基准（本课中位数）而不是绝对阈值，是因为绝对值随模型和语言漂：
- * MMS-FA 吃的是罗马化文本（丢了 ä/ö/ü 的区分、丢了数字标点），每 token
- * 平均 -1.1 是正常水平而不是「差」。换成 config.ts 里说的那种德语专用模型，
- * 整条分布会整体上移，绝对阈值当场失效，相对基准不会。
+ * 用**相对**基准（本课中位数）而不是绝对阈值，是因为绝对值随模型和语言漂 ——
+ * **这件事在变更 42 真的发生了一次**：MMS-FA 吃罗马化文本（丢了 ä/ö/ü 的区分、
+ * 丢了词分隔符），每 token 平均 -1.1 是它的正常水平；换成德语原生模型之后
+ * 中位数变成 -0.02。任何绝对阈值都会在那一刻当场失效，相对基准一行没改就还准。
  *
  * DW 素材里真正会出问题的地方是固定的几类 —— 台标音乐、播音员交替、英语借词
  * （„Working Holiday Visum"）、被丢掉的数字（"zwischen 18 und 30"）——

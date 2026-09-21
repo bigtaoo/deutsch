@@ -1,24 +1,40 @@
 // 对齐模型的**纯配置**。
 //
-// ── 为什么模型是可插拔的 ──
-// 默认用 MMS-FA（facebook/mms-300m-1130-forced-aligner），它是**CC-BY-NC-4.0**。
-// 自己精听没问题，但这个项目的 §3.1 本来就是一整节法律约束，
-// 把「换一个宽松许可的德语 CTC 模型」做成改配置而不是重写代码，是这里唯一负责任的形状。
-// 换模型要动的是：modelId、vocab、以及 romanize 是否还需要（德语专用模型自带 ä/ö/ü/ß，
-// 那时罗马化应该退化成恒等映射）。对齐算法（viterbi/windowed/target）一行都不用改。
+// ── 用的是哪个模型（变更 42）──
+// `oliverguhr/wav2vec2-large-xlsr-53-german-cv9` —— **德语原生的 CTC 模型**，
+// Apache-2.0，Common Voice 9 上 WER 9.48% / CER 1.92%（贪心，不带 LM）。
+// 词表 35 个 token：`|` + a-z + ä/ö/ü/ß + `[UNK]`/`[PAD]` + 两个用不到的 `<s>`/`</s>`。
+//
+// 上一个是 MMS-FA（`facebook/mms-300m-1130-forced-aligner`），换掉它有三个理由，
+// 按重要性排：
+//   1. **它是罗马化的**：词表只有 a-z，德语进去之前 ä→a、ö→o、ü→u、ß→ss，
+//      而那几个音恰恰是德语里最要紧的区别。德语原生模型不用丢这些。
+//   2. **它没有词分隔符**：MMS 的词表里没有空格，词间静音只能由 blank 吸收；
+//      这个模型有 `|`，词边界因此是被显式建模的（见 vocab.ts 顶部那段）。
+//   3. MMS-FA 是 **CC-BY-NC-4.0**（非商用）。自己精听没问题，但 §3.1 本来就是
+//      一整节法律约束，能换成 Apache-2.0 就没有理由不换。
+//
+// 换模型要动的是：modelId、vocabSize/blankId、vocab.ts 那张表与字符映射。
+// 对齐算法（viterbi/windowed/target）**一行都不用改** —— blankId 是参数，不是常量。
+//
+// ── 权重从哪儿来 ──
+// 这个仓库在 HF 上只有 fp32 那一份（1204 MiB，服务器用的就是它）。浏览器要的
+// 4-bit 量化版是**我们自己量化的**（scripts/quantize-align-model.py），HF 上没有，
+// 所以取件顺序是：随包（public/models/，只有 Android 打包版有）→ 自己的权重站
+// （同步服务器的 /v1/align/weights/，见 WEIGHTS_BASE）。没有「退到 HF CDN」这一档了。
 //
 // ── §3.1.1 R-1 与模型权重 ──
 // R-1 管的是**学习内容**的通路：请求只能从用户设备发出，不许有我们运营的中转代抓。
-// 模型权重不是学习内容，音频也从不离开设备（对齐全程在本机跑）。
-// 所以自托管权重、或首次使用时从 HF CDN 取权重，都不碰 R-1。
-// 但「离线可用」是 FR-11/§7.6 的硬要求，所以打包版必须把权重放进 public/models/
-// （npm run stage:align），只有纯 web 版才退到 CDN。
+// 模型权重不是学习内容，所以从自己的服务器取权重不碰 R-1。
+// （音频确实会经手服务器 —— 那是 FR-15.17 那条路自己的事，见 remoteEmissions.ts。）
 
 // ── 为什么配置和运行时设置分成两个文件 ──
 // 这个文件被主线程侧的 client.ts 引用（只为了拿 sampleRate），而 configureRuntime 需要
 // import @huggingface/transformers —— 它连着 onnxruntime-web 一共 500KB+。
 // 合在一起的话首屏就得为一个绝大多数时候用不到的功能背上这 500KB。
 // 需要 transformers.js 的那半边在 runtime.ts。
+
+import { SYNC_API_BASE } from '@/sync/config';
 
 export interface AlignModelConfig {
   /** HF 仓库 id，或 public/models/ 下的目录名 */
@@ -33,16 +49,31 @@ export interface AlignModelConfig {
   frameStride: number;
 }
 
-export const MMS_FA: AlignModelConfig = {
-  modelId: 'onnx-community/mms-300m-1130-forced-aligner-ONNX',
-  vocabSize: 31,
-  blankId: 0,
+export const GERMAN_CTC: AlignModelConfig = {
+  modelId: 'oliverguhr/wav2vec2-large-xlsr-53-german-cv9',
+  // 35 而不是 33：`added_tokens.json` 里的 `<s>`/`</s>` 也算在 logits 的最后一维里。
+  vocabSize: 35,
+  // **不是 0。** 0 是词分隔符 `|`，blank 是 `[PAD]`=32。给错了对齐会静默地全错。
+  blankId: 32,
   sampleRate: 16000,
   frameStride: 320,
 };
 
-/** 权重与 ORT wasm 的自托管位置（相对站点根）。 */
+/** 随包权重的位置（相对站点根）。只有跑过 `npm run stage:align` 的打包版有。 */
 export const LOCAL_MODEL_PATH = '/models/';
+
+/**
+ * 自己的权重站：同步服务器上那份静态目录（`server/src/align/weights.ts`）。
+ *
+ * 为什么不是 HF CDN：浏览器要的是 4-bit 量化版，而那份文件是我们自己量化出来的，
+ * HF 上并不存在（见文件顶部）。为什么不是 Cloudflare：那边单文件上限 25 MiB，
+ * 230MB 的权重放不进去。所以放在这台本来就要有的服务器上，浏览器取一次、
+ * transformers.js 自己存进 Cache API，之后离线可用。
+ *
+ * 没配同步服务器时是空串 —— 那时本机对齐整个不可用，UI 要说得出这句话
+ * （设置页「对齐后端」那一段）。
+ */
+export const WEIGHTS_BASE = SYNC_API_BASE ? `${SYNC_API_BASE}/v1/align/weights/` : '';
 
 /**
  * 探一下自托管权重在不在。也用来在 UI 上区分「随包带」和「要下载 200MB」。
@@ -58,9 +89,13 @@ export const LOCAL_MODEL_PATH = '/models/';
  * 在静态托管、原生壳、`vite preview` 三种情况下都成立（SPA fallback 回的 index.html
  * parse 一定失败）。
  */
-export async function hasLocalWeights(config: AlignModelConfig): Promise<boolean> {
+export async function hasLocalWeights(
+  config: AlignModelConfig,
+  base: string = LOCAL_MODEL_PATH,
+): Promise<boolean> {
+  if (!base) return false;
   try {
-    const res = await fetch(`${LOCAL_MODEL_PATH}${config.modelId}/config.json`);
+    const res = await fetch(`${base}${config.modelId}/config.json`);
     if (!res.ok) return false;
     const body: unknown = await res.json();
     return typeof body === 'object' && body !== null;
@@ -79,92 +114,63 @@ export interface DevicePlan {
 }
 
 /**
- * 原生插件那一档（SPEC §0 变更 31）。**它不在 `PLAN_LADDER` 里**，故意的：
- * 阶梯是「这台设备的 WebView 里哪一档不会被杀」，而原生根本不在 WebView 里跑，
- * 崩溃计数与降档规则对它都没有意义。所以 `planStep` 用 `NATIVE_PLAN_STEP`（-1）——
- * 它永远撞不上 `crashedSteps()` 里的 0/1，也就不会污染那两档的判据。
- *
- * dtype 是 `q4`（230.3 MiB）而不是 WebGPU 那档的 `q4f16`：
- * `q4f16` 要 fp16 算力，那是 WebGPU 才有的；原生走 ORT 的 CPU EP，
- * 而 `q4` 用的 MatMulNBits 正是 ORT 自己的 4-bit 通路。
- * 换 dtype 要三处一起改：这里、`scripts/stage-align-assets.mjs` 的文件表、
- * 以及原生插件里那个文件名（`EmissionsEngine.swift`）。
- */
-export interface NativePlan {
-  device: 'native';
-  dtype: Dtype;
-}
-
-/**
- * 服务器那一档（SPEC §0 变更 35 / FR-15.17）。和原生那一档同一个道理：
+ * 服务器那一档（SPEC §0 变更 35 / FR-15.17）。
  * **不在 `PLAN_LADDER` 里**，`planStep` 也用 -1 —— 这台设备的内存和它一点关系都没有，
  * 把它算进崩溃计数会让桌面的降档判据跟着坏。
  *
- * dtype 记 `q4`，与原生那一档、与服务器 `ALIGN_MODEL_DTYPE` 的默认值是同一份权重。
- * 三条路用同一个 dtype 不是巧合而是要求：量化误差一换，同一课的边界就会细微地不一样
- * （理由写在 server/src/align/model.ts 顶部）。
+ * dtype 记 `fp32`：服务器跑的是**未量化**的那一份（1204 MiB，`ALIGN_MODEL_DTYPE`
+ * 的默认值），而浏览器跑的是自己量化的 q4。变更 42 之前三条路刻意用同一份权重，
+ * 为的是「同一课在哪儿算都得到同一份时间戳」；现在那个要求主动放弃了 ——
+ * 服务器上没有体积和内存的理由去将就 4-bit，而两条路的差别本来就查得到（黑匣子里
+ * 记着这一档）。**所以同一课重对一次、换个地方算，边界会有几十毫秒级的出入。**
  */
 export interface RemotePlan {
   device: 'remote';
   dtype: Dtype;
 }
 
-/** 黑匣子与诊断里记的「用的哪套后端」。浏览器那两档 + 原生 + 服务器。 */
-export type RunPlan = DevicePlan | NativePlan | RemotePlan;
+/** 黑匣子与诊断里记的「用的哪套后端」。浏览器那两档 + 服务器。 */
+export type RunPlan = DevicePlan | RemotePlan;
 
-export const NATIVE_PLAN: NativePlan = { device: 'native', dtype: 'q4' };
-export const NATIVE_PLAN_STEP = -1;
-
-export const REMOTE_PLAN: RemotePlan = { device: 'remote', dtype: 'q4' };
-/** 与原生共用 -1：那个值的含义是「不在阶梯上」，不是「哪一档」。 */
-export const REMOTE_PLAN_STEP = NATIVE_PLAN_STEP;
+export const REMOTE_PLAN: RemotePlan = { device: 'remote', dtype: 'fp32' };
+/** -1 的含义是「不在阶梯上」，不是「哪一档」。 */
+export const REMOTE_PLAN_STEP = -1;
 
 /**
- * 「第几档」这句话只对浏览器那两档成立。原生不在阶梯上，
+ * 「第几档」这句话只对浏览器那两档成立。服务器不在阶梯上，
  * 给它编一个档号会让诊断页说出「第 0 档」这种没有意义的话。
+ *
+ * `planStep < 0` 那一支还兼容**历史记录**：黑匣子在 localStorage 里，
+ * 会比代码活得久 —— 变更 42 之前那台 iPhone 上的 `native/q4` 还躺在里面。
  */
 export function planLabel(plan: RunPlan, planStep: number): string {
   const backend = `${plan.device}/${plan.dtype}`;
-  if (plan.device === 'native') return `${backend}（原生插件，不在阶梯上）`;
   if (plan.device === 'remote') return `${backend}（服务器，不在阶梯上）`;
+  if (planStep < 0) return `${backend}（不在阶梯上）`;
   return `${backend}（第 ${planStep + 1} 档）`;
 }
 
 /**
- * 后端阶梯。**顺序 = 从最省内存到最能兜底**，不是从快到慢（虽然这里恰好一致）。
+ * 后端阶梯。**顺序 = 从最快到最能兜底**。
  *
- * 之所以是「阶梯」而不是一个函数算出来的唯一答案：手机上加载权重会把应用整个搞死
+ * 之所以是「阶梯」而不是一个函数算出来的唯一答案：加载权重会把整个进程搞死
  * （见 journal.ts 顶部那次事故），而崩溃是 try/catch 抓不到的。能做的只有
  * 「记住哪一档崩过，下次换一档」—— 阶梯就是给这件事用的。
  *
- * ── 为什么第 2 档是 q4 而不是 int8（2026-09-02 实测改正）──
- * 原来写的是 `wasm/int8`，理由是「WASM 唯一能跑的组合」。**那句话是错的**：
- * 4-bit 那两份（q4 / bnb4）的算子在 wasm EP 上都有实现，实测都跑通了。
- * 而 int8 那份根本跑不起来 —— 在 Windows/Chrome、32GB 内存的机器上，
- * 光是加载就会让渲染进程被干掉，JS 侧一行报错都没有（302.6 MiB 的权重在 ORT 的
- * wasm 堆里同时存在三份左右：JS 缓冲 + protobuf 解析 + 权重张量）。
- * 也就是说「没有 WebGPU 的浏览器」以前是**必死**，不是「慢一个量级」。
+ * ── 为什么两档用同一份权重（变更 42）──
+ * 以前是 `webgpu/q4f16` + `wasm/q4` 两份文件（187.6 + 230.3 MiB 全都随包带）。
+ * 现在权重是我们自己量化的（scripts/quantize-align-model.py），多出一份 fp16 变体
+ * 就意味着多量化一次、多托管一份、多一条「这台机器到底加载了哪份」的排查路径 ——
+ * 而 q4f16 唯一的好处是 WebGPU 上省一半显存和一点时间，在桌面上都不是问题。
+ * 所以只做 `q4`：MatMulNBits 在 WebGPU 和 wasm 两个 EP 上都有实现，一份文件通吃。
  *
- * 这个仓库里各档的实际字节与实测结果（同一台机器、同一条 Worker 通路）：
- *   - model_q4f16.onnx  187.6 MiB  ✅ 真实一课 8:05，45/45 句，26 秒。需要 fp16，只有 WebGPU 支持
- *   - model_bnb4.onnx   212.2 MiB  ✅ wasm 跑通（25 秒音频 32 秒）
- *   - model_q4.onnx     230.3 MiB  ✅ wasm 跑通（25 秒音频 36 秒，约 1.4× 实时）
- *   - model_int8.onnx   302.6 MiB  💥 加载即被杀
- *   - model_uint8 / model_quantized 同为 302.6 MiB，不必再试
- * 选 q4 而不是更小的 bnb4：两者体积只差 8%，都在能跑的一侧，而 q4 走的是 ORT 自己的
- * MatMulNBits，是 optimum / transformers.js 的默认 4-bit 通路 —— 出问题时可查的东西多得多。
- * 若哪天 q4 也被杀，降到 bnb4 是现成的下一步（改这一行 + stage-align-assets.mjs）。
- *
- * 只有这两份进 public/models/（scripts/stage-align-assets.mjs），所以阶梯只有两档：
- * 加第三档就意味着 IPA 再胖 200MB。顺带，换掉 int8 让随包权重从 490.2 MiB 降到 417.9 MiB。
- *
- * ── 手机上两档都不够 ──
- * iPhone 13 实测两档都在「加载对齐模型」这一步被系统杀掉，而 q4f16 已经是这个模型
- * **最小的一个变体**。所以降档在手机上救不了 —— 要么换个小一个数量级的模型，
- * 要么把 emissions 那一半挪出 WebView（原生插件或远端，见 emissionMatrix.ts）。
+ * 实测（MMS-FA 时代，同一台机器、同一条 Worker 通路，可以当量级参考）：
+ *   - 4-bit / WebGPU  真实一课 8:05，45/45 句，26 秒
+ *   - 4-bit / wasm    25 秒音频 36 秒，约 1.4× 实时
+ *   - int8（302.6 MiB）在 wasm 上加载即被系统杀掉 —— 所以 8-bit 那一档从来不在阶梯上
  */
 export const PLAN_LADDER: DevicePlan[] = [
-  { device: 'webgpu', dtype: 'q4f16' },
+  { device: 'webgpu', dtype: 'q4' },
   { device: 'wasm', dtype: 'q4' },
 ];
 
