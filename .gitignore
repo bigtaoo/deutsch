@@ -64,3 +64,9 @@ client_secret*.json
 
 # 热更包的中转目录（scripts/build-ota.mjs 的产物，由部署流水线搬进 dist/ota/）。
 ota-staging/
+
+# Playwright（E2E）的产物：失败时的 trace/截图、报告、以及 --ui 模式的临时目录。
+# 规格本身在 e2e/ 里，是入库的。
+test-results/
+playwright-report/
+blob-report/

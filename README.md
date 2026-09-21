@@ -242,7 +242,28 @@ npm run test:run
 npm run build
 ```
 
-推到 `main` 且 CI 通过后由 GitHub Actions 自动发布到 Cloudflare Workers。
+### E2E（Playwright）
+
+单测跑在 jsdom 里，那里没有真实的 IndexedDB 持久化、没有音频解码、没有 `<input type=file>`、
+也没有「刷新页面」这回事 —— 而「关掉再打开，东西还在」正是这个应用最基本的承诺。
+所以另有一套跑在真 Chromium 上的 E2E，**跑的是构建产物**（配置自己 `vite build` + `vite preview`）。
+
+第一次要先装一次浏览器（约 115MB，只装 chromium）：
+
+```bash
+npx playwright install chromium
+```
+
+```bash
+npm run test:e2e
+```
+
+规格在 `e2e/`：导航与深链接、手动导入、备份导出/导入往返、复习一轮、窄屏下的底部标签栏。
+数据一律**从界面种**（导入一份备份 JSON），没有一处直接写 IndexedDB。
+挂了之后 `npx playwright show-trace test-results/<用例>/trace.zip` 能看回放。
+
+推到 `main` 且 CI 通过后由 GitHub Actions 自动发布到 Cloudflare Workers ——
+CI 的三个 job（前端、同步后端、E2E）都是门禁，任一红就不发。
 
 ### 同步后端（`server/`）
 

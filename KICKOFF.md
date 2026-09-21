@@ -10,6 +10,42 @@
 附录 A 是 DW 接口的实测结果（A.6 是实现完成后用真实期次做的复验），附录 B 是 GitHub API 的实测结果——
 这些是真实探测出来的事实，不要重新假设，也不用重新验证（除非怀疑对方改版了）。
 
+## 现状（2026-09-21 晚，补测试 + E2E）
+
+**用户的原话**：「看看是否可以添加更多单元测试，并补齐 e2e 测试。其他文档该改就改」
+（SPEC §0 变更 44 + §10 新增「自动化测试」一段）。
+
+**先盘的是缺口，不是数量。** 有一批文件看着没测，其实早有覆盖（DW 的四个解析器在
+`adapter.test.ts` 里、对齐的 `vocab.ts` 在 `target.test.ts` 里），所以没重复写。
+真正零覆盖且**会静默出错**的补了 12 个文件 / 150 条：`sync/restore`（§2.6.5 点名的
+「最容易悄悄坏掉的那条路」）、`state/useLessonStore`（文件头自己写的两条：漏 touch
+`updatedAt` = 改动同步回来就没了；漏搬 `sentenceIndex` = 生词出处静默错位）、
+`components/bottomLayer`（§12.2 那个「进度条压住播放键」的真 bug）、`app/router`、
+`srs/fsrs`、`sync/docs`、`components/AppNav`、三个 `lib/*`、`db/wordAudio`、
+`state/useSyncStore` `useStudyStore`。服务端补了 5 个 / 54 条，其中 `config` 那一份
+钉的是三条「配错了就该拒绝启动」的规矩（密钥太短、`aud` 校验失效、白名单空着）。
+
+**E2E 是新的一整套**（Playwright，`e2e/` 37 个用例，desktop + mobile 两个 project）。
+它补的是 jsdom 根本问不出来的那一类：真实 IndexedDB 持久化（刷新之后东西还在不在）、
+浏览器解音频时长、`<input type=file>`、`a[download]` 真的落一个文件、
+窄屏下的底部标签栏与 `--bottom-inset`。**跑的是构建产物**（`vite build` + `vite preview`），
+守的正是「类型过了、单测过了、构建也过了，但打开是白屏」。
+三个形状：① 数据**从界面种**（导入一份备份 JSON），不用 `page.evaluate` 写 IndexedDB；
+② **不跑真的对齐**（fixture 里时间戳手写）—— 一课几十秒起、还要下 230MB 权重；
+③ **retries: 0** —— 会随机变绿的门禁比没有门禁更糟。
+
+**顺手抓到一个真 bug 并修了**：设置页点「确认导入」之后**不重读 store**，界面上什么都不变，
+要手动刷新导入的课程才出现（`RestoreSection` 那条一直是对的，本地导入这条漏了）。
+两条现在都顺带补上了 `useStudyStore.load()`。
+
+**另外两处收口**：`tsconfig.e2e.json` 把 `e2e/` 纳进 `npm run typecheck`
+（Playwright 自己只转译、**不查类型**，不纳进来那些文件里的类型错一辈子没人报）；
+`ci.yml` 多一个 `e2e` job，和前两个一样是**部署门禁**。
+
+**验到哪一步了**：typecheck（含 e2e）+ **761 前端** + **120 服务端** + **37 E2E** + build 全绿，
+本机实跑。**CI 上还没跑过一次** —— `playwright install --with-deps chromium` 在 ubuntu runner
+上要装一批系统库，第一次推上去要盯一眼那个 job。
+
 ## 现状（2026-09-21 晚，桌面对齐完的时间戳真的到手机）
 
 **用户的原话**：「我在电脑上已经对齐过音频了，为何手机上同步课程之后，还要再对齐一次？
@@ -37,10 +73,8 @@ FR-11.19 那条「本地比远端新就回推」的兜底只在版本号对不�
 桌面对齐完立刻关标签页 → 重开 → 手机上打开那一课应该直接是「已对齐 M / M 句」；
 以及随便挑一门老课在手机上补齐素材同样不重对。
 
-**仓库里还有另一摊没提交的东西**（不是这次动的）：`e2e/` + `playwright.config.ts` +
-`package.json` 里的 `test:e2e`，以及十几个未跟踪的 `*.test.ts`。vitest 会把那个 Playwright
-spec 当自己的用例跑然后报错，所以 **`npm run test:run` 现在是红的** —— 这次的验证是
-`npx vitest run --exclude "e2e/**" …` 跑的。要修就在 vite.config.ts 的 exclude 里补 `e2e/**`。
+~~**仓库里还有另一摊没提交的东西**~~ —— 那是同时在跑的变更 44（补测试 + E2E），
+已经收口：`vite.config.ts` 的 vitest exclude 补上了 `e2e/**`，`npm run test:run` 恢复正常。
 
 ## 现状（2026-09-21，iOS 去掉本地对齐 + 换德语原生模型）
 
@@ -663,6 +697,12 @@ Google 对这个值逐字符比对。第二层要修好第一层才会露出来�
 两者若不是同一个，结论要重验。
 
 ## 下一步建议（按价值排序）
+
+0j. **盯一眼 CI 上的 e2e job**（变更 44，只需要看一次）。本机全绿，但
+   `npx playwright install --with-deps chromium` 在 ubuntu runner 上要装一批系统库，
+   而这个 job 是**部署门禁** —— 它挂了就不发版。红了先看是装浏览器那一步还是用例本身；
+   用例挂了的话 artifact 里有 trace，`npx playwright show-trace` 直接看回放。
+   本地跑之前也要先装一次浏览器（`npx playwright install chromium`，约 115MB）。
 
 0i. **变更 43 的真链路两条**（下次碰手机时顺手，SPEC §10 有完整判据）。
    ① 桌面导入并对齐一课 → **对齐一结束就关掉标签页**（不等那 30 秒）→ 重新打开桌面

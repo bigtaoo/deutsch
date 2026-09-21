@@ -86,12 +86,15 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       setupFiles: ['./src/test/setup.ts'],
       globals: true,
-      // 两处必须排掉：
+      // 三处必须排掉：
       //   server/    同步后端，自己一套 vitest 配置（node 环境 + 自己的 node_modules）。
       //              在 jsdom 里跑它，jose 会因为 realm 不同不认 jsdom 的 Uint8Array，
       //              报一堆看不懂的密钥类型错。
       //   .claude/   git worktree 落在仓库里，里面是同一批文件的另一个分支快照。
-      exclude: ['**/node_modules/**', '**/dist/**', 'server/**', '.claude/**'],
+      //   e2e/       Playwright 的规格（变更 44）。它 import 的是 @playwright/test，
+      //              被 vitest 捡去跑会当场报「test() 不存在」—— 而那是**整个 test:run 红掉**，
+      //              不是少跑几个用例。它有自己的入口：npm run test:e2e。
+      exclude: ['**/node_modules/**', '**/dist/**', 'server/**', '.claude/**', 'e2e/**'],
     },
   };
 });
