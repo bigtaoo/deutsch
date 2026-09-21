@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildReviewQueue, cardAudioStatus, newCardShortfall } from './queue';
+import { buildReviewQueue, cardAudioStatus, newCardShortfall, pendingReadCards } from './queue';
 import type { FSRSCard, VocabEntry } from '@/types/models';
 
 const NOW = new Date('2026-08-31T12:00:00Z').getTime();
@@ -42,7 +42,7 @@ describe('buildReviewQueue', () => {
       entry('alt', { fsrs: card({ state: 2, reps: 5, due: NOW - DAY }) }),
     ];
     const { queue } = buildReviewQueue(entries, { newPerDay: 10, reviewPerDay: 60, now: NOW });
-    expect(queue.map((e) => e.id)).toEqual(['alt', 'neu']);
+    expect(queue.map((c) => c.entry.id)).toEqual(['alt', 'neu']);
   });
 
   it('未到期的复习卡不进队列', () => {
@@ -94,7 +94,7 @@ describe('buildReviewQueue', () => {
       entry('frueh', { fsrs: card({ state: 2, reps: 2, due: NOW - DAY }) }),
     ];
     const { queue } = buildReviewQueue(entries, { newPerDay: 10, reviewPerDay: 60, now: NOW });
-    expect(queue.map((e) => e.id)).toEqual(['frueh', 'spaet']);
+    expect(queue.map((c) => c.entry.id)).toEqual(['frueh', 'spaet']);
   });
 });
 
@@ -142,6 +142,110 @@ describe('newCardShortfall', () => {
   it('配额已满时返回 0，不返回负数', () => {
     const entries = Array.from({ length: 20 }, (_, i) => entry(`n-${i}`));
     expect(newCardShortfall(entries, { newPerDay: 10, now: NOW })).toBe(0);
+  });
+});
+
+// ── FR-21：一个词两张卡 ────────────────────────────────────────────
+describe('buildReviewQueue：读卡（FR-21）', () => {
+  const read = (partial: Partial<FSRSCard> = {}) => card({ state: 2, reps: 3, ...partial });
+
+  it('没开读卡的词只出听卡', () => {
+    const { queue } = buildReviewQueue([entry('a')], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue).toEqual([{ entry: expect.objectContaining({ id: 'a' }), deck: 'listen' }]);
+  });
+
+  it('读卡独立到期：听卡还没到期时照样出读卡', () => {
+    const e = entry('a', {
+      fsrs: card({ state: 2, reps: 5, due: NOW + DAY }),
+      fsrsRead: read({ due: NOW - DAY }),
+    });
+    const { queue } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue.map((c) => c.deck)).toEqual(['read']);
+  });
+
+  it('两张卡同一天都到期时只出一张，听卡优先（FR-21.3）', () => {
+    const e = entry('a', {
+      fsrs: card({ state: 2, reps: 5, due: NOW - DAY }),
+      fsrsRead: read({ due: NOW - 2 * DAY }), // 更早到期也不能越过听卡
+    });
+    const { queue } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue.map((c) => c.deck)).toEqual(['listen']);
+  });
+
+  it('一张到期一张是新卡时也只出一张 —— 互斥不看类别', () => {
+    const e = entry('a', {
+      fsrs: card({ state: 2, reps: 5, due: NOW - DAY }),
+      fsrsRead: card({ state: 0 }),
+    });
+    const { queue, newCount } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue.map((c) => c.deck)).toEqual(['listen']);
+    expect(newCount).toBe(0);
+  });
+
+  it('今天已经做过听卡的词，读卡今天不再出现', () => {
+    const e = entry('a', {
+      fsrs: card({ state: 2, reps: 5, last_review: NOW - 3600_000, due: NOW + DAY }),
+      fsrsRead: read({ due: NOW - DAY }),
+    });
+    const { queue } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue).toEqual([]);
+  });
+
+  it('别的词不受互斥影响', () => {
+    const a = entry('a', { fsrs: card({ state: 2, reps: 5, due: NOW - DAY }), fsrsRead: read({ due: NOW - DAY }) });
+    const b = entry('b', { fsrs: card({ state: 2, reps: 5, due: NOW - DAY }) });
+    const { queue } = buildReviewQueue([a, b], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue).toHaveLength(2);
+    expect(queue.map((c) => c.entry.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('读卡的到期时间也算进 nextDueAt', () => {
+    const e = entry('a', {
+      fsrs: card({ state: 2, reps: 5, due: NOW + 2 * DAY }),
+      fsrsRead: read({ due: NOW + DAY }),
+    });
+    const { nextDueAt } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(nextDueAt).toBe(NOW + DAY);
+  });
+
+  it('新开的读卡占 newPerDay 的额度（FR-21.2）', () => {
+    const entries = [
+      entry('a', { fsrs: card({ state: 2, reps: 5, due: NOW + DAY }), fsrsRead: card({ state: 0 }) }),
+      entry('b', { fsrs: card({ state: 2, reps: 5, due: NOW + DAY }), fsrsRead: card({ state: 0 }) }),
+      entry('c'),
+    ];
+    expect(newCardShortfall(entries, { newPerDay: 10, now: NOW })).toBe(7);
+  });
+});
+
+describe('pendingReadCards', () => {
+  const ready = (id: string, partial: Partial<VocabEntry> = {}) =>
+    entry(id, { meaning: 'eine Erklärung', fsrs: card({ state: 2, reps: 4 }), ...partial });
+
+  it('听卡进 Review 且还没开读卡的词才算（FR-21.2）', () => {
+    const list = [
+      ready('bereit'),
+      ready('schon-offen', { fsrsRead: card({ state: 0 }) }),
+      ready('noch-neu', { fsrs: card({ state: 0 }) }),
+      ready('lernt-noch', { fsrs: card({ state: 1, reps: 2 }) }),
+    ];
+    expect(pendingReadCards(list).map((e) => e.id)).toEqual(['bereit']);
+  });
+
+  it('没有释义的词条不开读卡 —— 三种题型里两种拿释义当题面或选项', () => {
+    expect(pendingReadCards([ready('leer', { meaning: undefined })])).toEqual([]);
+  });
+
+  it('暂停的词条不开', () => {
+    expect(pendingReadCards([ready('pausiert', { suspended: true })])).toEqual([]);
+  });
+
+  it('按 createdAt 从早到晚 —— 先标的词先加深', () => {
+    const list = [
+      ready('spaet', { createdAt: NOW - DAY }),
+      ready('frueh', { createdAt: NOW - 10 * DAY }),
+    ];
+    expect(pendingReadCards(list).map((e) => e.id)).toEqual(['frueh', 'spaet']);
   });
 });
 

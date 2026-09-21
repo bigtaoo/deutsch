@@ -106,6 +106,36 @@ describe('mergeVocabEntries', () => {
     expect(summary.skippedVocab).toEqual(['v1']);
   });
 
+  // ── FR-21：一条词条上挂着两张卡，合并要看两张 ──
+  it('读卡的复习记录也算「动过」—— 只看听卡会静默丢掉桌面上做的那一轮', () => {
+    // 桌面：只复习了读卡（fsrsRead 变新，fsrs 没动）
+    const desktop = vocab({
+      id: 'v1',
+      updatedAt: 5,
+      fsrs: { ...vocab({}).fsrs, last_review: 10 },
+      fsrsRead: { ...vocab({}).fsrs, last_review: 30 },
+    });
+    // 手机：之后复习了听卡，但还没收到桌面那一份
+    const phone = vocab({ id: 'v1', updatedAt: 6, fsrs: { ...vocab({}).fsrs, last_review: 20 } });
+
+    const { merged } = mergeVocabEntries([phone], [desktop]);
+    expect(merged[0].fsrsRead?.last_review).toBe(30);
+  });
+
+  it('两张卡都没复习过时照旧退到 updatedAt', () => {
+    const local = vocab({ id: 'v1', updatedAt: 1, fsrsRead: { ...vocab({}).fsrs } });
+    const incoming = vocab({ id: 'v1', updatedAt: 2, fsrsRead: { ...vocab({}).fsrs } });
+    const { merged } = mergeVocabEntries([local], [incoming]);
+    expect(merged[0].updatedAt).toBe(2);
+  });
+
+  it('老备份里没有 fsrsRead —— 合并不因此崩，也不误判成「动过」', () => {
+    const alt = vocab({ id: 'v1', updatedAt: 1 }); // 早于 FR-21 的那份
+    const neu = vocab({ id: 'v1', updatedAt: 2, fsrsRead: { ...vocab({}).fsrs, last_review: 50 } });
+    expect(mergeVocabEntries([alt], [neu]).merged[0].fsrsRead?.last_review).toBe(50);
+    expect(mergeVocabEntries([neu], [alt]).merged[0].fsrsRead?.last_review).toBe(50);
+  });
+
   it('treats missing last_review on both sides as a tie and breaks it via updatedAt', () => {
     const local = vocab({ id: 'v1', updatedAt: 1 });
     const incoming = vocab({ id: 'v1', updatedAt: 2 });

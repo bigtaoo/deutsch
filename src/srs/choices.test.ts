@@ -1,10 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildClozeQuestion,
   buildFormQuestion,
   buildGlossQuestion,
+  buildReadFormQuestion,
+  buildReadGlossQuestion,
+  choicesAreWords,
+  CLOZE_BLANK,
   maskHeadword,
+  maskInSentence,
   MAX_CHOICES,
   pickQuestionKind,
+  pickReadKind,
   shortGloss,
 } from './choices';
 import { newCard } from './fsrs';
@@ -189,5 +196,117 @@ describe('打乱', () => {
       positions.add(q.choices.findIndex((c) => c.correct));
     }
     expect(positions.size).toBeGreaterThan(1);
+  });
+});
+
+// ── FR-21：读卡的三种题 ────────────────────────────────────────────
+describe('pickReadKind', () => {
+  const at = (state: FSRSCard['state'], reps: number): FSRSCard => ({ ...card(state), reps });
+
+  it('还没进 Review 的读卡一律考「看词形选释义」', () => {
+    expect(pickReadKind(at(0, 0))).toBe('read-gloss');
+    expect(pickReadKind(at(1, 1))).toBe('read-gloss');
+    expect(pickReadKind(at(3, 7))).toBe('read-gloss');
+  });
+
+  it('进 Review 之后在 read-form 与 cloze 之间按 reps 奇偶交替', () => {
+    expect(pickReadKind(at(2, 1))).toBe('read-form');
+    expect(pickReadKind(at(2, 2))).toBe('cloze');
+    expect(pickReadKind(at(2, 3))).toBe('read-form');
+    expect(pickReadKind(at(2, 4))).toBe('cloze');
+  });
+});
+
+describe('choicesAreWords', () => {
+  it('选项里放词形的三种题走 2×2，放释义的两种走单列（§12.13）', () => {
+    expect((['form', 'read-form', 'cloze'] as const).map(choicesAreWords)).toEqual([true, true, true]);
+    expect((['gloss', 'read-gloss'] as const).map(choicesAreWords)).toEqual([false, false]);
+  });
+});
+
+describe('maskInSentence', () => {
+  it('把句子里的词遮成定宽的空', () => {
+    expect(maskInSentence('Der Vorhang fiel.', 'Vorhang')).toBe(`Der ${CLOZE_BLANK} fiel.`);
+  });
+
+  it('同一句里出现两次要全遮 —— 遮一次剩一次就是答案', () => {
+    const masked = maskInSentence('Der Vorhang fiel. Ein Vorhang aus Samt.', 'Vorhang');
+    expect(masked).not.toContain('Vorhang');
+    expect(masked?.match(new RegExp(CLOZE_BLANK, 'g'))).toHaveLength(2);
+  });
+
+  it('屈折形式也遮得掉（词干匹配）', () => {
+    expect(maskInSentence('Die Vorhänge hingen schief.', 'Vorhang')).toBe(
+      `Die ${CLOZE_BLANK} hingen schief.`,
+    );
+    expect(maskInSentence('Er heilte die Wunde.', 'heilen')).toBe(`Er ${CLOZE_BLANK} die Wunde.`);
+  });
+
+  it('短词按整词匹配，不打掉含它的别的词', () => {
+    expect(maskInSentence('Das Tor und die Torte.', 'Tor')).toBe(
+      `Das ${CLOZE_BLANK} und die Torte.`,
+    );
+  });
+
+  it('空位宽度固定 —— 跟着词长走等于把词长泄给四个选项（FR-21.8）', () => {
+    const kurz = maskInSentence('Das Tor ist zu.', 'Tor');
+    const lang = maskInSentence('Die Fernbedienung ist weg.', 'Fernbedienung');
+    expect(kurz).toContain(CLOZE_BLANK);
+    expect(lang).toContain(CLOZE_BLANK);
+    expect(kurz?.replace(CLOZE_BLANK, '')).not.toContain('_');
+    expect(lang?.replace(CLOZE_BLANK, '')).not.toContain('_');
+  });
+
+  it('多词搭配不出这道题', () => {
+    expect(maskInSentence('Es hing von ihm ab.', 'hing ab')).toBeNull();
+  });
+
+  it('句子里根本没有这个词时返回 null，不出一道无解的题', () => {
+    expect(maskInSentence('Ein ganz anderer Satz.', 'Vorhang')).toBeNull();
+  });
+});
+
+describe('读卡的三种组题', () => {
+  const me = w('Vorhang', { gloss: 'Stoffbahn vor einem Fenster', pos: 'noun' });
+  const pool = [
+    w('Vorgang', { gloss: 'Ablauf eines Geschehens', pos: 'noun' }),
+    w('Lebensform', { gloss: 'Art zu leben', pos: 'noun' }),
+    w('Halluzination', { gloss: 'Sinnestäuschung ohne Reiz', pos: 'noun' }),
+  ];
+
+  it('read-gloss：题面是词形，选项是释义', () => {
+    const q = buildReadGlossQuestion(me, pool, keepOrder);
+    expect(q.kind).toBe('read-gloss');
+    expect(q.prompt).toBe('Vorhang');
+    expect(q.choices.filter((c) => c.correct)).toHaveLength(1);
+    expect(q.choices[0].text).toContain('Stoffbahn');
+  });
+
+  it('read-form：题面是释义，选项是词形', () => {
+    const q = buildReadFormQuestion(me, pool, keepOrder);
+    expect(q.kind).toBe('read-form');
+    expect(q.prompt).toContain('Stoffbahn');
+    expect(q.choices.map((c) => c.text)).toContain('Vorhang');
+  });
+
+  it('read-form 的题面也要遮词头 —— 题面里写着答案是同一句话的另一种毁法', () => {
+    const selbst = w('Fernbedienung', { gloss: 'Eine Fernbedienung steuert ein Gerät' });
+    const q = buildReadFormQuestion(selbst, pool, keepOrder);
+    expect(q.prompt).not.toContain('Fernbedienung');
+    expect(q.prompt).toContain('…');
+  });
+
+  it('cloze：题面是调用方挖好的句子，选项是词形', () => {
+    const masked = maskInSentence('Der Vorhang fiel.', 'Vorhang');
+    const q = buildClozeQuestion(me, pool, masked!, keepOrder);
+    expect(q.kind).toBe('cloze');
+    expect(q.prompt).toBe(`Der ${CLOZE_BLANK} fiel.`);
+    expect(q.choices).toHaveLength(MAX_CHOICES);
+    expect(q.choices.filter((c) => c.correct)).toHaveLength(1);
+  });
+
+  it('三种题都不给听卡留题面以外的痕迹：听卡的 prompt 仍然是 undefined', () => {
+    expect(buildFormQuestion(me, pool, keepOrder).prompt).toBeUndefined();
+    expect(buildGlossQuestion(me, pool, keepOrder).prompt).toBeUndefined();
   });
 });

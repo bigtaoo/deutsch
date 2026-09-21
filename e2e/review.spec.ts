@@ -9,7 +9,7 @@
 
 import { expect, test } from '@playwright/test';
 import { importBackup, openApp } from './app';
-import { sampleBackup } from './fixtures';
+import { readCardBackup, sampleBackup } from './fixtures';
 
 /** 到期的两张卡都在 fixture 里，且都已经过了 due。 */
 async function seed(page: import('@playwright/test').Page): Promise<void> {
@@ -112,4 +112,55 @@ test('生词本列出导入回来的两个词，并说得出它们出自哪一�
   await expect(page.getByText('聚集，集合')).toBeVisible();
   await expect(page.getByText('Erholung', { exact: true })).toBeVisible();
   await expect(page.getByText('休养，恢复')).toBeVisible();
+});
+
+// ── FR-21：识词卡（读卡）─────────────────────────────────────────
+//
+// 这条路在 jsdom 里测不到的那一半是**「打开是不是一张空卡」**：读卡的题面是
+// `Question.prompt`，它由组题函数算出来，而组题要真的去 /dict/ 取牌组文件。
+// 题面没渲染出来的症状不是报错，是一张只有四个选项、没有题目的卡。
+
+test('读卡：题面是文字、卡上没有播放键（FR-21.5）', async ({ page }) => {
+  await openApp(page);
+  await importBackup(page, readCardBackup());
+  await page.goto('/#/review');
+
+  // 队列里两张读卡，复习状态的那张（cloze）排在前面
+  await expect(page.getByText('1 / 2')).toBeVisible();
+  await expect(page.getByText('哪个词填得进这个空')).toBeVisible();
+  // 挖空句真的挖了：定宽的空在、原词不在（FR-21.8）
+  await expect(page.getByText(/Der _+ fiel nach dem letzten Akt\./)).toBeVisible();
+  // 读卡不放声音 —— 播放键出现就说明走错了分支
+  await expect(page.getByRole('button', { name: '播放' })).toHaveCount(0);
+});
+
+test('读卡的下一张考「看词形选释义」，题面就是那个词', async ({ page }) => {
+  await openApp(page);
+  await importBackup(page, readCardBackup());
+  await page.goto('/#/review');
+
+  await page.getByRole('button', { name: '不认识', exact: true }).click();
+  await page.getByRole('button', { name: /继续/ }).click();
+
+  await expect(page.getByText('2 / 2')).toBeVisible();
+  await expect(page.getByText('这个词是什么意思')).toBeVisible();
+  await expect(page.getByText('Zuversicht', { exact: true })).toBeVisible();
+});
+
+test('读卡的评分落在读卡上 —— 听卡的下次时间不该被动过', async ({ page }) => {
+  await openApp(page);
+  await importBackup(page, readCardBackup());
+
+  // 先记下听卡的到期日（生词本行上「听 复习中 · 日期」那一段）
+  await page.goto('/#/vocab');
+  const before = await page.getByText(/听 复习中 · /).first().textContent();
+
+  await page.goto('/#/review');
+  await page.getByRole('button', { name: '不认识', exact: true }).click();
+  await page.getByRole('button', { name: /继续/ }).click();
+
+  await page.goto('/#/vocab');
+  await expect(page.getByText(/听 复习中 · /).first()).toHaveText(before ?? '');
+  // 读卡那一半确实动了：答错之后它今天还会再来一次，所以列表上仍然有「读 …」
+  await expect(page.getByText(/读 /).first()).toBeVisible();
 });

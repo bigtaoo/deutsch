@@ -14,6 +14,7 @@ import { needsGender, useVocabStore } from '@/state/useVocabStore';
 import { Button, EmptyState, Hint, field } from '@/components/ui';
 import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
+import { ZhPanel } from './vocab/ZhPanel';
 import type { VocabEntry } from '@/types/models';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重学中'] as const;
@@ -111,6 +112,9 @@ export function VocabPage() {
           ))}
         </ul>
       )}
+
+      {/* FR-21.9：低频（一年点几次），所以在页底、而且是折叠的 —— 页顶留给查词（§12.11） */}
+      <ZhPanel />
     </div>
   );
 }
@@ -155,6 +159,8 @@ function Row({
           )}
         </p>
         <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义待填）</span>}</p>
+        {/* FR-21.9：中译补齐之前这里多半是空的，所以没有就不占一行 */}
+        {entry.meaningZh && <p className="text-ui text-muted">{entry.meaningZh}</p>}
         {entry.contextSentence && <p className="text-ui text-muted">{entry.contextSentence}</p>}
         <p className="text-note text-faint">
           {entry.preset ? (
@@ -172,7 +178,15 @@ function Row({
             '（课程已删除）'
           )}
           {' · '}
-          {STATE_LABELS[entry.fsrs.state]} · 下次 {new Date(entry.fsrs.due).toLocaleDateString('zh-CN')}
+          听 {STATE_LABELS[entry.fsrs.state]} · {new Date(entry.fsrs.due).toLocaleDateString('zh-CN')}
+          {/* FR-21：读卡开了才显示。没开时不写「读 未开」—— 那是这个功能的常态，
+              每一行都挂一句常态说明，等于把真正有信息的那几行淹掉 */}
+          {entry.fsrsRead && (
+            <>
+              {' · '}
+              读 {STATE_LABELS[entry.fsrsRead.state]} · {new Date(entry.fsrsRead.due).toLocaleDateString('zh-CN')}
+            </>
+          )}
         </p>
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">

@@ -16,13 +16,37 @@
 //      带「…」的那个就是答案。
 //   ⑥ 候选不够时**给三个甚至两个选项，不要崩**。选项少一点只是题变简单，
 //      抛异常是整个复习流程停在这张卡上。
+//
+// ── FR-21：读卡的三种题型 ──
+// 听卡的正面只有声音，所以上面六条只管选项。读卡的正面是**文字**（`Question.prompt`），
+// 于是多出两条同样能悄悄毁掉一道题的规则：
+//
+//   ⑦ **题面和选项不能是同一样东西。** `read-gloss` 的题面是词形、选项是释义；
+//      `read-form` 反过来。两边都放词形的话，那道题在问「哪个词等于它自己」。
+//   ⑧ **`cloze` 的句子里必须遮干净。** 目标词在例句里出现两次是常事
+//      （Wiktionary 的例句常复述词头），遮一次等于把答案印在题面上。
+//      遮不干净就**不出这道题**，降级到 `read-form` —— 见 maskInSentence。
 
 import { normalizeKey } from '@/dict/bucket';
+import { stripDiacritics } from '@/lib/german';
 import type { DictPos } from '@/dict/types';
 import type { FSRSCard } from '@/types/models';
 
-/** 题型。`form` 听音选词形，`gloss` 听音选释义。 */
-export type QuestionKind = 'form' | 'gloss';
+/**
+ * 题型。前两种是**听卡**（FR-10，正面只有声音），后三种是**读卡**（FR-21，正面是文字）。
+ *
+ * `form`       听音选词形     | `gloss`     听音选释义
+ * `read-gloss` 看词形选释义   | `read-form` 看释义选词形   | `cloze` 看挖空句选词
+ */
+export type QuestionKind = 'form' | 'gloss' | 'read-gloss' | 'read-form' | 'cloze';
+
+/** 读卡那三种（FR-21.4）。 */
+export type ReadQuestionKind = Extract<QuestionKind, 'read-gloss' | 'read-form' | 'cloze'>;
+
+/** 选项是词形（短）还是释义（长）—— 界面按这个决定列数（§12.13）。 */
+export function choicesAreWords(kind: QuestionKind): boolean {
+  return kind === 'form' || kind === 'read-form' || kind === 'cloze';
+}
 
 /** 一个候选词。正确项和干扰项用同一个形状 —— 组题时它们只差一个 `correct` 标记。 */
 export interface CandidateWord {
@@ -44,6 +68,12 @@ export interface Choice {
 export interface Question {
   kind: QuestionKind;
   choices: Choice[];
+  /**
+   * 题面（只有读卡有）。`read-gloss` 是词形，`read-form` 是释义，
+   * `cloze` 是挖好空的句子。听卡的题面是声音，所以这里是 undefined ——
+   * 而不是空字符串：界面要能区分「这张卡没有题面」和「题面还没取到」。
+   */
+  prompt?: string;
 }
 
 export const MAX_CHOICES = 4;
@@ -59,6 +89,24 @@ export const GLOSS_MAX = 80;
  */
 export function pickQuestionKind(card: FSRSCard): QuestionKind {
   return card.state === 2 ? 'gloss' : 'form';
+}
+
+/**
+ * FR-21.4：读卡的题型阶梯，与上面那条同构 —— 先认出来，再想起来。
+ *
+ * 新卡 / 学习中 / 重学中 → `read-gloss`（看词形选释义）。
+ * 进 Review 之后在 `read-form`（看释义选词形）与 `cloze`（看挖空句选词）之间
+ * **按 reps 奇偶交替**。
+ *
+ * 两个「不这么做」值得记：
+ *   · **不随机挑。** 一共就两种题，随机会连着出五张同一种。
+ *   · **不是「有句子就出 cloze」。** 那样 `read-form` 成了降级项，
+ *     而它考的东西（**无语境地**想起词形）本身值得单独练 —— 语境是拐杖。
+ *     真正凑不出 cloze 时的降级在 questionSource.ts 里做，不在这里。
+ */
+export function pickReadKind(card: FSRSCard): ReadQuestionKind {
+  if (card.state !== 2) return 'read-gloss';
+  return card.reps % 2 === 1 ? 'read-form' : 'cloze';
 }
 
 /**
@@ -134,6 +182,11 @@ export function buildFormQuestion(
   pool: readonly CandidateWord[],
   shuffle: Shuffle = defaultShuffle,
 ): Question {
+  return { kind: 'form', choices: shuffle(wordChoices(correct, pool)) };
+}
+
+/** 四个词形当选项。`form` / `read-form` / `cloze` 三种题共用 —— 差别只在题面。 */
+function wordChoices(correct: CandidateWord, pool: readonly CandidateWord[]): Choice[] {
   const taken = new Set([normalizeKey(correct.w)]);
   const choices: Choice[] = [{ id: correct.w, text: label(correct), correct: true }];
   for (const c of pool) {
@@ -143,7 +196,87 @@ export function buildFormQuestion(
     taken.add(key);
     choices.push({ id: c.w, text: label(c), correct: false });
   }
-  return { kind: 'form', choices: shuffle(choices) };
+  return choices;
+}
+
+/**
+ * FR-21.4 `read-form`：**题面是释义，选项是词形** —— 听卡辨形题的镜像。
+ *
+ * 题面那份释义与 `read-gloss` 的正确项用的是同一个函数（截断 + 遮词头）：
+ * 遮词头在这里同样不能省，虽然理由反过来 —— 那边是「释义里写着答案」，
+ * 这边是「题面里写着答案」，同一句话两种毁法。
+ */
+export function buildReadFormQuestion(
+  correct: CandidateWord,
+  pool: readonly CandidateWord[],
+  shuffle: Shuffle = defaultShuffle,
+): Question {
+  return {
+    kind: 'read-form',
+    prompt: glossText(correct),
+    choices: shuffle(wordChoices(correct, pool)),
+  };
+}
+
+/** cloze 的空位。**宽度固定**（FR-21.8）：跟着词长走等于把词长泄给四个选项。 */
+export const CLOZE_BLANK = '_____';
+
+/**
+ * FR-21.8：把句子里的目标词遮成一个定宽的空。遮不干净就返回 `null`。
+ *
+ * 三条，每一条都是「这道题白送」或「这道题做不了」之一：
+ *   ① **同一句里所有的出现都要遮。** Wiktionary 的例句常复述词头
+ *      （`Der Vorhang fiel. Ein Vorhang aus Samt.`），遮一次剩一次就是答案。
+ *   ② **长词按词干遮**（与 maskHeadword 同一套：剥掉 `-en/-e/-n`，剩 ≥4 字符），
+ *      因为句子里出现的往往是屈折形式（`heilte`）；比较前还要**折掉变音符**，
+ *      否则 `Vorhang` 在 `Vorhänge` 上遮不掉 —— 而德语名词的复数带变音是常态，
+ *      漏遮一个就是把答案印在题面上。短词（剥完不足 4 个字符）退回**整词匹配**：
+ *      词干包含匹配会让 `Tor` 把 `Torte`、`total` 一起挖掉。
+ *   ③ **多词搭配不出这道题。** `hing … ab` 在句子里是分开的两处，
+ *      遮成两个空的话题面在问「哪两个词」，而选项只有一个位置。
+ *      返回 null 让调用方降级到 `read-form`，比硬出一道歧义题好。
+ *
+ * 一处都没遮到也返回 null：那说明这条例句根本不含这个词（词典里有这种脏数据），
+ * 出出来就是一道无解的题。
+ */
+export function maskInSentence(sentence: string, word: string): string | null {
+  const w = word.trim();
+  if (!w || /\s/u.test(w)) return null; // ③ 多词搭配
+  const base = w.replace(/(?:en|e|n)$/u, '');
+  const useStem = base.length >= 4;
+  const target = fold(useStem ? base : w);
+
+  let hit = false;
+  // 逐词扫描而不是一条正则打天下：要比的是**折叠变音之后**的形状，
+  // 那件事正则做不了。顺便也绕开了 lookbehind（Safari 16.4 之前不支持，
+  // 而这里跑在 WKWebView 上）。
+  const masked = sentence.replace(/\p{L}+/gu, (token) => {
+    const t = fold(token);
+    if (useStem ? !t.includes(target) : t !== target) return token;
+    hit = true;
+    return CLOZE_BLANK;
+  });
+  return hit ? masked : null;
+}
+
+/** 比较用的形状：折掉变音符再小写。`Vorhänge` 与 `Vorhang` 要认成同一个词。 */
+function fold(text: string): string {
+  return stripDiacritics(text).toLowerCase();
+}
+
+/**
+ * FR-21.4 `cloze`：题面是挖好空的句子，选项是词形。
+ *
+ * 句子由调用方挖好传进来（`maskInSentence` 的结果），**不在这里挖** ——
+ * 挖不动是要降级到别的题型的，而这个函数已经没法回头了。
+ */
+export function buildClozeQuestion(
+  correct: CandidateWord,
+  pool: readonly CandidateWord[],
+  maskedSentence: string,
+  shuffle: Shuffle = defaultShuffle,
+): Question {
+  return { kind: 'cloze', prompt: maskedSentence, choices: shuffle(wordChoices(correct, pool)) };
 }
 
 /**
@@ -157,7 +290,32 @@ export function buildGlossQuestion(
   pool: readonly CandidateWord[],
   shuffle: Shuffle = defaultShuffle,
 ): Question {
-  const gloss = (c: CandidateWord) => shortGloss(maskHeadword(c.gloss ?? '', c.w));
+  return { kind: 'gloss', choices: shuffle(glossChoices(correct, pool)) };
+}
+
+/**
+ * FR-21.4 `read-gloss`：**题面是词形，选项是释义**。读卡的第一关。
+ *
+ * 题面给裸词形、不带冠词，理由与选项标签那条（见 label）第一点相同：
+ * 冠词在这里会顺手把性教掉，而性该在答对的那 600ms 和卡背上给（FR-10.11）——
+ * 题面里带着它，`read-form` 的反向题就再也考不到它了。
+ */
+export function buildReadGlossQuestion(
+  correct: CandidateWord,
+  pool: readonly CandidateWord[],
+  shuffle: Shuffle = defaultShuffle,
+): Question {
+  return { kind: 'read-gloss', prompt: correct.w, choices: shuffle(glossChoices(correct, pool)) };
+}
+
+/** 一条释义的显示文本：遮掉词头（规则 ⑤）再截断（规则 ④）。 */
+function glossText(c: CandidateWord): string {
+  return shortGloss(maskHeadword(c.gloss ?? '', c.w));
+}
+
+/** 四条释义当选项。`gloss` 与 `read-gloss` 共用。 */
+function glossChoices(correct: CandidateWord, pool: readonly CandidateWord[]): Choice[] {
+  const gloss = glossText;
   const correctText = gloss(correct);
   const takenWords = new Set([normalizeKey(correct.w)]);
   const takenTexts = new Set([correctText]);
@@ -179,7 +337,7 @@ export function buildGlossQuestion(
     takenTexts.add(text);
     choices.push({ id: c.w, text, correct: false });
   }
-  return { kind: 'gloss', choices: shuffle(choices) };
+  return choices;
 }
 
 export type Shuffle = (choices: Choice[]) => Choice[];

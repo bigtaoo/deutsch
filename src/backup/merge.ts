@@ -49,9 +49,17 @@ export function mergeLessons(
   return { merged: [...byId.values()], summary };
 }
 
-/** fsrs.last_review 缺失视为"从未复习过"，排在任何有值的时间戳之前。 */
+/**
+ * "这条词条上一次被复习是什么时候" —— 缺失视为"从未复习过"，排在任何有值的时间戳之前。
+ *
+ * **FR-21 之后取两张卡的较大值。** 只看听卡的话会丢数据，而且是静默地丢：
+ * 在桌面上只复习了读卡（`fsrsRead.last_review` 变新、`fsrs.last_review` 没动），
+ * 手机上后来复习了听卡 —— 合并时手机那条的 rank 更大，整条胜出，
+ * 桌面那次读卡的复习记录就没了。取最大值的语义是"最近动过的那一份赢"，
+ * 与 §2.4 的 last-write-wins 是同一条规则，只是把"动过"的口径补全了。
+ */
 function lastReviewRank(entry: VocabEntry): number {
-  return entry.fsrs.last_review ?? -Infinity;
+  return Math.max(entry.fsrs.last_review ?? -Infinity, entry.fsrsRead?.last_review ?? -Infinity);
 }
 
 export function mergeVocabEntries(

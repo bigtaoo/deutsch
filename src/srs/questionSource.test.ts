@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildQuestion, formPool, glossPool } from './questionSource';
+import { buildQuestion, buildReadQuestion, formPool, glossPool, pickCloze, wordPool } from './questionSource';
 import { newCard } from './fsrs';
 import type { DictDeck } from '@/dict/types';
 import type { FSRSCard, VocabEntry } from '@/types/models';
@@ -143,5 +143,119 @@ describe('buildQuestion', () => {
     const q = await buildQuestion(only, [only], async () => null, keepOrder);
     expect(q.choices).toHaveLength(1);
     expect(q.choices[0].correct).toBe(true);
+  });
+});
+
+// ── FR-21：读卡 ───────────────────────────────────────────────────
+describe('pickCloze', () => {
+  it('挑第一条挖得动的例句', () => {
+    const e = preset('Vorhang', { examples: ['Ganz ohne das Wort.', 'Der Vorhang fiel.'] });
+    expect(pickCloze(e)).toBe('Der _____ fiel.');
+  });
+
+  it('一条都挖不动时返回 null —— 那道题会降级，不是坏卡', () => {
+    expect(pickCloze(preset('Vorhang', { examples: ['Ein ganz anderer Satz.'] }))).toBeNull();
+    expect(pickCloze(preset('Vorhang'))).toBeNull();
+  });
+
+  it('词头挖不动时用 surface 再试一次（查词卡的 surface 与词头可能不同）', () => {
+    const e = preset('Plattform', { lemma: 'Plattform', examples: ['Viele Plattformen im Netz.'] });
+    expect(pickCloze(e)).toBe('Viele _____ im Netz.');
+  });
+});
+
+describe('wordPool（FR-21.7）', () => {
+  it('预置卡取牌组里名次相邻的词，不含自己', () => {
+    const e = preset('Vorhang', { preset: { band: 4, rank: 3001 } });
+    return wordPool(e, [], loadDeck).then((pool) => {
+      expect(pool.length).toBeGreaterThanOrEqual(3);
+      expect(pool.map((c) => c.w)).not.toContain('Vorhang');
+      expect(DECK.words.map((x) => x.w)).toEqual(expect.arrayContaining(pool.map((c) => c.w)));
+    });
+  });
+
+  it('**不用 IPA 近邻** —— 那是给辨音题的，填进句子里一眼就假', async () => {
+    // Vorhang 的近邻是 Vorgang/Vorrang/Vorfall/vorhin，其中 Vorrang/Vorfall/vorhin
+    // 根本不在这个牌组里。wordPool 只会给出牌组里的词，所以它没走那条路。
+    const e = preset('Vorhang', { preset: { band: 4, rank: 3001 } });
+    const pool = await wordPool(e, [], loadDeck);
+    expect(pool.map((c) => c.w)).not.toContain('vorhin');
+  });
+
+  it('课程卡没有名次，退到生词本里同词性的词', async () => {
+    const me = preset('Vorhang', { preset: undefined, gender: 'm', lessonId: 'L1' });
+    const others = [
+      preset('Haus', { preset: undefined, gender: 'n' }),
+      preset('Tor', { preset: undefined, gender: 'n' }),
+      preset('Bild', { preset: undefined, gender: 'n' }),
+      preset('gehen', { preset: undefined }), // 没有性 —— 按 toCandidate 的近似不算名词
+    ];
+    const pool = await wordPool(me, [me, ...others], loadDeck);
+    expect(pool.map((c) => c.w).sort()).toEqual(['Bild', 'Haus', 'Tor']);
+  });
+});
+
+describe('buildReadQuestion（FR-21.4）', () => {
+  const read = (state: FSRSCard['state'], reps: number): FSRSCard => ({ ...card(state), reps });
+  const others = [
+    preset('Vorgang'),
+    preset('Lebensform'),
+    preset('Halluzination'),
+    preset('Fernbedienung'),
+  ];
+
+  it('还没进 Review 的读卡考「看词形选释义」', async () => {
+    const e = preset('Vorhang', { fsrsRead: read(0, 0) });
+    const q = await buildReadQuestion(e, [e, ...others], loadDeck, keepOrder);
+    expect(q.kind).toBe('read-gloss');
+    expect(q.prompt).toBe('Vorhang');
+  });
+
+  it('Review + reps 奇数考「看释义选词形」', async () => {
+    const e = preset('Vorhang', { fsrsRead: read(2, 1) });
+    const q = await buildReadQuestion(e, [e, ...others], loadDeck, keepOrder);
+    expect(q.kind).toBe('read-form');
+    expect(q.choices.map((c) => c.text)).toContain('Vorhang');
+  });
+
+  it('Review + reps 偶数考挖空 —— 前提是卡上有挖得动的句子', async () => {
+    const e = preset('Vorhang', { fsrsRead: read(2, 2), examples: ['Der Vorhang fiel.'] });
+    const q = await buildReadQuestion(e, [e, ...others], loadDeck, keepOrder);
+    expect(q.kind).toBe('cloze');
+    expect(q.prompt).toBe('Der _____ fiel.');
+  });
+
+  it('挖不动就降级成 read-form，不抛异常也不出空题', async () => {
+    const ohne = preset('Vorhang', { fsrsRead: read(2, 2) });
+    expect((await buildReadQuestion(ohne, [ohne, ...others], loadDeck, keepOrder)).kind).toBe('read-form');
+
+    const falsch = preset('Vorhang', { fsrsRead: read(2, 2), examples: ['Ein anderer Satz.'] });
+    expect((await buildReadQuestion(falsch, [falsch, ...others], loadDeck, keepOrder)).kind).toBe(
+      'read-form',
+    );
+  });
+
+  it('生词本里凑不出有释义的干扰项时，read-gloss 降级成 read-form', async () => {
+    // 只有自己一张卡：glossPool 空，但牌组还能给出词形干扰项
+    const allein = preset('Vorhang', { fsrsRead: read(0, 0) });
+    const q = await buildReadQuestion(allein, [allein], loadDeck, keepOrder);
+    expect(q.kind).toBe('read-form');
+    expect(q.choices.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('读卡的题一定带题面 —— 没有题面的读卡在界面上是一张空卡', async () => {
+    for (const [state, reps] of [[0, 0], [2, 1], [2, 2]] as const) {
+      const e = preset('Vorhang', { fsrsRead: read(state, reps), examples: ['Der Vorhang fiel.'] });
+      const q = await buildReadQuestion(e, [e, ...others], loadDeck, keepOrder);
+      expect(q.prompt).toBeTruthy();
+    }
+  });
+
+  it('正确项恰好一个 —— 三种题型都要', async () => {
+    for (const [state, reps] of [[0, 0], [2, 1], [2, 2]] as const) {
+      const e = preset('Vorhang', { fsrsRead: read(state, reps), examples: ['Der Vorhang fiel.'] });
+      const q = await buildReadQuestion(e, [e, ...others], loadDeck, keepOrder);
+      expect(q.choices.filter((c) => c.correct)).toHaveLength(1);
+    }
   });
 });

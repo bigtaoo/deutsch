@@ -14,7 +14,7 @@ import {
 import { useLessonStore } from './useLessonStore';
 import { generateId } from '@/lib/id';
 import { newCard } from '@/srs/fsrs';
-import { newCardShortfall } from '@/srs/queue';
+import { newCardShortfall, pendingReadCards } from '@/srs/queue';
 import { surfaceOf, type Range } from '@/lesson/tokens';
 import { normalizeKey } from '@/dict/bucket';
 import { dedupeKey, loadDeck, lookupDict } from '@/dict/lookup';
@@ -86,7 +86,28 @@ interface VocabState {
    * `dict` 是查词面板已经拿到的那一份（内置或在线），传进来而不是在这里重查 ——
    * 面板上显示的和落进卡里的必须是同一份，否则用户会看到「查到的和加进去的不一样」。
    */
-  createFromLookup: (input: { surface: string; dict: DictEntry | null }) => Promise<VocabEntry>;
+  createFromLookup: (input: {
+    surface: string;
+    dict: DictEntry | null;
+    /**
+     * FR-21.6：查词面板已经合成好的例句（内置 + de.wiktionary）。
+     * **在这里收下，不等开读卡时再查** —— 与 FR-17.6 那条逐字同理：
+     * 加词是一次必然在线的主动操作，而这个词的例句在线那一趟已经拿到了，
+     * 不收的话它就永远没有第二次机会（`lookup` 卡多半是牌组外的词，
+     * 内置词典里没有例句）。
+     */
+    examples?: string[];
+  }) => Promise<VocabEntry>;
+
+  /**
+   * FR-21.2：把**今天该开的读卡**开出来，最多 `limit` 张。返回真的开了的那些。
+   *
+   * 与 topUpNewCards 是同一个形状（惰性、在复习页进门时跑），
+   * 但**必须排在它前面**：读卡也是新卡、也占 newPerDay 的额度，
+   * 先开读卡就等于让「已经在学的词加深」优先于「预置词库发新词」——
+   * 而 FR-17 自己说预置词库是冷启动填充物，不是长期主线。
+   */
+  openReadCards: (limit: number) => Promise<VocabEntry[]>;
 
   /**
    * FR-17.4：把**今天缺的新卡**从已报名的档里补上（惰性激活）。返回真的建出来的条目。
@@ -107,6 +128,16 @@ interface VocabState {
   ) => Promise<{ added: VocabEntry[]; skipped: number; human: number }>;
 
   updateEntry: (entry: VocabEntry) => Promise<void>;
+
+  /**
+   * 一次写回一批（FR-21.9 补中译：一次可能是几百条）。
+   *
+   * 不是 updateEntry 的循环：那会触发 N 次 zustand 的 set，
+   * 而生词本页正挂着这份列表 —— 几百次重渲染会让页面卡住十几秒。
+   * **`updatedAt` 由调用方给**（applyZh 已经打好了），这里不再覆盖：
+   * 覆盖的话「值没变就不算改过」那条防线就白设了。
+   */
+  updateEntries: (entries: VocabEntry[]) => Promise<void>;
 
   /** FR-7.5：取消挖空；deleteEntry=true 时连词条一起删。 */
   removeBlank: (lessonId: string, sentenceIndex: number, blankId: string, deleteEntry: boolean) => Promise<void>;
@@ -233,7 +264,7 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     // Q3 记录了这个已知局限：V1 一个词条只挂一个 contextSentence。
   },
 
-  createFromLookup: async ({ surface, dict }) => {
+  createFromLookup: async ({ surface, dict, examples }) => {
     const now = Date.now();
     // 词头用词典给的那一份：查 `Plattformen` 建出来的卡应该是 `Plattform`
     // —— 卡面要念这个词、卡背要显示 `die Plattform`，而变形没有性也没有复数。
@@ -243,6 +274,8 @@ export const useVocabStore = create<VocabState>((set, get) => ({
       ...(dict ? fieldsFromDict(dict) : {}),
       // 没有 lessonId / sentenceIndex / contextSentence —— 这个词不来自任何一课。
       lookup: true,
+      // FR-21.6：cloze 题要用的句子。两条封顶 —— 这是标注层，会进备份也会同步。
+      examples: examples?.length ? examples.slice(0, 2) : undefined,
       // 与预置卡同理：这里的 false 是如实记账（没有来源句，所以没有时间戳），
       // 卡面靠 cardAudioStatus 走 'word-only' 那一档说明声音是孤立词发音。
       hasTimestamp: false,
@@ -327,10 +360,39 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     return { added, skipped, human };
   },
 
+  openReadCards: async (limit) => {
+    if (limit <= 0) return [];
+    const picks = pendingReadCards(get().entries).slice(0, limit);
+    const opened: VocabEntry[] = [];
+    for (const entry of picks) {
+      const now = Date.now();
+      const next: VocabEntry = {
+        ...entry,
+        fsrsRead: newCard(new Date(now)),
+        examples: entry.examples?.length ? entry.examples : await clozeSentencesFor(entry),
+        updatedAt: now,
+      };
+      await putVocabEntry(next);
+      opened.push(next);
+    }
+    if (opened.length > 0) {
+      const byId = new Map(opened.map((e) => [e.id, e]));
+      set({ entries: get().entries.map((e) => byId.get(e.id) ?? e) });
+    }
+    return opened;
+  },
+
   updateEntry: async (entry) => {
     const next = { ...entry, updatedAt: Date.now() };
     await putVocabEntry(next);
     set({ entries: get().entries.map((e) => (e.id === next.id ? next : e)) });
+  },
+
+  updateEntries: async (list) => {
+    if (list.length === 0) return;
+    for (const entry of list) await putVocabEntry(entry);
+    const byId = new Map(list.map((e) => [e.id, e]));
+    set({ entries: get().entries.map((e) => byId.get(e.id) ?? e) });
   },
 
   removeBlank: async (lessonId, sentenceIndex, blankId, deleteEntry) => {
@@ -354,6 +416,23 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     set({ entries: get().entries.filter((e) => e.id !== id) });
   },
 }));
+
+/**
+ * FR-21.6：开读卡时给它备一两条 cloze 用的句子，**拷值**而不是运行时现查。
+ *
+ * 词典是缓存层、可重建，而复习过的卡不能变（§2.3）—— 换个词典版本例句就换了，
+ * 那道 cloze 题也跟着换，FSRS 攒的那段历史就对不上它了。
+ *
+ * 课程卡直接用原句：它本来就是从那一句里选出来的，一定挖得动，
+ * 而且那是**真语料**，比词典例句更值得练。查不到例句的词返回空 ——
+ * 它的 cloze 题会降级成 read-form（questionSource.buildReadQuestion），不是坏卡。
+ */
+async function clozeSentencesFor(entry: VocabEntry): Promise<string[] | undefined> {
+  if (entry.contextSentence) return [entry.contextSentence];
+  const hit = await lookupDict(entry.surface).catch(() => null);
+  const ex = hit?.entry.ex?.slice(0, 2);
+  return ex?.length ? ex : undefined;
+}
 
 /** FR-7.4：名词没填性等于没记。列表里标黄用这个判断。 */
 export function needsGender(entry: VocabEntry): boolean {

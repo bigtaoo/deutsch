@@ -8,6 +8,8 @@
 // 代价是 `schon` / `schön` 这类真实对立也会被放过，但它仍然给出「注意变音符」提示，
 // 只是不惩罚。相比之下把它判成全错、丢进 Again，惩罚要重得多。
 
+import { stripDiacritics } from '@/lib/german';
+
 export type DictationVerdict = 'correct' | 'transliteration' | 'case' | 'wrong';
 
 export interface DictationResult {
@@ -29,15 +31,6 @@ function toDigraphs(text: string): string {
     .replace(/ä/g, 'ae').replace(/Ä/g, 'Ae')
     .replace(/ö/g, 'oe').replace(/Ö/g, 'Oe')
     .replace(/ü/g, 'ue').replace(/Ü/g, 'Ue')
-    .replace(/ß/g, 'ss');
-}
-
-/** 干脆去掉变音符的写法：ä→a。没有德语键盘的人打出来的就是这个。 */
-function stripDiacritics(text: string): string {
-  return text
-    .replace(/ä/g, 'a').replace(/Ä/g, 'A')
-    .replace(/ö/g, 'o').replace(/Ö/g, 'O')
-    .replace(/ü/g, 'u').replace(/Ü/g, 'U')
     .replace(/ß/g, 'ss');
 }
 

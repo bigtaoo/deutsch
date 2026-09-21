@@ -187,7 +187,34 @@ export interface VocabEntry {
   dwKnowledgeId?: string; // 来自 Glossar 候选（FR-14）；也用于判断候选是否已接受
   hasTimestamp: boolean; // 来源句是否有 startTime（FR-10.5）
   suspended: boolean; // 暂停复习
+  /**
+   * FR-21：一个词挂**两张独立调度的卡**。
+   *
+   * `fsrs` 是**听卡**（FR-10：正面只有声音），`fsrsRead` 是**读卡**
+   * （FR-21：看词形 / 看释义 / 看挖空句，不放声音）。
+   *
+   * 分成两个字段而不是一个数组：它们不是同质的 N 张卡 —— 题型、开卡条件、
+   * 降级出口都不一样，数组会让每个读它的地方先问一句「第 0 个是哪种」。
+   *
+   * `fsrsRead === undefined` 就是**读卡还没开**（FR-21.2：听卡进 Review 之后才开），
+   * 所以不需要额外的开关字段，老备份恢复出来也天然是「还没开」。
+   */
   fsrs: FSRSCard; // ts-fsrs 状态
+  fsrsRead?: FSRSCard;
+  /**
+   * FR-21.6：`cloze` 题用的句子，开读卡时从词典或原句**拷**进来，最多 2 条。
+   *
+   * 看着像可重建（词典里就有），但与 §2.3 那条「建卡时拷值」是同一个理由：
+   * 词典是缓存层、可重建，而**复习过的卡不能变** —— 换个词典版本例句就换了，
+   * 那道 cloze 题也跟着换，FSRS 攒的那段历史对不上它。
+   */
+  examples?: string[];
+  /**
+   * FR-21.9：中译。词典的 `zh` 只覆盖约 60%，所以这个字段主要靠
+   * 「导出 → 在外面翻 → 按编号粘回来」补齐（与 FR-19 同一套解析规则）。
+   * 补齐之前中文只出现在卡背，题面一律德语。
+   */
+  meaningZh?: string;
   createdAt: number;
   updatedAt: number;
 }

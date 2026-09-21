@@ -11,16 +11,26 @@
 // **评分不问用户**（FR-10.4）：作答的对错与用时映射成 FSRS 四档，见 srs/grade.ts。
 // 原来那排「忘了 / 勉强 / 记得 / 太简单」连同按钮下面的间隔预览一起删掉了 ——
 // 手评是元认知任务，而且它与自动评分喂给 FSRS 的分布不同，两条路径不能并存。
+//
+// ── FR-21：队列里有两种卡 ──
+// 一个词挂两张独立调度的卡：**听卡**（上面说的那种）与**读卡**（正面是文字，
+// 不放声音）。队列的单位因此是 `ReviewCard`（词 + 是哪一张），不是词本身 ——
+// 同一个词的两张卡不会在同一天出现（FR-21.3），但会在不同的日子各自到期。
+//
+// 界面上两者**必须一眼分得出来，而且不能靠「有没有声音」去分**（§12.13）：
+// 长得一样的话，每次进读卡都要先愣一秒等声音。所以卡顶那行题干是必需的，
+// 它同时说清了这一关考什么。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_LESSON_TAB, navigate } from '@/app/router';
 import { audioPlayer } from '@/audio/player';
 import { getAudioBlob } from '@/db/cache';
 import { resolveRange } from '@/lesson/timing';
-import { buildReviewQueue, cardAudioStatus } from '@/srs/queue';
+import { buildReviewQueue, cardAudioStatus, newCardShortfall, type Deck, type ReviewCard } from '@/srs/queue';
 import { formatInterval, review } from '@/srs/fsrs';
 import { articled, gradeFromAnswer } from '@/srs/grade';
-import { buildQuestion } from '@/srs/questionSource';
+import { buildQuestion, buildReadQuestion } from '@/srs/questionSource';
+import { choicesAreWords } from '@/srs/choices';
 import { syncVocabNow } from '@/sync/trigger';
 import { loadDeck, lookupDict } from '@/dict/lookup';
 import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dict/audio';
@@ -37,12 +47,12 @@ const FLASH_MS = 600;
 type Phase = 'asking' | 'flash' | 'revealed';
 
 export function ReviewPage() {
-  const { entries, updateEntry, topUpNewCards, loaded } = useVocabStore();
+  const { entries, updateEntry, topUpNewCards, openReadCards, loaded } = useVocabStore();
   const { lessons, caches } = useLessonStore();
   const { settings } = useSettingsStore();
 
   // 队列在进入页面时算一次并冻结：随着评分实时重算会让卡片在手底下跳来跳去。
-  const [session, setSession] = useState<VocabEntry[] | null>(null);
+  const [session, setSession] = useState<ReviewCard[] | null>(null);
   const [position, setPosition] = useState(0);
   const [finished, setFinished] = useState(false);
   /** FR-17.4：进页面时先把今天缺的新卡从已报名的档里补上。 */
@@ -59,6 +69,17 @@ export function ReviewPage() {
     let cancelled = false;
     void (async () => {
       // 激活要先于建队列 —— 否则今天新激活的卡要等下次进页面才看得到。
+      //
+      // FR-21.2：**开读卡排在补预置新卡前面**。两者共用 newPerDay 这一个额度，
+      // 谁先谁就先占 —— 而「已经在学的词加深」比「再发一个陌生词」更值得占。
+      const quota = newCardShortfall(useVocabStore.getState().entries, {
+        newPerDay: settings.newPerDay,
+      });
+      if (quota > 0) {
+        const opened = await openReadCards(quota).catch(() => []);
+        if (!cancelled && opened.length > 0) setTopUp(`今天新开了 ${opened.length} 张识词卡`);
+      }
+      if (cancelled) return;
       if ((settings.enrolledBands ?? []).length > 0) {
         setTopUp('正在准备今天的新卡…');
         try {
@@ -91,9 +112,10 @@ export function ReviewPage() {
 
   const breakdown = breakdownRef.current;
   const queue = session ?? [];
-  const entry = queue[position];
+  const item = queue[position];
+  const deck: Deck = item?.deck ?? 'listen';
   // 评分会改 entries，卡面要用最新的那一份
-  const current = entry ? (entries.find((e) => e.id === entry.id) ?? entry) : undefined;
+  const current = item ? (entries.find((e) => e.id === item.entry.id) ?? item.entry) : undefined;
   const lesson = current ? lessons.find((l) => l.id === current.lessonId) : undefined;
 
   const advance = useCallback(() => {
@@ -119,17 +141,20 @@ export function ReviewPage() {
     async (choiceId: string | null, correct: boolean, elapsedMs: number) => {
       if (!current || phase !== 'asking') return;
       setPicked(choiceId);
-      const rating = gradeFromAnswer({ correct, gaveUp: choiceId === null, elapsedMs }, current.fsrs);
-      const next = review(current.fsrs, rating);
+      // FR-21.1：评分落在**这一次作答的那张卡**上。两张卡的 FSRS 状态各自演化 ——
+      // 写错一边的症状是静默的：读卡答对了却把听卡的间隔拉长。
+      const card = deck === 'listen' ? current.fsrs : (current.fsrsRead ?? current.fsrs);
+      const rating = gradeFromAnswer({ correct, gaveUp: choiceId === null, elapsedMs }, card);
+      const next = review(card, rating);
       setNextDue(new Date(next.due));
-      await updateEntry({ ...current, fsrs: next });
+      await updateEntry(deck === 'listen' ? { ...current, fsrs: next } : { ...current, fsrsRead: next });
       if (correct) {
         setPhase('flash');
       } else {
         setPhase('revealed');
       }
     },
-    [current, phase, updateEntry],
+    [current, deck, phase, updateEntry],
   );
 
   // 答对之后自动进下一张。计时器要能被清掉 —— 否则连点两次会跳两张。
@@ -180,8 +205,10 @@ export function ReviewPage() {
 
       <QuizCard
         // key 让每张卡都是新的组件实例：组题、音频、计时全部随之重置，
-        // 不必在一堆 effect 里手工清状态。
-        key={current.id}
+        // 不必在一堆 effect 里手工清状态。**带上 deck**：同一个词的两张卡
+        // 虽然不会在同一天相邻出现，但 key 相同会让第二张复用第一张的状态。
+        key={`${current.id}:${deck}`}
+        deck={deck}
         entry={current}
         entries={entries}
         lesson={lesson}
@@ -197,6 +224,7 @@ export function ReviewPage() {
 }
 
 function QuizCard({
+  deck,
   entry,
   entries,
   lesson,
@@ -207,6 +235,7 @@ function QuizCard({
   onAnswer,
   onContinue,
 }: {
+  deck: Deck;
   entry: VocabEntry;
   entries: VocabEntry[];
   lesson: Lesson | undefined;
@@ -217,6 +246,9 @@ function QuizCard({
   onAnswer: (choiceId: string | null, correct: boolean, elapsedMs: number) => void;
   onContinue: () => void;
 }) {
+  // FR-21.5：读卡正面是文字、不放声音，所以下面所有跟音频有关的分支都绕开它。
+  // audioStatus 仍然算出来 —— 卡背上要不要显示「孤立词发音」那行还看它。
+  const isRead = deck === 'read';
   const audioStatus = cardAudioStatus(entry, hasMaterial);
   const sentence = entry.sentenceIndex === undefined ? undefined : lesson?.sentences[entry.sentenceIndex];
   const range = sentence && lesson ? resolveRange(lesson.sentences, sentence.index, lesson.audioDuration) : null;
@@ -231,7 +263,10 @@ function QuizCard({
 
   useEffect(() => {
     let cancelled = false;
-    void buildQuestion(entry, entries, loadDeck).then((q) => {
+    const building = isRead
+      ? buildReadQuestion(entry, entries, loadDeck)
+      : buildQuestion(entry, entries, loadDeck);
+    void building.then((q) => {
       if (cancelled) return;
       setQuestion(q);
       startedAt.current = Date.now();
@@ -241,13 +276,13 @@ function QuizCard({
     };
     // entries 每答一题都会变，但这张卡的题目只组一次 —— 不然选项会在手底下重排
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry.id]);
+  }, [entry.id, isRead]);
 
   // 正面自动播一次（FR-10.2）。课程卡放句子，预置卡放孤立词。
   useEffect(() => {
     let cancelled = false;
     setPlayable(false);
-    if (audioStatus !== 'ok' || !range || !lesson) return;
+    if (isRead || audioStatus !== 'ok' || !range || !lesson) return;
     void (async () => {
       const blob = await getAudioBlob(lesson.id);
       if (!blob || cancelled) return;
@@ -263,7 +298,7 @@ function QuizCard({
       cancelled = true;
       audioPlayer.pause();
     };
-  }, [entry.id, audioStatus, lesson, range]);
+  }, [entry.id, audioStatus, isRead, lesson, range]);
 
   // 预置卡（FR-17）：真人录音优先，没有就退 TTS。
   //
@@ -281,7 +316,7 @@ function QuizCard({
 
   useEffect(() => {
     let cancelled = false;
-    if (audioStatus !== 'word-only') return;
+    if (isRead || audioStatus !== 'word-only') return;
     setWordSource('loading');
     void (async () => {
       // 先只判**有没有**音源再播：把「查」和「播」并成一步的话，
@@ -303,12 +338,20 @@ function QuizCard({
       audioPlayer.pause();
       if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
     };
-  }, [entry.id, entry.surface, audioStatus]);
+  }, [entry.id, entry.surface, audioStatus, isRead]);
 
   // 答错时才取例句。`word-only` 这一档就是「没有原句的卡」——
   // 预置词库与查词加进来的词都在里面，两者都只能靠词典里的例句撑起卡背。
+  //
+  // FR-21.6：读卡开卡时已经把句子拷进 `entry.examples` 了，那一份优先 ——
+  // 它就是 cloze 题面用的那一句，卡背上显示别的句子会让人以为自己看错了题。
   useEffect(() => {
-    if (phase !== 'revealed' || audioStatus !== 'word-only' || examples !== null) return;
+    if (phase !== 'revealed' || examples !== null) return;
+    if (entry.examples?.length) {
+      setExamples(entry.examples);
+      return;
+    }
+    if (!isRead && audioStatus !== 'word-only') return;
     let cancelled = false;
     void lookupDict(entry.surface).then((hit) => {
       if (!cancelled) setExamples(hit?.entry.ex ?? []);
@@ -316,7 +359,7 @@ function QuizCard({
     return () => {
       cancelled = true;
     };
-  }, [phase, audioStatus, entry.surface, examples]);
+  }, [phase, audioStatus, isRead, entry.surface, entry.examples, examples]);
 
   const choose = (id: string, correct: boolean) => onAnswer(id, correct, Date.now() - startedAt.current);
 
@@ -339,7 +382,7 @@ function QuizCard({
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const noAudio = audioStatus === 'word-only' && wordSource === 'none';
+  const noAudio = !isRead && audioStatus === 'word-only' && wordSource === 'none';
 
   return (
     <>
@@ -357,7 +400,9 @@ function QuizCard({
           靠上贴着标题行的话，播放键和底部的选项之间会空掉半屏。
           选项那一块仍然由 `mt-auto` 钉在底部（FR-10.7），所以按钮位置不受影响。 */}
       <Card className="flex flex-1 flex-col justify-center space-y-4 p-6">
-        {audioStatus === 'ok' ? (
+        {isRead ? (
+          <ReadPrompt question={question} />
+        ) : audioStatus === 'ok' ? (
           <div className="flex flex-col items-center gap-2">
             <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
             <p className="text-note text-faint">听这一句，选出挖掉的那个词</p>
@@ -414,7 +459,14 @@ function QuizCard({
         {/* 没有任何音源时把词显示出来，否则这道题无从下手 */}
         {noAudio && <p className="text-center text-word font-semibold">{entry.surface}</p>}
 
-        {phase === 'revealed' && <CardBack entry={entry} sentence={sentence?.text} examples={examples} />}
+        {phase === 'revealed' && (
+          <CardBack
+            entry={entry}
+            sentence={sentence?.text}
+            examples={examples}
+            onPlayWord={isRead ? () => void playWord() : undefined}
+          />
+        )}
       </Card>
 
       <div className="mt-auto space-y-2">
@@ -435,14 +487,16 @@ function QuizCard({
               revealed={false}
               onPick={phase === 'asking' ? choose : undefined}
             />
-            {/* FR-10.8：这个出口不能省 —— 四选一有 25% 瞎猜命中率，
-                没有它，猜对会被记成 Good，卡会越来越晚才回来 */}
+            {/* FR-10.8 / FR-21.11：这个出口不能省 —— 四选一有 25% 瞎猜命中率，
+                没有它，猜对会被记成 Good，卡会越来越晚才回来。
+                **读卡上不写「没听清」**：那张卡从头到尾没有声音，一个说不通的
+                选项会让人犹豫一下它是不是点错了地方。 */}
             <Button
               className="w-full py-3"
               disabled={phase !== 'asking'}
               onClick={() => onAnswer(null, false, Date.now() - startedAt.current)}
             >
-              没听清 / 不认识
+              {isRead ? '不认识' : '没听清 / 不认识'}
             </Button>
           </>
         )}
@@ -466,6 +520,48 @@ function PlayButton({ disabled, onClick }: { disabled: boolean; onClick: () => v
 }
 
 /**
+ * §12.13：读卡的题面。
+ *
+ * **这一行题干不是装饰。** 听卡进去就自动播一次，读卡什么都不播 ——
+ * 两张卡长得一样的话，每次进读卡都会先愣一秒等声音。所以卡顶用人话
+ * 说清这一关考什么，它同时就是「这是哪一张卡」的答案。
+ */
+const READ_LABEL: Record<string, string> = {
+  'read-gloss': '这个词是什么意思',
+  'read-form': '哪个词是这个意思',
+  cloze: '哪个词填得进这个空',
+};
+
+function ReadPrompt({ question }: { question: Question | null }) {
+  // 长句默认收到两行（§12.13）：cloze 考的是那个空，不是耐心。
+  // 点一下展开 —— 不给「展开」按钮而是整句可点，是因为按钮要占一行，
+  // 而这一块下面紧跟着的就是选项。
+  const [expanded, setExpanded] = useState(false);
+  if (!question) return <p className="text-center text-ui text-faint">组题中…</p>;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-center text-note text-faint">{READ_LABEL[question.kind] ?? ''}</p>
+      {question.kind === 'read-gloss' ? (
+        // 题面给裸词形、不带冠词：冠词会顺手把性教掉，而性该在答对的 600ms
+        // 和卡背上给（FR-10.11）—— 题面里带着它，反向题就再也考不到它了。
+        <p className="text-center text-word font-semibold">{question.prompt}</p>
+      ) : question.kind === 'cloze' ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className={`w-full text-left text-de leading-relaxed ${expanded ? '' : 'line-clamp-2'}`}
+        >
+          {question.prompt}
+        </button>
+      ) : (
+        <p className="text-center text-de leading-relaxed">{question.prompt}</p>
+      )}
+    </div>
+  );
+}
+
+/**
  * 2×2 选项网格（FR-10.7：拇指可达区）。
  *
  * `min-h` 固定而不是让格子跟着释义长短伸缩：否则每张卡的按钮都在不同的位置，
@@ -482,10 +578,13 @@ function ChoiceGrid({
   revealed: boolean;
   onPick?: (id: string, correct: boolean) => void;
 }) {
-  // 列数按题型分，而不是一套响应式断点走到底（实测 430px 下两种题都会变单列）：
-  // 辨形题的选项是短词，手机上 2×2 按起来更省手；辨义题的选项是截到 80 字符的释义，
-  // 挤进半个屏宽会折成四五行，那时单列才读得下去。
-  const cols = question.kind === 'form' ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2';
+  // 列数按**选项里放的是什么**分，而不是一套响应式断点走到底（实测 430px 下
+  // 两种题都会变单列）：选项是短词时手机上 2×2 按起来更省手；选项是截到 80 字符
+  // 的释义时，挤进半个屏宽会折成四五行，那时单列才读得下去。
+  // 判据落在 choicesAreWords 上而不是列举题型（§12.13）——
+  // FR-21 一次加了三种题，按题型列举的写法漏一种就是一屏挤成四行。
+  const words = choicesAreWords(question.kind);
+  const cols = words ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2';
   return (
     <div className={`grid gap-2 ${cols}`}>
       {question.choices.map((choice, i) => {
@@ -505,7 +604,7 @@ function ChoiceGrid({
             className={`min-h-[4.5rem] rounded-box border px-3 py-3 text-left text-ui leading-snug ${tone}`}
           >
             <span className="mr-2 text-note text-faint">{i + 1}</span>
-            {question.kind === 'form' ? <span className="text-de font-medium">{choice.text}</span> : choice.text}
+            {words ? <span className="text-de font-medium">{choice.text}</span> : choice.text}
           </button>
         );
       })}
@@ -518,19 +617,37 @@ function CardBack({
   entry,
   sentence,
   examples,
+  onPlayWord,
 }: {
   entry: VocabEntry;
   sentence: string | undefined;
   examples: string[] | null;
+  /**
+   * §12.13：读卡的卡背上多一个「念一遍」。**这是读卡唯一出现声音的地方** ——
+   * 卡面上不给（给了两张卡又变回一张），而「我认得这个词但从没听过它」
+   * 正是答错之后最该被补上的那件事。听卡不传这个 prop：它刚刚才播过。
+   */
+  onPlayWord?: () => void;
 }) {
   return (
     <div className="space-y-2 border-t border-line pt-4">
       <p className="text-word font-semibold">
         {articled(entry.lemma ?? entry.surface, entry.gender)}
         {entry.plural && <span className="ml-2 text-ui text-muted">{entry.plural}</span>}
+        {onPlayWord && (
+          <button
+            type="button"
+            onClick={onPlayWord}
+            className="ml-3 rounded-box border border-line px-2 py-1 align-middle text-note text-muted active:scale-95"
+          >
+            ♪ 念一遍
+          </button>
+        )}
       </p>
       {entry.ipa && <p className="text-ui text-faint">[{entry.ipa}]</p>}
       <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义还没填）</span>}</p>
+      {/* FR-21.9：中译只出现在卡背，题面一律德语（词典的中译只覆盖约 60%，凑不齐四个选项） */}
+      {entry.meaningZh && <p className="text-ui text-muted">{entry.meaningZh}</p>}
       {sentence ? (
         <p className="text-ui text-muted">{sentence}</p>
       ) : (

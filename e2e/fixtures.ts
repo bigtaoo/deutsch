@@ -162,3 +162,85 @@ export function sampleBackup(now = Date.now()): BackupFile {
     studyLog: { days: {}, updatedAt: 0 },
   };
 }
+
+/**
+ * FR-21：一份**只含读卡**的备份，用来验识词卡那条路。
+ *
+ * 不塞进 sampleBackup：那份 fixture 的「到期 2 张」被好几条用例断言着，
+ * 往里加卡会让它们全红，而它们验的是别的东西。
+ *
+ * 形状是刻意摆出来的：两张读卡到期（一张 read-gloss、一张 cloze），
+ * 它们的**听卡都没到期** —— 否则同日互斥（FR-21.3）会让听卡优先，读卡一张也出不来。
+ * 另外四个词条只当干扰项来源（组题至少要三个），所以也都没到期。
+ */
+export function readCardBackup(): BackupFile {
+  const now = Date.now();
+  const past = now - 3_600_000;
+  const future = now + 7 * 86_400_000;
+
+  const reviewed = (dueAt: number, reps: number) => ({
+    ...fsrsCard(dueAt),
+    state: 2 as const,
+    reps,
+    stability: 5,
+    difficulty: 5,
+    last_review: now - 5 * 86_400_000,
+  });
+
+  const filler = (id: string, surface: string, meaning: string): VocabEntry => ({
+    id,
+    surface,
+    meaning,
+    lookup: true,
+    hasTimestamp: false,
+    suspended: false,
+    fsrs: reviewed(future, 4),
+    // 读卡**已经开过**且没到期。少了这一行，进复习页时 FR-21.2 会给这四个词
+    // 各开一张读卡（它们的听卡都在 Review、也都有释义），队列就从 2 张变成 6 张 ——
+    // 那是对的行为，只是会把这份 fixture 想验的东西淹掉。
+    fsrsRead: reviewed(future, 3),
+    createdAt: now - 86_400_000,
+    updatedAt: now - 86_400_000,
+  });
+
+  const vocab: VocabEntry[] = [
+    {
+      ...filler('lese-gloss', 'Zuversicht', 'fester Glaube an einen guten Ausgang'),
+      // 读卡还没进 Review → read-gloss（看词形选释义）
+      fsrsRead: fsrsCard(past),
+    },
+    {
+      ...filler('lese-cloze', 'Vorhang', 'Stoffbahn vor einem Fenster'),
+      // 读卡在 Review 且 reps 是偶数 → cloze（看挖空句选词）
+      fsrsRead: reviewed(past, 2),
+      examples: ['Der Vorhang fiel nach dem letzten Akt.'],
+    },
+    filler('fill-1', 'Erholung', 'das Wiedererlangen von Kraft'),
+    filler('fill-2', 'Ansammlung', 'eine Menge an einem Ort'),
+    filler('fill-3', 'Gelassenheit', 'innere Ruhe in schwierigen Lagen'),
+    filler('fill-4', 'Umgebung', 'was einen Ort herum liegt'),
+  ];
+
+  return {
+    _warning: 'Contains copyrighted text. Local backup only. Do not share.',
+    formatVersion: 1,
+    exportedAt: now,
+    lessons: [],
+    vocab,
+    settings: {
+      newPerDay: 10,
+      reviewPerDay: 60,
+      shadowingGapRatio: 1.2,
+      shadowingRepeat: 2,
+      playbackRate: 1,
+      dictationStrictCase: true,
+      autoAlignOnImport: false,
+      presetBand: 4,
+      enrolledBands: [],
+      onlineDictFallback: false,
+      showTranslation: false,
+      updatedAt: now,
+    },
+    studyLog: { days: {}, updatedAt: 0 },
+  };
+}

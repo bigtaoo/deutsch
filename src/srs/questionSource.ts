@@ -8,12 +8,24 @@
 //   ② **辨义题的干扰项**：**用户自己生词本里别的词**的释义。零请求 ——
 //      释义在建卡时就拷进 VocabEntry 了。而且这些词他也在学，干扰强度正好。
 //   ③ 课程卡（不是预置卡）没有牌组可查，干扰项退到生词本里别的词的词形。
+//   ④ **读卡（FR-21）的 `read-form` / `cloze` 干扰项**：牌组里**词频名次相邻**的词，
+//      或生词本里同词性的词。**不能用 ① 那份 IPA 近邻** —— 那是给辨音题造的，
+//      `heulen` 填进 `teilen` 的空里一眼就假，那道题不用读懂句子就能做对。
 //
 // 不从词典现查干扰项的释义：那是每张卡三到四次查词、最多四个不同的桶，
 // 而 lookup.ts 头部那段专门把桶缓存压到 6 个就是为了不让内存这么涨。
 
 import { normalizeKey } from '@/dict/bucket';
-import { buildFormQuestion, buildGlossQuestion, pickQuestionKind } from './choices';
+import {
+  buildClozeQuestion,
+  buildFormQuestion,
+  buildGlossQuestion,
+  buildReadFormQuestion,
+  buildReadGlossQuestion,
+  maskInSentence,
+  pickQuestionKind,
+  pickReadKind,
+} from './choices';
 import type { CandidateWord, Question, Shuffle } from './choices';
 import type { DictDeck } from '@/dict/types';
 import type { VocabEntry } from '@/types/models';
@@ -103,4 +115,107 @@ export async function buildQuestion(
     }
   }
   return buildFormQuestion(toCandidate(entry), await formPool(entry, all, loadDeck), shuffle);
+}
+
+/**
+ * FR-21.7：`read-form` / `cloze` 的干扰项。
+ *
+ * **预置卡**取牌组里**词频名次相邻**的词：名次相邻意味着这些词一样常见，
+ * 于是「这个词我没见过、所以不是答案」那条排除法用不上。在最近的一批里再随机抽，
+ * 而不是直接取最近的四个 —— 否则同一张卡每次出题的选项一模一样，
+ * 几轮之后记住的是选项的位置，不是词。
+ *
+ * **课程卡 / 查词卡**没有名次，退到生词本里**同词性**的词（`gender` 有无当名词的近似，
+ * 与 toCandidate 同一个妥协）。同词性不够三个就放开 —— 见 choices.ts 规则 ⑥。
+ *
+ * 与 formPool 的区别就是这一条：那边要**音近**，这边要**语义上讲得通**。
+ */
+const NEAR_RANK_WINDOW = 40;
+
+export async function wordPool(
+  entry: VocabEntry,
+  all: readonly VocabEntry[],
+  loadDeck: (band: number) => Promise<DictDeck | null>,
+): Promise<CandidateWord[]> {
+  const key = normalizeKey(entry.lemma ?? entry.surface);
+  const deck = entry.preset ? await loadDeck(entry.preset.band) : null;
+  if (deck && entry.preset) {
+    const myRank = entry.preset.rank;
+    const near = deck.words
+      .filter((x) => normalizeKey(x.w) !== key)
+      .sort((a, b) => Math.abs(a.r - myRank) - Math.abs(b.r - myRank))
+      .slice(0, NEAR_RANK_WINDOW);
+    return sample(near, POOL_SIZE).map((x) => ({ w: x.w }));
+  }
+  const others = all.filter(
+    (e) => e.id !== entry.id && normalizeKey(e.lemma ?? e.surface) !== key,
+  );
+  const isNoun = Boolean(entry.gender);
+  const samePos = others.filter((e) => Boolean(e.gender) === isNoun);
+  return sample(samePos.length >= MIN_DISTRACTORS ? samePos : others, POOL_SIZE).map(toCandidate);
+}
+
+/**
+ * FR-21.6：挑一条能出 cloze 的句子，挖好空。挖不动就返回 null。
+ *
+ * 句子从 `entry.examples` 来 —— 开读卡时就拷进卡里了，这里**不查词典**：
+ * 复习过的卡不能变（§2.3），而词典是可重建的缓存层。
+ *
+ * 先拿 `surface` 试再拿 `lemma` 试：课程卡的原句里出现的正是 surface
+ * （它就是从那句里选出来的），而词典例句里出现的往往是词头的屈折形式，
+ * 那一种由 maskInSentence 的词干匹配去接。
+ */
+export function pickCloze(entry: VocabEntry): string | null {
+  for (const sentence of entry.examples ?? []) {
+    for (const word of [entry.surface, entry.lemma].filter(Boolean) as string[]) {
+      const masked = maskInSentence(sentence, word);
+      if (masked) return masked;
+    }
+  }
+  return null;
+}
+
+/**
+ * 给一张**读卡**组一道题（FR-21.4）。
+ *
+ * 题型由卡龄决定，但每一种都有降级出口 —— 组不出来时换一种，绝不抛异常
+ * （choices.ts 规则 ⑥）。降级链是**往回退**的：
+ *
+ *   cloze（没有可挖的句子）→ read-form（凑不到词形干扰项）→ read-gloss
+ *   read-form（凑不到）→ read-gloss
+ *   read-gloss（凑不到有释义的干扰项）→ read-form
+ *
+ * `read-gloss` 是最后的兜底：它只要求这张卡自己有释义，而那是开读卡的门槛
+ * （FR-21.2 第 ② 条），所以一定过得去。真到了「生词本里就这一张卡」的地步，
+ * 它会给一个只有正确项的题 —— 题变简单，但流程不会停在这张卡上。
+ */
+export async function buildReadQuestion(
+  entry: VocabEntry,
+  all: readonly VocabEntry[],
+  loadDeck: (band: number) => Promise<DictDeck | null>,
+  shuffle?: Shuffle,
+): Promise<Question> {
+  const me = toCandidate(entry);
+  const kind = entry.fsrsRead ? pickReadKind(entry.fsrsRead) : 'read-gloss';
+
+  const words = kind === 'read-gloss' ? [] : await wordPool(entry, all, loadDeck);
+
+  if (kind === 'cloze') {
+    const masked = pickCloze(entry);
+    if (masked && words.length >= MIN_DISTRACTORS) {
+      return buildClozeQuestion(me, words, masked, shuffle);
+    }
+  }
+  if (kind !== 'read-gloss' && words.length >= MIN_DISTRACTORS) {
+    return buildReadFormQuestion(me, words, shuffle);
+  }
+
+  const glosses = glossPool(entry, all);
+  if (glosses.filter((c) => c.gloss).length >= MIN_DISTRACTORS) {
+    return buildReadGlossQuestion(me, glosses, shuffle);
+  }
+  // read-gloss 也凑不出干扰项：词形那条路要求低得多（干扰项不需要有释义）
+  const fallback = kind === 'read-gloss' ? await wordPool(entry, all, loadDeck) : words;
+  if (fallback.length >= MIN_DISTRACTORS) return buildReadFormQuestion(me, fallback, shuffle);
+  return buildReadGlossQuestion(me, glosses, shuffle);
 }

@@ -142,7 +142,8 @@ export function DictLookup() {
   const add = async () => {
     if (!result) return;
     const dict = localHit?.entry ?? (onlineHit ? toDictEntry(onlineHit) : null);
-    const entry = await createFromLookup({ surface: result.head, dict });
+    // FR-21.6：例句一并收下 —— 在线那一趟已经拿到了，开读卡时它多半不在了
+    const entry = await createFromLookup({ surface: result.head, dict, examples: result.examples });
     setAdded(entry);
     // 不可重建的数据不过夜（FR-11.6）。失败也不用管：进队列，由状态芯片报出来。
     void syncVocabNow();
