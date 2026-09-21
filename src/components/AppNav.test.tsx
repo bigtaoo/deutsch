@@ -115,13 +115,24 @@ describe('顶部栏', () => {
     expect(within(drawer).getByText('本机音频用量与清理')).toBeInTheDocument();
   });
 
-  it('详情页在手机上给一个回课程列表的入口', () => {
+  it('详情页在手机上给一个回课程列表的入口（带「‹」的那个）', () => {
     render(<TopBar route={{ name: 'lesson', lessonId: 'l1', tab: 'listen' }} />);
-    expect(screen.getByRole('link', { name: /课程/ })).toHaveAttribute('href', '#/lessons');
+    const back = screen
+      .getAllByRole('link', { name: /课程/ })
+      .find((a) => a.textContent?.includes('‹'));
+    expect(back).toHaveAttribute('href', '#/lessons');
+  });
+
+  it('非详情页没有那个返回入口', () => {
+    render(<TopBar route={{ name: 'lessons' }} />);
+    expect(screen.queryByText('‹')).toBeNull();
   });
 
   it('抽屉页上标题显示的是那一页的名字，不是「精听」', () => {
     render(<TopBar route={{ name: 'cache' }} />);
-    expect(screen.getByText('素材')).toBeInTheDocument();
+    // 「素材」同时出现在抽屉的链接里，所以只认标题那个 <span>。
+    const title = screen.getAllByText('素材').find((el) => el.tagName === 'SPAN');
+    expect(title).toBeInTheDocument();
+    expect(screen.queryByText('精听')).toBeNull();
   });
 });
