@@ -267,8 +267,13 @@ curl -s https://sync.gamestao.com/v1/healthz
 
 ```bash
 # ② 在真机器上读三个数：解码几秒、加载权重几秒、**一块几秒**。
-#    先把一个真实 mp3 放进 data/（它只是探针的输入，不会被服务读到）
-ssh wnet-server 'cd ~/deutsch-sync && docker compose exec sync node src/align/probe.ts /data/sample.mp3'
+#    输入现场生成一段正弦波就行（探针要的三个数与音频内容无关）。
+#    **两条必须挨着跑**：/tmp 在容器里，容器一重建就没了。
+ssh wnet-server 'cd ~/deutsch-sync && docker compose exec -T sync sh -c "ffmpeg -hide_banner -loglevel error -f lavfi -i sine=frequency=220:duration=25 -ac 1 -ar 16000 /tmp/probe25.wav"'
+```
+
+```bash
+ssh wnet-server 'cd ~/deutsch-sync && docker compose exec -T sync node src/align/probe.ts /tmp/probe25.wav'
 ```
 
 第 ③ 个数（一块几秒）× 27 就是「一课要等多久」。
@@ -282,11 +287,7 @@ curl -sI https://sync.gamestao.com/v1/align/weights/oliverguhr/wav2vec2-large-xl
 # 要看到 200、content-length 约 241400000、accept-ranges: bytes
 ```
 
-**没有真实 mp3 也能验** —— 探针要的三个数与音频内容无关，现场生成一段正弦波就行：
-
-```bash
-ssh wnet-server 'cd ~/deutsch-sync && docker compose exec -T sync sh -c "ffmpeg -hide_banner -loglevel error -f lavfi -i \"sine=frequency=220:duration=25\" -ac 1 -ar 16000 /tmp/probe25.wav"'
-```
+有真实 mp3 的话把它放进 `data/`（挂进容器就是 `/data/`）再把路径换掉，结论一样。
 
 **2026-09-03（0.3.0）在这台机器上的实测值**，以后回归时拿它对照：
 
@@ -297,6 +298,21 @@ ssh wnet-server 'cd ~/deutsch-sync && docker compose exec -T sync sh -c "ffmpeg 
 | 权重加载 | 首次 **60.7 秒**（含从 HF 下 241MB），之后 **0.6 秒** |
 | 一块（20 秒音频）| **4.1~4.5 秒** → 一课 27 块约 **2 分钟**，实时倍率 4.5× |
 | 容器内存 | 空载 104MiB / 2GiB |
+
+**2026-09-21（变更 42，fp32 + 德语原生模型）在同一台机器上复测**：
+
+| | q4（2026-09-03） | fp32（现在） |
+|---|---|---|
+| 解码 25 秒音频 | 0.1~0.2 秒 | 0.1 秒 |
+| 权重加载 | 首次 60.7 秒（含下载），之后 0.6 秒 | **2.4 秒**（1.2GB 从本地盘读） |
+| 满块（20 秒音频）| 4.1~4.5 秒 | **6.7 秒** |
+| 实时倍率 | 4.5× | **2.81×** |
+| 一课（6:16 / 9:56）| 约 1.5 / 2.5 分钟 | **约 2 / 3.5 分钟** |
+| 容器内存 | 空载 104MiB / 2GiB | 算完常驻 **2.145GiB / 4GiB**，闲置 10 分钟后 **56.27MiB** |
+
+也就是说 **fp32 比 q4 慢约 1.5 倍**，换来的是不带量化误差的那一份 emissions；
+手机在这几分钟里可以锁屏，代价可以接受。探针打的「每块平均 4.4 秒」要当心：
+25 秒音频切成 20s + 7s 两块，短的那块只要 2.2 秒 —— 按**每秒音频 0.33 秒**算才是对的。
 
 - [x] `healthz` 里 `align.status` 不是 `off`（是 `idle`，还没加载过权重）
 - [x] `probe.ts` 跑通：解码正常、权重加载成功（说明这份 ORT 认 `MatMulNBits`）、帧数与期望一致
