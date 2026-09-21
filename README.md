@@ -310,6 +310,13 @@ iOS 和 Android 两套原生工程都在库里（`ios/` `android/`），壳里�
 
 **出包不需要本机有 Mac 或 Android Studio，走 CI。**
 
+**先看这一条：多数改动不用出包。** 2026-09-20 起 iOS 壳走热更（SPEC §7.12）——
+纯前端的改动 `push main` 之后，手机下次冷启动就自己换上了，设置页最后那块「版本」
+能看到当前跑的是哪一份。**需要重新出包的只有原生那半**：`native-plugins/align-native`
+里的 Swift、`AppDelegate`、`Info.plist`、图标与启动图、新装的 Capacitor 插件。
+装了新 IPA 会丢掉所有热更 bundle 回到随包那份，这是对的方向。
+（Android 还没有热更，那边照旧每次发包。）
+
 iOS —— 推一个 `ios-v*` tag，`release-ios.yml` 会出 IPA 并自动上传 App Store Connect：
 
 ```bash

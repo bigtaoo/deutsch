@@ -9,7 +9,69 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         configureAudioSession()
+        linkBundledAssets()
         return true
+    }
+
+    /// 给每个热更 bundle 目录补上指回 app 包的 `models` / `dict` 符号链接（SPEC §7.12，变更 41）。
+    ///
+    /// ── 为什么需要 ──
+    /// 热更（@capgo/capacitor-updater）把 web 根整个切到
+    /// `Library/NoCloud/ionic_built_snapshots/<id>/`，而 `/models/`（418MB 对齐权重）和
+    /// `/dict/`（40MB 词库）是**相对站点根的绝对路径** —— 根一换就全 404。把它们塞进
+    /// 热更包等于每次更新传 458MB；改走 `convertFileSrc` 则赌 `_capacitor_file_` handler
+    /// 支持 Range，而随包权重正是靠 Range 分块读的（src/align/rangedFetch.ts），赌输了
+    /// 就是整份 187MB 进内存、被系统杀掉。符号链接是唯一一条让 **web 代码一行不改**、
+    /// 取数仍走同一个 WebViewAssetHandler 的路。
+    ///
+    /// ── 为什么每次启动都重建，而不是「没有才建」──
+    /// app 包的路径里有一个每次安装都会变的 UUID
+    /// （`/var/containers/Bundle/Application/<UUID>/App.app`）。装了新 IPA 之后，上一版
+    /// 留下的链接全部指向一个不存在的目录 —— 而 `fileExists` 跟随链接，对这种断链返回
+    /// false，于是「没有就建」会走进 createSymbolicLink 再以 EEXIST 失败，悄悄留下一个
+    /// 永远坏着的 `/models/`。所以：是链接就先删掉，再按当前包路径建一条新的。
+    ///
+    /// ── 时序 ──
+    /// 插件下载新 bundle 是在 app 活着的时候，那时这个函数早跑完了，新目录里没有链接。
+    /// 但新 bundle 要到**下次启动**才激活（nativeUpdate.ts 用的是 `next()` 不是 `set()`），
+    /// 而下次启动会再跑一遍这里 —— 所以链接总是先于它被用到。
+    private func linkBundledAssets() {
+        let fm = FileManager.default
+        let publicDir = Bundle.main.bundleURL.appendingPathComponent("public")
+        guard let libraryDir = fm.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
+        let snapshots = libraryDir.appendingPathComponent("NoCloud/ionic_built_snapshots")
+        guard let bundles = try? fm.contentsOfDirectory(
+            at: snapshots, includingPropertiesForKeys: [.isDirectoryKey]
+        ) else {
+            return  // 一个热更包都还没下过 —— 跑在包内 dist 上，那份本来就有真的 models/dict
+        }
+
+        for bundleDir in bundles {
+            guard (try? bundleDir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+            for name in ["models", "dict"] {
+                let target = publicDir.appendingPathComponent(name)
+                // 这一版的包里根本没有这份资源（比如构建时没跑 stage:align）就别建断链。
+                guard fm.fileExists(atPath: target.path) else { continue }
+
+                let link = bundleDir.appendingPathComponent(name)
+                // attributesOfItem 走 lstat，**不跟随链接** —— 这正是判断「它本身是不是
+                // 一条链接」所需要的。真目录（不该出现，但万一热更包里带了）就别碰。
+                let attrs = try? fm.attributesOfItem(atPath: link.path)
+                let type = attrs?[.type] as? FileAttributeType
+                if type == .typeSymbolicLink {
+                    try? fm.removeItem(at: link)
+                } else if attrs != nil {
+                    continue
+                }
+                do {
+                    try fm.createSymbolicLink(at: link, withDestinationURL: target)
+                } catch {
+                    // 建不上就等于这个热更包里没有权重/词库：对齐会退回「从 HF 下载」，
+                    // 查词会查不到。是退化，不是崩溃，不值得让应用起不来。
+                    NSLog("[ota] link \(name) failed: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     /// 把音频会话设成 .playback —— 原生壳唯一一处真正改变行为的原生代码。

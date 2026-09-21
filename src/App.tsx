@@ -10,6 +10,7 @@ import { isPracticeRoute } from '@/study/surface';
 import { setSyncHooks, startSyncAutoRetry, syncNow } from '@/sync/trigger';
 import { audioPlayer } from '@/audio/player';
 import { hideNativeSplash } from '@/platform/native';
+import { checkNativeUpdate, notifyNativeAppReady } from '@/platform/nativeUpdate';
 import { useAlignStore } from '@/state/useAlignStore';
 import { AlignBar, AlignCrashBanner } from '@/components/AlignBar';
 import { BottomTabs, TopBar, shouldShowBottomTabs } from '@/components/AppNav';
@@ -41,6 +42,13 @@ function App() {
     // 浏览器里这是空操作。
     void ready.then(() => {
       hideNativeSplash();
+      // FR-21：热更的两件事都挂在「表读完了」这一刻。
+      // notifyNativeAppReady 取消原生侧的回滚倒计时 —— 判据必须是「库真的读出来了」，
+      // 放在模块顶层等于没判：一个连 IndexedDB 都打不开的构建照样能执行到 import。
+      void notifyNativeAppReady();
+      // 查更新排在同步后面：它要下 36MB，而「打开就想用」的那几秒该留给同步。
+      // 下载在原生侧的后台线程上，不占 WebView，所以不用再额外延时。
+      void checkNativeUpdate();
       // FR-11.19：启动时同步一次 —— 先把排队的推出去，再把别的设备改过的拉回来。
       // **必须等这四张表读完**：拉取会往库里写，写完由 onRemoteDataWritten 让 store 重读，
       // 而初次 load() 如果晚于那次重读，界面就退回到拉取之前的旧值了。

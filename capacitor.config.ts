@@ -44,6 +44,23 @@ const config: CapacitorConfig = {
     backgroundColor: '#ffffff',
   },
   plugins: {
+    // 热更新（SPEC §7.12 / 变更 41）。判断逻辑全在 src/platform/nativeUpdate.ts，
+    // 这里只关掉插件自带的那套、把安全网调到位。
+    CapacitorUpdater: {
+      // 手动模式。插件自带的 autoUpdate 会 **POST** 到 updateUrl，而 wrangler.jsonc
+      // 是纯静态资源部署、没有 Worker 脚本；为一次更新检查引入后端不划算。
+      // 改成自己 GET 一份静态 manifest.json，判断留在 TS 里（可单测）。
+      autoUpdate: false,
+      // 装了新 IPA 就丢掉所有热更 bundle，回到包里那份。
+      // **这条是对的方向**：新壳可能带了新的原生方法，而留着的旧 JS 不知道它们存在。
+      // 丢掉之后下一次 checkNativeUpdate 会按新壳的版本重新判一遍 minNative。
+      resetWhenUpdate: true,
+      // 没在这个时间内等到 notifyAppReady() 就回滚到上一个 bundle。
+      // 默认 10 秒。放宽到 20：那句 notify 排在「四张 IndexedDB 表读完」之后
+      // （App.tsx），冷启动时攒了几十课的标注层读起来并不快,而误判回滚
+      // 的症状是「热更装上了又自己退回去」，比多等十秒难查得多。
+      appReadyTimeout: 20000,
+    },
     SplashScreen: {
       // 自己在 initNativeShell() 里 hide()：默认的 launchAutoHide 是按固定毫秒数关，
       // 而这个应用启动时要读四张 IndexedDB 表（App.tsx 的 useEffect），

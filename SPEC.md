@@ -50,6 +50,7 @@
 | 38 | **译文与笔记（2026-09-15）**：新增 **FR-19**（逐句译文）、**FR-20**（课程笔记）与 **§12.9**；`src/lesson/translation.ts`（提示词 / 编号原文 / 解析 / 写回，纯函数）、课程页「⋯」里的**译文**页、通听与跟读上的「显示中文」开关、通听页底部的**笔记**折叠块；`Sentence.translation` 与 `Lesson.notes` 进标注层（跟着 `Lesson` 走，备份/同步/合并一行没改），`Settings.showTranslation` | 用户的原话是「我会用 Claude 对文章进行翻译」「我会自己写一些要点」——**应用自己不翻译**，它只负责把一整篇译文切回一句一句。<br>三个决定值得记住：① **逐句而不是整篇**：整篇译文要人在两块文本之间自己找位置，而听的时候手不在屏幕上；逐句之后跟读页也能用，而「跟着念了两遍却不知道念的是什么」正是跟读最难受的地方。② **用编号当锚，不按行数猜**：翻译工具多写一行说明、少一个空行，按行数对就整篇错位一句 ——而**错位的译文比没有译文更糟**（跟读时你看到的是下一句的意思，还不知道自己被骗了）。编号解析失败是显性的（「48 句认到 46 句」），行数对齐失败是静默的；所以没有编号的行**永远开不了一个新条目**，宁可少认几句。③ **笔记只做课程级**：句级那一层已经被挖空和生词本占满了，再加一层，过几周就想不起来某条东西当初记在哪一层。<br>顺带修了一处早就埋着的地雷：`Disclosure` 的展开状态原来直接钉在 prop 上，而它现在要出现在**每帧重渲染**的通听页里 —— 那样用户折叠之后下一帧就会被强行弹开。
 | 39 | **低置信句可以人耳确认（2026-09-16）**：新增 **FR-15.19** 与 **§12.10**；`Sentence.timingChecked`（标注层，跟着 `Lesson` 走）、`flaggedByConfidence()` / `toggleTimingChecked()`（`src/align/apply.ts`）、通听里带 `?` 的行号变成按钮（点一下确认、点第二下撤销），`reviewQueue` 只报还没确认的那几句 | 用户的原话是「我能理解句子编号的？，我希望我可以自己在听完之后可以对其进行确认，然后消除？ 因为大部分时候都是正确的。」**这是 FR-15.3 的一个缺口**：那一条要求「低置信句数摆在课程页头部」，却没给这条提示任何**退出条件** —— 而低置信的常见原因（台标音乐、播音员交替、英语借词、被丢掉的数字）恰恰大多不影响句边界，于是听完一课、确认每句都对之后，头部那行「6 句置信度偏低」和那条 `Note` 一个字都不会变。一条听完也消不掉的提示，教会人的只有忽略提示，正是 §12.3「一切正常就静默」的反面。<br>三个决定值得记住：① **不复用 `timingSource: 'manual'`**：那个值的含义是「边界是人给的」，会让重新对齐跳过这一句（FR-15.5）—— 而这里发生的事只是「机器算的这一版我听过，没错」，下次重对照旧该重算它。所以 `applyTimings` 写入新时间戳时**把确认清掉**：确认过的是那一版边界，不是这个句子永远正确。② **确认不动阈值**：阈值按整课的置信度分布算（`flaggedByConfidence`），确认几句只改「谁还在队列里」，否则剩下那几句的判定会跟着人的操作漂。③ **确认过的行号和从没被标出来的行号长得一模一样**（不画勾）：消掉 `?` 换来另一个常驻标记等于没消；可撤销靠热区还在（点第二下），不靠画出来。<br>顺带把通听的每一行从内联排版改成 **flex 两列**（行号 / 文本）：触屏上 `index.css` 给 `button` 的 44px 最小热区会撑高它所在的行盒，把句子第一行推下去；作为独立的 flex 项它只影响整行高度。连带收益是**悬挂缩进** —— 折行之后的文本和译文都对齐在编号之后，不再回到最左边 |
 | 40 | **生词本里的查词（2026-09-20）**：新增 **FR-9.5 ~ FR-9.10** 与 **§12.11**；`src/dict/view.ts`（两个来源合成一个答案）、`src/pages/vocab/DictLookup.tsx`（生词本页顶部的一块）、`online.ts` 重写成「一次解析、两个视图」（多出例句 / 同义词 / 反义词 / 词源 / 变形）、`VocabEntry.lookup` 与 `createFromLookup`；`cardAudioStatus` 的 `preset-word` 改名 `word-only`（`isWordCard`） | 用户的原话是「生词本里，加一个查词的功能，我现在的德语课很多时候要查生词。谷歌翻译的解释很多时候不太详细」。**这是一个此前没有入口的来源**：课上的词不来自这里的任何一课，也不在预置词库的名次里，而内置词典在这个应用里一直只在幕后跑（标记生词时 prefill、复习卡背），**没有任何地方能让人主动查一个词**。<br>三个决定值得记住：① **要的是「详细」，所以在线那一趟每次都问**，不只在内置词典查不到时问 —— 内置词典只给 1.7 万个牌组词带例句（FR-16.9），而课上要查的词大多不在牌组里；`Partizip II`、比较级、词源、同义词更是内置词典完全没有的一类。设置里那个开关因此从「查不到时联网」变成「联网查」，管两处。② **在线那一趟拿词头去问**：`abgewogen` 自己那一页只有一个 Partizip 小节，例句和变形全在 `abwägen` 那一页上 —— 不换词头，「详细」正好在最需要的那种词（变形）上少掉一半。代价是在线那一趟要等本地查完才开始。③ **加进来的词没有课**，所以要一个显式标记（`lookup`）：少了它，这张卡在复习页会走到「去这一课重新对齐」那条出口，而那一课从来不存在 —— 与预置卡当年要 `preset-word` 那一档是同一个理由，于是那一档改名 `word-only`，两种「没有原句的卡」共用。<br>**没做的**：查词历史、多词搭配（`sich einer Sache bewusst sein` 两边都查不到，界面如实说，并且照样可以原样收下）、整句翻译（那是 FR-19 的事，而且应用自己不翻译）
+| 41 | **iOS 原生壳的热更新（2026-09-20）**：新增 **§7.12** 与 **§12.12**；装 `@capgo/capacitor-updater`（**手动模式**）、`src/platform/nativeUpdate.ts`（`decideUpdate` 纯函数 + `checkNativeUpdate` / `notifyNativeAppReady` / `runningBuild`）、`scripts/build-ota.mjs`（`npm run build:ota` → `ota-staging/`）、`AppDelegate.linkBundledAssets()`、设置页「版本」小节；deploy 流水线多两步（打包在 web 构建**之前**，搬运在**之后**）；`package.json` 升到 0.4.0 | 起因是一句提问：「为何网页上的版本更新之后，iOS 的版本没有更新呢？」答案是**设计如此**，而且代价已经攒了两周半：`webDir: 'dist'` 把前端冻在出包那一刻，SW 又在原生构建里被特意关掉（变更 30），所以 ios-v0.3.0（2026-09-03）之后的变更 36~40 ——界面重做、学习记录、译文笔记、人耳确认、查词——在 iPhone 上一个都没有。<br>**四处形状值得记住**：① **手动模式而不是插件自带的 autoUpdate** —— 后者要 POST 到端点，而 wrangler.jsonc 是纯静态部署、没有 Worker 脚本；改成自己 GET 一份静态 manifest.json 之后，「要不要更新」变成一个可单测的纯函数，而不是藏在原生侧的行为。② **`next()` 而不是 `set()`** ——立刻换 bundle 是整个 WebView 重载，比 web 版那次 `location.reload()` 更重，而变更 30 那条教训（听写答案只活在 React state 里）在这里加倍成立；所以后台下好、**下次冷启动**生效，界面上不给「现在就更新」的按钮。③ **buildId 用 commit 短 sha + 相等判断，不比 semver 大小** —— 比大小会让**回滚**（版本号往回走）被客户端拒绝，恰好在最需要更新生效时不生效。④ **`minNative` 门槛不能省** —— 热更换不了原生代码，把用到新 Swift 方法的 JS 推给旧壳，症状是「点了没反应」，比崩溃还难查（崩溃至少有 `notifyAppReady` 的回滚兜着）。<br>**真正的技术障碍不是下载，是 `/models/` 与 `/dict/`**：热更把 web 根整个切到 `Library/NoCloud/ionic_built_snapshots/<id>/`，而那两个路径是相对站点根的绝对路径，根一换就全 404。塞进热更包要每次传 458MB；改走 `convertFileSrc` 则赌 `_capacitor_file_` 支持 **Range**，而随包权重正是靠 Range 分块读的（§7.9 / `rangedFetch.ts`：187MB 整份进内存即被杀）。选的是第三条——**在新 bundle 目录里建符号链接指回 app 包**，web 代码一行不动，取数仍走同一个 WebViewAssetHandler。链接**每次启动都重建**：app 包路径里那个 UUID 每次安装都变，上一版留下的链接全是断链，而 `fileExists` 跟随链接、对断链回 false，「没有才建」会以 EEXIST 静默失败并留下一个永远坏着的 `/models/`。<br>**Android 这次不做**：`WebViewAssetLoader` 有 canonical path 检查，很可能拒绝指向 app 目录外的符号链接，要另想寻址方式。Android 照旧走发包 |
 
 
 ---
@@ -1428,6 +1429,70 @@ PWA 那侧做不到同样的事：manifest 的 `name`/`short_name` 是单值，�
 
 ---
 
+### 7.12 iOS 原生壳的热更新（变更 41，2026-09-20）
+
+**问题**：`webDir: 'dist'` 把整份前端打进 IPA，冻结在出包那一刻；Service Worker 又在原生
+构建里被特意关掉（§7.10 第 2 条 / 变更 30）。于是 `push main` 只更新 d.gamestao.com，
+手机上一动不动 —— ios-v0.3.0（2026-09-03）之后的变更 36~40 在 iPhone 上一个都没有。
+
+**做法**：`@capgo/capacitor-updater`，**手动模式**。判断全在 `src/platform/nativeUpdate.ts`，
+原生侧只负责下载与切换。
+
+| 环节 | 落法 | 为什么不是另一种 |
+|---|---|---|
+| 查更新 | 启动时 GET `/ota/manifest.json`（`cache: 'no-store'`） | 插件自带的 autoUpdate 要 **POST** 到端点，而 wrangler.jsonc 是纯静态部署、没有 Worker 脚本（§3.1.1 R-1 的字面落地）。GET 一份静态 JSON 之后，判断变成可单测的纯函数 |
+| 判断 | `decideUpdate(manifest, current, native)` | 见下面两条 |
+| 版本比较 | **buildId（commit 短 sha）相等判断** | 不比 semver 大小：只有 main 一条线，而比大小会让**回滚**（版本号往回走）被拒绝，恰好在最需要更新时不生效 |
+| 门槛 | `minNative`（手改，在 `scripts/build-ota.mjs` 里） | 热更换不了原生代码。用到新 Swift 方法的 JS 推给旧壳 = 「点了没反应」，比崩溃难查（崩溃有 `notifyAppReady` 回滚兜着） |
+| 生效 | `next()`：后台下好，**下次冷启动**生效 | `set()` 立刻重载整个 WebView，会清掉只活在 React state 里的听写答案 —— 变更 30 那条「不在打字的当口刷」在这里加倍成立。界面上**不给**「现在就更新」的按钮 |
+| 安全网 | `notifyAppReady()` 挂在「四张 IndexedDB 表读完」之后（App.tsx），超时 20 秒回滚 | 放模块顶层证明不了什么：连库都打不开的构建照样能执行到 import |
+| 装新 IPA | `resetWhenUpdate: true`，丢掉所有热更 bundle | 新壳可能带了新的原生方法，而留着的旧 JS 不知道它们存在 |
+
+#### 真正的障碍：`/models/` 与 `/dict/`
+
+热更把 web 根整个切到 `Library/NoCloud/ionic_built_snapshots/<id>/`，而 `/models/`
+（418MB 权重，`align/config.ts` 的 `LOCAL_MODEL_PATH`）与 `/dict/`（40MB 词库，
+`dict/lookup.ts` 的 `DICT_BASE`）都是**相对站点根的绝对路径** —— 根一换就全 404。
+
+| 路 | 为什么没选 |
+|---|---|
+| 塞进热更包 | 每次更新 458MB |
+| 改走 `Capacitor.convertFileSrc()` | 赌 `_capacitor_file_` handler 支持 **Range**，而随包权重正是靠 Range 分块读的（§7.9 / `rangedFetch.ts`）—— 赌输就是 187MB 整份进内存、被系统杀掉 |
+| **符号链接**（选这条） | web 代码**一行不动**，路径还是 `/models/`，取数走的还是同一个 `WebViewAssetHandler`，Range 行为逐字节一致 |
+
+链接由 `AppDelegate.linkBundledAssets()` 在 `didFinishLaunching` 里补齐，**每次启动都重建**：
+app 包路径里那个 UUID 每次安装都会变（`/var/containers/Bundle/Application/<UUID>/App.app`），
+上一版留下的链接全是断链 —— 而 `fileExists` 跟随链接、对断链回 false，
+「没有才建」会走进 `createSymbolicLink` 再以 EEXIST 失败，悄悄留下一个永远坏着的 `/models/`。
+判断用 `attributesOfItem`（走 `lstat`，不跟随链接）。
+
+**时序是对的**：插件下载新 bundle 时这个函数早跑完了，但新 bundle 要到**下次启动**才激活
+（`next()` 不是 `set()`），而下次启动会再跑一遍这里。
+
+#### 构建与发布
+
+```
+npm run build:ota     # = build:native + scripts/build-ota.mjs → ota-staging/
+```
+
+- **打的必须是 native 构建**（无 SW）。把带 SW 的 web 构建热更下去，等于给一个没有地址栏、
+  没有开发者工具的壳装上一个清不掉的缓存层，**发出去没有回头路**（那份会自己缓存自己）。
+  脚本里有一道 `sw.js` / `registerSW.js` 的硬校验挡着。
+- 包里**排除** `models/`、`dict/`，**保留** `share/`（FR-18 的六张底图，1.3MB，会跟着代码改）。
+  实测 **33 个文件 / 10.2 MiB**。
+- 产物落 `ota-staging/`（不是 `dist/ota/`）：dist 要先后被两次构建占用，而 `vite build` 会清空 outDir。
+- deploy 流水线：**打包排在 web 构建之前**（否则 web 产物被 native 产物覆盖，线上站当场失去 SW），
+  **搬运排在之后**（web 构建刚把 dist 清空重建过）。两步的 `env` 必须与 web 构建**一模一样** ——
+  漏了 `VITE_SYNC_API_BASE` 就是把「同步整块关掉」的构建推到手机上，而它不报错。
+
+#### 这条路更新不了什么
+
+原生代码一律不行：`align-native` 那个 Swift ONNX 插件、`AppDelegate` 的音频会话与符号链接、
+Capacitor 插件本身、Info.plist、图标与启动图。它们照旧走 `ios-v*` tag → TestFlight。
+
+**Android 不做**（这次）：`WebViewAssetLoader` 有 canonical path 检查，很可能拒绝指向 app 目录外的
+符号链接，要另想寻址方式。Android 照旧发包。
+
 ## 8. 风险与对策
 
 | 风险 | 影响 | 对策 |
@@ -1449,7 +1514,7 @@ PWA 那侧做不到同样的事：manifest 的 `name`/`short_name` 是单值，�
 | V1 无 lemma，同词跨课重复建卡 | 中 | surface 匹配提示合并（FR-9.3），接受局限，V2 补批量归并 |
 | 标注全部句子太累导致弃用 | 中 | 稀疏打点是**设计**不是妥协；UI 明示「已标注 6 / 112」不制造焦虑 |
 | iOS 静音开关导致「没声音」被误判为 bug | 低 | **原生壳里已消除**：`AppDelegate` 把 `AVAudioSession` 设成 `.playback`（§7.10）。纯 web / 主屏幕 PWA 上仍然存在，靠 README 提示 |
-| 原生壳的版本更新走 App Store，坏版本回滚慢 | 中 | 线上 web 版（d.gamestao.com）始终是同一份代码的可用退路，且数据在同步服务器上而不在包里。iOS 出包用 `ios-v*` tag 触发，重发一个新 tag 就是一次修复；不做 OTA 热更（funny 那套 Capgo 是为游戏内容更新配的，这里没有同等收益） |
+| 原生壳的版本更新走 App Store，坏版本回滚慢 | 中 | **2026-09-20 起 iOS 走热更（§7.12）**：前端改动 push main 之后手机自己拿，回滚也只是再 deploy 一次（buildId 相等判断，方向无所谓），崩了还有 `notifyAppReady` 超时自动退回上一个 bundle。**换不了原生代码**——Swift 插件、AppDelegate、Info.plist、图标仍然只能出包，那部分照旧 `ios-v*` tag → TestFlight，重发一个新 tag 就是一次修复。Android 暂时全靠发包。线上 web 版（d.gamestao.com）始终是同一份代码的可用退路，且数据在同步服务器上而不在包里 |
 | DW 改版打掉自动抓取 | 中 | 三层降级（FR-13）+ `__APOLLO_STATE__` 快照回归测试让改版先让测试红；**L3 手动路径永不删除** |
 | DW 收紧 CORS 头，纯前端方案失效 | 中 | 这是整个 FR-13 的单点依赖。真发生了就退回本地 helper 方案（§7.8 已记录其设计），或退 L3。**因此 adapter 层必须与 UI 解耦**：换成 helper 时只改数据来源，不动导入流程 |
 | GLOSSARY span 的 offset 映射静默错位 | 中 | HTML→文本转换单独写测试（§7.8）；候选词在 UI 上高亮显示，错位肉眼即可见 |
@@ -1593,6 +1658,18 @@ Android 那条仍未跑过。
 - [x] 笔记写几行 → **立刻切 tab 再回来**，内容还在（卸载时那次保存）；摘要显示行数（浏览器实测）
 - [x] 合并 / 拆分 / 重新切句之后译文的去向符合 FR-19.5（单元测试）
 - [x] `toShareablePackage` 里既没有 `translation` 也没有 `notes`（单元测试）
+
+**热更新（§7.12 / §12.12，2026-09-20 新增）**
+
+- [x] `decideUpdate` 的五条判据各有用例：内置必更新 / 版本相同不动 / 壳太旧不下 / **回滚要跟着走** / manifest 残缺当没看见（单元测试）
+- [x] `npm run build:ota` 的包里 **index.html 在根、没有 models/ 与 dict/、没有 sw.js、share/ 七张都在**（实测 33 个文件 10.2 MiB）
+- [x] 拿 web 构建（带 sw.js）跑打包脚本 → **构建期报错退出**，不产出包
+- [x] `npx cap sync ios` 之后 `CapacitorUpdaterPlugin` 出现在 `packageClassList` 里（实测）
+- [x] 设置页「版本」小节：网页版那半在浏览器里走过桌面/手机 × 浅色/深色；原生那半（两个版本号、「随包那份」、待生效提示、静默档）由组件测试覆盖
+- [ ] **iPhone 真机（0.4.0 壳装上之后）**：deploy 一次 → 杀进程重开 → 设置页「版本」里前端那行变成新的 buildId
+- [ ] **iPhone 真机**：热更生效之后**对齐与查词仍然可用**（这一条验的是符号链接；断了的症状是对齐退回「从 HF 下载 200MB」、查词查不到）
+- [ ] **iPhone 真机**：装一个新 IPA（0.4.1）→ 热更 bundle 被丢掉、回到随包那份，且 `/models/` 没有变成断链
+- [ ] **回滚演练**：把 main 回退一个 commit 再 deploy → 手机下次启动退回旧版
 
 **查词（FR-9.5 ~ FR-9.10 / §12.11，2026-09-20 新增）**
 
@@ -1933,6 +2010,24 @@ tab 名旁边那个点是**前提状态**，不是「做完了」：
 **V2 无文稿素材**（需先做转写）：`Alles gesagt?`、`Hotel Matze`、`Fest & Flauschig`（纯 Umgangssprache）、`Zeit Verbrechen`（真实案件叙事，与 Schirach 同语域）、ARD/ZDF Mediathek（带德语字幕）。
 
 ---
+
+### 12.12 版本的形状（§7.12，2026-09-20）
+
+设置页最后一块（诊断区，`VersionSection`）。**存在的唯一理由是让热更不是黑箱** ——
+接了热更之后「我手机上到底是哪一版」不再能从 App Store 的版本号推出来：壳的版本和跑着的
+前端版本从此是两个数，而且大多数时候不一样。
+
+| 在哪 | 显示什么 |
+|---|---|
+| 浏览器 | 一句话：会自己更新，不用做任何事。**不摆版本号** —— web 上没有「壳」这个概念，摆出来只会让人以为要去哪里升级 |
+| 原生壳 | 两行事实：`应用壳 0.4.0 —— 换它要过 App Store` / `前端 0.4.0+a1b2c3d —— 这一份会自己更新`。没热更过时前端那行写「随包那份」，**不写 `builtin`**（那是插件的内部值，摆到界面上等于让人去搜一个搜不到的词） |
+| 下好了待生效 | 升到一行提示（`Note`，§12.3 的「一行」档）：`新版 … 已下好，下次打开这个应用时生效` |
+
+两条：
+
+1. **不给「现在就更新」的按钮。** 立刻换 bundle 是整个 WebView 重载，会清掉只活在
+   React state 里的听写答案，而这一页恰恰可以从练习中途进来。
+2. **平时是静默的**（§12.3 第一档）：没有待生效的更新时，这一块只有两行灰字，不画任何状态。
 
 ## 附录 A：DW 接口实测结果
 

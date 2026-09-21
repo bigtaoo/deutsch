@@ -61,3 +61,6 @@ client_secret*.json
 *.p12
 *.mobileprovision
 *.p8
+
+# 热更包的中转目录（scripts/build-ota.mjs 的产物，由部署流水线搬进 dist/ota/）。
+ota-staging/

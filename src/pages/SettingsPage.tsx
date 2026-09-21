@@ -9,6 +9,7 @@ import { SYNC_API_BASE, isSyncConfigured } from '@/sync/config';
 import { ensureGoogleReady } from '@/sync/session';
 import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
 import { DictSection } from './settings/DictSection';
+import { VersionSection } from './settings/VersionSection';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import {
   MMS_FA,
@@ -446,6 +447,7 @@ export function SettingsPage() {
       <DictSection />
       <StorageSection />
       <AlignBackendSection />
+      <VersionSection />
     </div>
   );
 }

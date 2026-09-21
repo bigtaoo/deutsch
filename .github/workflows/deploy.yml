@@ -59,6 +59,21 @@ jobs:
       - name: install
         run: npm ci
 
+      # 热更包（SPEC §7.12 / 变更 41）。**必须排在 web 构建前面**：两次构建都写 dist，
+      # 而 `vite build` 会先清空 outDir —— 反过来的话 web 产物会被 native 产物覆盖，
+      # 发出去的就是一份没有 Service Worker 的线上站（变更 30 的自动更新当场失效）。
+      # 这一步的产物落在 ota-staging/，dist 随后被 web 构建重建，最后再搬进去。
+      #
+      # 这里的 env 和下面那步**必须一模一样**：热更包是完整的一份前端，漏了
+      # VITE_SYNC_API_BASE 就是把「同步整块关掉」的构建推到手机上，
+      # 而它不报错，只在设置页显示「这个构建没有配置同步服务器」。
+      - name: build ota bundle
+        env:
+          VITE_SYNC_API_BASE: ${{ vars.SYNC_API_BASE }}
+          VITE_GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
+          VITE_GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
+        run: npm run build:ota
+
       - name: build
         # 同步后端的地址与 Google 客户端 ID 是**构建期**注入的（见 .env.example）。
         # 不给的话构建出来的包里同步整块是关的 —— 而且不会报错，只在设置页显示
@@ -70,6 +85,15 @@ jobs:
           VITE_GOOGLE_WEB_CLIENT_ID: ${{ vars.GOOGLE_WEB_CLIENT_ID }}
           VITE_GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
         run: npm run build
+
+      # 把热更包搬进这次要发布的 dist。放在 web 构建**之后** —— 它刚把 dist 清空重建过。
+      # 手机上的 checkNativeUpdate 读的就是 /ota/manifest.json（src/platform/nativeUpdate.ts）。
+      - name: stage ota bundle into dist
+        run: |
+          set -eu
+          mkdir -p dist/ota
+          cp ota-staging/manifest.json ota-staging/*.zip dist/ota/
+          ls -lh dist/ota
 
       # 用 npx 直接调 wrangler（不用 wrangler-action），报错原样可见。版本与 funny 项目锁一致，
       # 减少"两个项目各用各的 wrangler 版本、行为不一致"的意外。
