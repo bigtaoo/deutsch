@@ -199,7 +199,7 @@ Android 客户端登记的包名**逐字一致**（含任何 `.debug` 后缀）�
 > **2026-09-21（SPEC §0 变更 42）改了三处，重装时照新的走：**
 > ① 模型换成 `oliverguhr/wav2vec2-large-xlsr-53-german-cv9`，服务器跑 **fp32**（1204 MiB，
 > 自己从 HF 取）；② `mem_limit` 从 2g 提到 **4g**，并加了 `ALIGN_IDLE_MS`（闲置 10 分钟
-> 把那 1.3GB 还给系统）；③ 这台机器多了一个身份 —— **权重站**：
+> 把那 2.1 GiB 还给系统）；③ 这台机器多了一个身份 —— **权重站**：
 > `GET /v1/align/weights/**` 把 `data/models/` 当只读静态目录对外提供，
 > **桌面浏览器的 4-bit 权重只有这儿有**（HF 上没有，Cloudflare 单文件上限 25 MiB 放不下）。
 > 所以哪怕 `ALIGN_ENABLED=false`，这份文件也要放上去。

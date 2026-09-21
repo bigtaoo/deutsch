@@ -31,7 +31,7 @@ export interface Config {
     dtype: string;
     /**
      * 闲置多久放掉会话（毫秒）。默认 10 分钟，0 = 永不放。
-     * fp32 的会话常驻 1.3GB，而这台机器上还跑着别人的东西。
+     * fp32 的会话常驻 2.1 GiB，而这台机器上还跑着别人的东西。
      */
     idleMs: number;
     /**

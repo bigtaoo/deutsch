@@ -14,9 +14,9 @@
 // 代价写在明处：同一课在服务器上算和在桌面上算，边界会有几十毫秒级的出入。
 //
 // ── 代价之二：常驻内存 ──
-// fp32 的会话一旦建起来就是 1.3GB 常驻，而这台机器上还跑着公司的东西。
+// fp32 的会话一旦建起来就是 2.1 GiB 常驻，而这台机器上还跑着公司的东西。
 // 所以 engine.ts 给它加了**闲置释放**（ALIGN_IDLE_MS，默认 10 分钟）：
-// 一周用一次的东西没有理由 7×24 占着那 1.3GB，重新加载十几秒完全可以接受。
+// 一周用一次的东西没有理由 7×24 占着那 2.1 GiB，重新加载十几秒完全可以接受。
 
 import { mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -50,7 +50,7 @@ export interface ModelOptions {
 export interface CtcSession {
   /** 跑一块，返回 [frames, vocabSize] 与扁平 logits（**未** log-softmax）。 */
   run(samples: Float32Array): Promise<{ logits: Float32Array; frames: number; vocabSize: number }>;
-  /** 把那 1.3GB 还给系统。闲置释放用，见 engine.ts。 */
+  /** 把那 2.1 GiB 还给系统。闲置释放用，见 engine.ts。 */
   release(): Promise<void>;
 }
 
