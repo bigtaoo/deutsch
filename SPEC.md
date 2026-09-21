@@ -1761,7 +1761,7 @@ Android 那条仍未跑过。
 > 这一段和上面几段不同：它**不是让人照着走的单子**，是「哪些事已经不用人再走一遍了」的清单。
 > 每加一条，上面就少一件要靠记性的事。
 
-- [x] 四条都绿：`npm run typecheck`（**含 e2e/**，新增 `tsconfig.e2e.json` —— Playwright 自己只转译、不查类型）、`npm run test:run`（**817**）、`npm --prefix server test`（**120**）、`npm run test:e2e`（**40**）
+- [x] 四条都绿：`npm run typecheck`（**含 e2e/**，新增 `tsconfig.e2e.json` —— Playwright 自己只转译、不查类型）、`npm run test:run`（**847**）、`npm --prefix server test`（**120**）、`npm run test:e2e`（**40**）
 - [x] 三个 job 都是 CI 门禁 —— 任一红就不发（push `main` 就是上线）
 - [x] E2E **跑构建产物**（`vite build` + `vite preview`），不是 dev server —— 它守的是「类型过了、单测过了、构建也过了，但打开是白屏」
 - [x] E2E 里的数据一律**从界面种**（导入一份备份 JSON），没有一处 `page.evaluate` 直接写 IndexedDB
@@ -1770,7 +1770,13 @@ Android 那条仍未跑过。
 - [x] 导出备份：`a[download]` 真的落了一个 `backup-YYYY-MM-DD.json`，内容里**没有** `plainText` / `manuscriptHtml`
 - [x] 导入备份：先自动落一份 `before-import-*`（FR-11.14），确认之前不进库，确认之后**不用刷新就看得到**
 - [x] 复习评分真的落盘：答一张之后刷新，导航角标从 2 变 1
-- [x] **识词卡（FR-21，变更 45）**：队列按卡展开、同日互斥、开卡门槛、三种题型的降级链、挖空遮不干净就不出题、合并取两张卡的较新者 —— 全是纯函数用例（`srs/queue` `srs/choices` `srs/questionSource` `srs/glossZh` `backup/merge`，本次 +56 条）
+- [x] **识词卡（FR-21，变更 45）纯函数层**：队列按卡展开、同日互斥、开卡门槛、三种题型的降级链、挖空遮不干净就不出题、合并取两张卡的较新者（`srs/queue` `srs/choices` `srs/questionSource` `srs/glossZh` `backup/merge`）
+- [x] **评分落在哪一张卡上**（`ReviewPage.test.tsx`）：读卡答完 `fsrsRead.reps` 涨了而 `fsrs` **一个字都没动**。这是整个 FR-21 最容易静默写错的地方 —— 写反了不报错、界面上也看不出来，几周后表现为「那个词的听力题再也不来了」
+- [x] **开读卡时把句子拷进卡里**（`useVocabStore.read.test.ts`）：课程卡用原句且**不查词典**、没有原句的去词典取两条、加词时已收下的那份**不被覆盖**、词典查不到或抛异常照样开卡。这条链断了的症状同样是静默的 —— cloze 组不出来就降级成 read-form，而那是一道完全正常的题
+- [x] **读卡的正面**：题干说清考什么、**没有播放键**、放弃出口只写「不认识」、cloze 题面里定宽的空在而原词不在
+- [x] **备份带得走读卡那一半**：`fsrsRead` / `examples` / `meaningZh` 经过真的 `JSON.stringify` 往返还在；**早于 FR-21 的老备份**导入不崩，恢复出来就是「读卡还没开」（没有额外的开关字段，所以不需要迁移）
+- [x] **补中译那一块**（`ZhPanel.test.tsx`）：一个词都不缺时**整块不出现**、预览按编号给出「德语词 → 中文」对照、保存落库、认不出编号时不给保存按钮
+（识词卡相关本次共 +86 条）
 - [x] **E2E 里读卡真的打得开**（+3 条）：题面是文字、**卡上没有播放键**、挖空句里定宽的空在而原词不在、下一张是 `read-gloss` 且题面就是那个词、评分落在读卡上而**听卡的下次时间没被动过**
 - [x] 补中译（FR-21.9）与 FR-19 的解析器接得上：整段带前言、`**2.**`、`- 3)` 三种写法一起贴回来，编号照样对得上
 - [x] 窄屏（Pixel 7）：底部标签栏三个活动、热区 ≥ 44px、详情页收起、`--bottom-inset` 等于标签栏实测高度、六个页面都不横向滚动

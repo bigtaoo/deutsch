@@ -218,3 +218,127 @@ describe('ReviewPage：听音四选一', () => {
     expect(screen.getByRole('button', { name: '看生词本' })).toBeInTheDocument();
   });
 });
+
+// ── FR-21：读卡 ───────────────────────────────────────────────────
+//
+// 纯函数层（queue / choices / questionSource）已经各自测过组队列和组题。
+// 这里补的是装起来之后才看得见的那几件，头一件最要命：
+// **评分落在哪一张卡上**。写错一边不会报错、界面上也看不出来 ——
+// 读卡答对了却把听卡的间隔拉长，几周后表现为「那个词的听力题再也不来了」。
+
+describe('ReviewPage：识词卡（FR-21）', () => {
+  const DAY = 86_400_000;
+  /** 听卡在 Review 但**没到期** —— 它不该进今天的队列，读卡才是主角。 */
+  function sleepingListen(): FSRSCard {
+    return { ...newCard(NOW), state: 2, reps: 4, due: NOW.getTime() + 7 * DAY, last_review: NOW.getTime() - 3 * DAY };
+  }
+  /** 只当干扰项用：听卡在学习中且没到期，所以既不进队列，也够不着开读卡的门槛。 */
+  function filler(surface: string): VocabEntry {
+    return entry(surface, {
+      id: surface,
+      preset: undefined,
+      lookup: true,
+      fsrs: { ...newCard(NOW), state: 1, reps: 1, due: NOW.getTime() + DAY },
+    });
+  }
+  const FILLERS = [filler('Erholung'), filler('Ansammlung'), filler('Gelassenheit'), filler('Umgebung')];
+
+  it('读卡的正面是文字：题干说清考什么，且**没有播放键**', async () => {
+    seed([
+      entry('Zuversicht', { fsrs: sleepingListen(), fsrsRead: { ...newCard(NOW), due: NOW.getTime() - 1000 } }),
+      ...FILLERS,
+    ]);
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(screen.getByText('这个词是什么意思')).toBeInTheDocument());
+    // 题面就是那个词（听卡那边它只能作为选项出现，这里反过来）
+    expect(screen.getByText('Zuversicht')).toBeInTheDocument();
+    // FR-21.5：读卡不放声音。播放键出现就说明走错了分支，而那一步会顺带自动播一次音频
+    expect(screen.queryByLabelText('播放')).not.toBeInTheDocument();
+  });
+
+  it('放弃那个出口在读卡上只写「不认识」—— 这张卡从头到尾没有声音', async () => {
+    seed([
+      entry('Zuversicht', { fsrs: sleepingListen(), fsrsRead: { ...newCard(NOW), due: NOW.getTime() - 1000 } }),
+      ...FILLERS,
+    ]);
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(screen.getByText('这个词是什么意思')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '不认识' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '没听清 / 不认识' })).not.toBeInTheDocument();
+  });
+
+  it('**评分落在读卡上，听卡一个字都不动**', async () => {
+    const listen = sleepingListen();
+    seed([
+      entry('Zuversicht', { fsrs: listen, fsrsRead: { ...newCard(NOW), due: NOW.getTime() - 1000 } }),
+      ...FILLERS,
+    ]);
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    await act(async () => {
+      choiceButtons()[0].click();
+    });
+
+    await waitFor(() => {
+      const after = useVocabStore.getState().entries.find((e) => e.id === 'Zuversicht');
+      expect(after?.fsrsRead?.reps).toBe(1);
+      // 这一条是整个 FR-21 最容易静默写错的地方
+      expect(after?.fsrs).toEqual(listen);
+    });
+  });
+
+  it('cloze：题面是挖好空的句子，而那个词**不在题面上**', async () => {
+    seed([
+      entry('Vorhang', {
+        preset: undefined,
+        lookup: true,
+        fsrs: sleepingListen(),
+        // Review + reps 偶数 → cloze（FR-21.4）
+        fsrsRead: { ...newCard(NOW), state: 2, reps: 2, due: NOW.getTime() - 1000 },
+        examples: ['Der Vorhang fiel nach dem letzten Akt.'],
+      }),
+      ...FILLERS,
+    ]);
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(screen.getByText('哪个词填得进这个空')).toBeInTheDocument());
+    const prompt = screen.getByText(/fiel nach dem letzten Akt/);
+    expect(prompt.textContent).toContain('_____');
+    expect(prompt.textContent).not.toContain('Vorhang');
+    // 选项里才有它
+    expect(choiceButtons().map((b) => b.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining('Vorhang')]),
+    );
+  });
+
+  it('进页面时把该开的读卡开出来（FR-21.2），并且当天就能练到', async () => {
+    // 听卡进了 Review、有释义、还没有读卡 —— 正好卡在开卡的门槛上
+    seed([entry('Zuversicht', { fsrs: sleepingListen() }), ...FILLERS]);
+    render(<ReviewPage />);
+
+    await waitFor(() => {
+      expect(useVocabStore.getState().entries.find((e) => e.id === 'Zuversicht')?.fsrsRead).toBeDefined();
+    });
+    // 新开的读卡今天就到期，所以这一轮里它就是那张卡
+    await waitFor(() => expect(screen.getByText('这个词是什么意思')).toBeInTheDocument());
+  });
+
+  it('同日互斥：听卡今天到期时，这个词的读卡不出现（FR-21.3）', async () => {
+    seed([
+      entry('Vorhang', {
+        fsrs: { ...newCard(NOW), state: 2, reps: 4, due: NOW.getTime() - 1000 },
+        fsrsRead: { ...newCard(NOW), state: 2, reps: 2, due: NOW.getTime() - 2 * DAY },
+      }),
+      ...FILLERS,
+    ]);
+    render(<ReviewPage />);
+
+    // 出来的是听卡：有播放键、没有读卡的题干
+    await waitFor(() => expect(screen.getByLabelText('播放')).toBeInTheDocument());
+    expect(screen.queryByText('哪个词填得进这个空')).not.toBeInTheDocument();
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+  });
+});

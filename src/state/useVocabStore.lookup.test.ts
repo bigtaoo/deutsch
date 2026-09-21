@@ -72,6 +72,26 @@ describe('createFromLookup', () => {
     expect(entry.fsrs.state).toBe(0); // 新卡
   });
 
+  it('FR-21.6：查词面板拿到的例句一并收下，最多两条', async () => {
+    const entry = await useVocabStore.getState().createFromLookup({
+      surface: 'Plattform',
+      dict: PLATTFORM,
+      examples: ['Erster Satz.', 'Zweiter Satz.', 'Dritter Satz.'],
+    });
+    // 这一趟不收，就永远没有第二次机会：`lookup` 卡多半是牌组外的词，
+    // 内置词典里没有它的例句，开读卡时再查也是空的。
+    expect(entry.examples).toEqual(['Erster Satz.', 'Zweiter Satz.']);
+  });
+
+  it('没有例句时不留一个空数组 —— 空数组会让开读卡时那条「已经有了」的判断误判', async () => {
+    const entry = await useVocabStore.getState().createFromLookup({
+      surface: 'Plattform',
+      dict: PLATTFORM,
+      examples: [],
+    });
+    expect(entry.examples).toBeUndefined();
+  });
+
   it('加词时就把发音下下来（FR-17.6 的理由在这里逐字成立）', async () => {
     await useVocabStore.getState().createFromLookup({ surface: 'Plattformen', dict: PLATTFORM });
     expect(prefetchWordAudio).toHaveBeenCalledWith(['Plattform']);

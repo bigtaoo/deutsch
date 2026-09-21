@@ -73,6 +73,33 @@ describe('buildBackupJson', () => {
   });
 });
 
+describe('FR-21：读卡那一半也要进备份', () => {
+  it('fsrsRead / examples / meaningZh 原样出现在备份里 —— 它们在标注层', async () => {
+    await putVocabEntry({
+      ...vocab,
+      fsrsRead: { ...vocab.fsrs, state: 2, reps: 5, last_review: 1700 },
+      examples: ['Der Vorhang fiel.'],
+      meaningZh: '窗帘',
+    });
+
+    const [entry] = (await buildBackupJson()).vocab;
+
+    // fsrsRead 是复习历史，不可重建 —— 漏掉它等于那一半的记忆曲线归零
+    expect(entry.fsrsRead?.reps).toBe(5);
+    // examples 看着像可重建（词典里就有），但拷进来之后它就是那张卡的一部分（§2.3）
+    expect(entry.examples).toEqual(['Der Vorhang fiel.']);
+    // 中译是人在外面翻好贴回来的，重建不出来
+    expect(entry.meaningZh).toBe('窗帘');
+  });
+
+  it('走一趟真的 JSON 序列化也不掉字段（备份是文本文件，不是内存对象）', async () => {
+    await putVocabEntry({ ...vocab, fsrsRead: { ...vocab.fsrs, reps: 2 }, meaningZh: '窗帘' });
+    const roundTrip = JSON.parse(JSON.stringify(await buildBackupJson()));
+    expect(roundTrip.vocab[0].fsrsRead.reps).toBe(2);
+    expect(roundTrip.vocab[0].meaningZh).toBe('窗帘');
+  });
+});
+
 describe('backupFileName', () => {
   it('formats as backup-YYYY-MM-DD.json', () => {
     expect(backupFileName(new Date(2026, 7, 31))).toBe('backup-2026-08-31.json');

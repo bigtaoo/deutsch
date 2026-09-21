@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { getDB, _resetDBForTests } from '@/db';
 import { DB_NAME } from '@/db/schema';
 import { putLesson } from '@/db/lessons';
+import { getAllVocabEntries } from '@/db/vocab';
+import { pendingReadCards } from '@/srs/queue';
 import { getLesson } from '@/db/lessons';
 import { prepareImport, commitImport, importBackup } from './import';
 import { BACKUP_WARNING } from './export';
@@ -81,6 +83,38 @@ describe('importBackup (one-shot convenience)', () => {
 
     expect(summary.summary.overwrittenLessonTitles).toEqual(['Old local']);
     expect((await getLesson('l1'))?.title).toBe('New from backup');
+  });
+});
+
+describe('FR-21：早于识词卡的老备份', () => {
+  it('没有 fsrsRead 的备份照常导入，恢复出来就是「读卡还没开」', async () => {
+    const alt: BackupFile = {
+      ...backupWith([]),
+      vocab: [
+        {
+          id: 'v-alt',
+          surface: 'Wort',
+          meaning: 'ein Wort',
+          hasTimestamp: false,
+          suspended: false,
+          fsrs: {
+            due: 0, stability: 0, difficulty: 0, elapsed_days: 0,
+            scheduled_days: 0, reps: 0, lapses: 0, state: 0,
+          },
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+    };
+
+    const { result } = await prepareImport(alt);
+    await commitImport(result);
+
+    const [stored] = await getAllVocabEntries();
+    expect(stored.fsrsRead).toBeUndefined();
+    expect(stored.examples).toBeUndefined();
+    // 「还没开」不需要额外的开关字段，也就不需要迁移 —— DB_VERSION 没动正是因为这个
+    expect(pendingReadCards([stored])).toHaveLength(0); // 听卡还没进 Review
   });
 });
 
