@@ -17,7 +17,23 @@ const RATING_MAP: Record<ReviewRating, Grade> = {
   easy: Rating.Easy,
 };
 
-const scheduler = fsrs();
+/**
+ * **关掉短期步骤**（`enable_short_term: false`），于是最小间隔是 1 天。
+ *
+ * ts-fsrs 默认带 Anki 那套学习步骤（`learning_steps: ['1m', '10m']`、
+ * `relearning_steps: ['10m']`），一张学习中的卡被判 Hard 会排到 6 分钟后 ——
+ * 而这个应用**当天不会再把它发出来**：`srs/queue` 的 `busy` 规则是
+ * 「今天做过的词今天不再进队列」（FR-21.3 同日互斥的实现，按词去重）。
+ *
+ * 两者放在一起的症状是卡面在撒谎：写着「下次 6 分钟后」，实际明天才见。
+ * 更深一层是那张卡**永远毕不了业** —— 它停在 `Learning`，每次回来又被推 6 分钟，
+ * 间隔始终由学习步骤而不是 stability 决定。
+ *
+ * 修的方向是让调度器承认队列的既成事实，而不是反过来让队列当天重发：
+ * 「当天复习完就清零」本来就是想要的形状（FR-10.13）。
+ * 存量的 `Learning` 卡不需要迁移，下次评分会直接毕业进 `Review`（有测试）。
+ */
+const scheduler = fsrs({ enable_short_term: false });
 
 function toCard(card: FSRSCard): Card {
   return {

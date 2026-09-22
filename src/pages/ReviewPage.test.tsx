@@ -17,6 +17,7 @@ import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { DEFAULT_SETTINGS } from '@/db/meta';
 import { newCard } from '@/srs/fsrs';
+import { playSfx, preloadSfx } from '@/audio/sfx';
 import type { DictDeck } from '@/dict/types';
 import type { FSRSCard, VocabEntry } from '@/types/models';
 
@@ -51,6 +52,7 @@ vi.mock('@/audio/player', () => ({
 
 vi.mock('@/db/cache', () => ({ getAudioBlob: vi.fn(async () => undefined) }));
 vi.mock('@/sync/trigger', () => ({ syncVocabNow: vi.fn() }));
+vi.mock('@/audio/sfx', () => ({ playSfx: vi.fn(), preloadSfx: vi.fn(async () => {}) }));
 
 const NOW = new Date('2026-09-02T12:00:00Z');
 
@@ -171,8 +173,12 @@ describe('ReviewPage：听音四选一', () => {
     await waitFor(() => expect(screen.getByText('der Vorhang')).toBeInTheDocument());
     const card = useVocabStore.getState().entries[0].fsrs;
     expect(card.lapses + card.reps).toBeGreaterThan(0);
-    // Again 之后是「学习中/重学中」，绝不会跳到几天以后
-    expect(card.due - NOW.getTime()).toBeLessThan(86_400_000);
+    // Again 之后绝不会跳到几天以后。**口径随 FR-10.13 改过**：学习步骤关掉之后
+    // 最短的一档就是一天（原来是 1 分钟），所以这里钉的是「正好落在最短那一档」——
+    // 上界仍要有，它挡的是「Again 被喂成了 Good」这种评分接错线的错。
+    const gap = card.due - NOW.getTime();
+    expect(gap).toBeGreaterThanOrEqual(86_400_000);
+    expect(gap).toBeLessThan(2 * 86_400_000);
   });
 
   it('评分真的落库：答对之后 due 被推到以后，reps 涨了', async () => {
@@ -340,5 +346,71 @@ describe('ReviewPage：识词卡（FR-21）', () => {
     await waitFor(() => expect(screen.getByLabelText('播放')).toBeInTheDocument());
     expect(screen.queryByText('哪个词填得进这个空')).not.toBeInTheDocument();
     expect(screen.getByText('1 / 1')).toBeInTheDocument();
+  });
+});
+
+// ── FR-10.12：三个音效 ─────────────────────────────────────────────
+//
+// 纯函数层（audio/sfx.ts）已经单独测过「取文件、resume、衰减」。这里测的是
+// **装起来才看得见**的那半：哪一下响、响的是哪一个、以及设置关掉之后一声都不响。
+//
+// 这几条守的失败方式都是静默的：少一声没人会报 bug，但那正是他专门提的那条需求。
+describe('ReviewPage：音效（FR-10.12）', () => {
+  const played = () => vi.mocked(playSfx).mock.calls.map(([name]) => name);
+
+  it('进页面就预取 —— 等第一次答题才取的话那一声会迟半秒到', async () => {
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    expect(preloadSfx).toHaveBeenCalled();
+  });
+
+  it('点一个选项：先一声「嗒」，随后是答对那一声', async () => {
+    seed([entry('Vorhang', { gender: 'm' })]);
+    render(<ReviewPage />);
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+
+    const correct = choiceButtons().find((b) => b.textContent?.includes('Vorhang'))!;
+    await act(async () => correct.click());
+
+    // 两声说的是两件事：「收到了」和「对」。顺序不能反 —— 点击音要在手势里发，
+    // 它顺带 resume 了 AudioContext（iOS 的手势链），判定音才响得出来。
+    await waitFor(() => expect(played()).toEqual(['tap', 'right']));
+  });
+
+  it('答错响的是另一声', async () => {
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+
+    const wrong = choiceButtons().find((b) => !b.textContent?.includes('Vorhang'))!;
+    await act(async () => wrong.click());
+
+    await waitFor(() => expect(played()).toEqual(['tap', 'wrong']));
+  });
+
+  it('「没听清 / 不认识」也算一次作答，同样两声', async () => {
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+
+    await act(async () => screen.getByRole('button', { name: /没听清/ }).click());
+
+    await waitFor(() => expect(played()).toEqual(['tap', 'wrong']));
+  });
+
+  it('设置里关掉之后一声都不响，也不去预取', async () => {
+    seed([entry('Vorhang', { gender: 'm' })]);
+    useSettingsStore.setState({ settings: { ...DEFAULT_SETTINGS, soundEffects: false }, loaded: true });
+    render(<ReviewPage />);
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+
+    const correct = choiceButtons().find((b) => b.textContent?.includes('Vorhang'))!;
+    await act(async () => correct.click());
+
+    // 等一会儿再断言：判定音是隔 120ms 才发的，立刻断言等于什么都没验。
+    await new Promise((r) => setTimeout(r, 250));
+    expect(playSfx).not.toHaveBeenCalled();
+    expect(preloadSfx).not.toHaveBeenCalled();
   });
 });

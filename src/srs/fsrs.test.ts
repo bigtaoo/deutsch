@@ -51,6 +51,44 @@ describe('review', () => {
     expect(review(learned, 'good', NOW).lapses).toBe(learned.lapses);
   });
 
+  // ── 关掉短期步骤之后的两条（变更 47）──
+  // 这两条**要**验具体数值，与文件头那句「不验 FSRS 的数值」不冲突：
+  // 钉的不是 FSRS 算得准不准，是 `enable_short_term: false` 这个开关还开着。
+  // 它被谁顺手改回默认的症状很轻 —— 卡面写「6 分钟后」而卡明天才来 —— 轻到没人会注意。
+  const DAY = 86_400_000;
+
+  it('最小间隔是一天：新卡四档没有一档排在当天', () => {
+    const fresh = newCard(NOW);
+    for (const rating of ['again', 'hard', 'good', 'easy'] as const) {
+      expect(review(fresh, rating, NOW).due - NOW.getTime()).toBeGreaterThanOrEqual(DAY);
+    }
+  });
+
+  it('学习中的卡一评就毕业进 Review —— 存量卡不需要迁移脚本', () => {
+    const learning = review(newCard(NOW), 'hard', NOW);
+    const next = review(learning, 'again', new Date(learning.due));
+    expect(next.state).toBe(2);
+  });
+
+  it('**重学**也不当天回来：毕业的卡忘掉之后同样至少隔一天', () => {
+    // `relearning_steps: ['10m']` 是和 `learning_steps` **各自独立**的另一个默认值，
+    // 走的是另一条路（Review → Relearning）。上面那条只覆盖了新卡那四档，
+    // 漏掉这里的症状是「新词都好好的，偏偏背熟又忘掉的那些几分钟后就回来」——
+    // 而那恰好是最容易被当成「FSRS 就这样」而放过去的一种。
+    let card = newCard(NOW);
+    let at = NOW;
+    for (let i = 0; i < 3; i += 1) {
+      card = review(card, 'good', at);
+      at = new Date(card.due);
+    }
+    expect(card.state).toBe(2); // 先确认真的毕业了，否则下面测的是别的东西
+
+    const lapsed = review(card, 'again', at);
+    expect(lapsed.due - at.getTime()).toBeGreaterThanOrEqual(DAY);
+    expect(lapsed.lapses).toBe(card.lapses + 1);
+    expect(lapsed.state).not.toBe(3); // 不进 Relearning —— 那个状态只服务于短期步骤
+  });
+
   it('不改原卡 —— store 里那份要靠引用比较判断有没有变', () => {
     const card = newCard(NOW);
     const snapshot = { ...card };

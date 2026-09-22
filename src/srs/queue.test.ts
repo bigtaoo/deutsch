@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildReviewQueue, cardAudioStatus, newCardShortfall, pendingReadCards } from './queue';
+import { newCard, review } from './fsrs';
 import type { FSRSCard, VocabEntry } from '@/types/models';
 
 const NOW = new Date('2026-08-31T12:00:00Z').getTime();
@@ -215,6 +216,58 @@ describe('buildReviewQueue：读卡（FR-21）', () => {
       entry('c'),
     ];
     expect(newCardShortfall(entries, { newPerDay: 10, now: NOW })).toBe(7);
+  });
+});
+
+// ── FR-10.13「当天做完就清零」：两道闸各测一次，再合起来测一次 ──
+//
+// 这一段钉的是一条**跨模块的不变式**：评过的卡，当天不会再回来。
+// 保证它的是两道**各自独立、而且都挂在别的名下**的闸 ——
+//   ① `busy`：今天做过的**词**今天不再进队列。这是 FR-21.3 同日互斥的实现，
+//      按**词**去重，于是顺带把「同一张卡再来一次」也掐了。那是副作用，
+//      不是谁明写的意图 —— 所以它尤其需要一条自己的测试。
+//   ② 调度的最小间隔是一天（FR-10.13 关掉了 `enable_short_term`）。
+//
+// 分开测，是因为它们会分开坏，而且坏起来都很像在做好事：把 `busy` 改成按「卡」去重，
+// 看着像在忠实实现 FR-21.3 的字面意思；把 `enable_short_term` 拿掉，看着像在用 FSRS 的默认。
+// 任一道单独失守都还不出事 —— 两道一起失守，才是用户看到的「6 分钟后它又来了」。
+describe('buildReviewQueue：当天做完就清零（FR-10.13）', () => {
+  it('第一道闸：今天评过的卡，哪怕 due 已经过了也不再进队列', () => {
+    // due 特意设成 6 分钟前 —— 那正是关掉短期步骤**之前**、一张卡被判 Hard 会拿到的值
+    const e = entry('Vorhang', {
+      fsrs: card({ state: 1, reps: 1, due: NOW - 6 * 60_000, last_review: NOW - 12 * 60_000 }),
+    });
+    expect(buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW }).queue).toEqual([]);
+  });
+
+  it('清零只清今天：昨天评过的到期卡照常回来', () => {
+    // 这条是上面那条的对照组。少了它，把 `busy` 写成「凡评过的卡都不出」
+    // 也能让上面那条变绿 —— 而那样整个复习功能就没了。
+    const e = entry('Vorhang', {
+      fsrs: card({ state: 2, reps: 3, due: NOW - 60_000, last_review: NOW - DAY }),
+    });
+    const { queue } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue.map((c) => c.entry.id)).toEqual(['Vorhang']);
+  });
+
+  it('第二道闸：真评一次之后 due 落在明天，四档都是 —— 就算 busy 那道闸没了也不会重发', () => {
+    const base = newCard(new Date(NOW));
+    for (const rating of ['again', 'hard', 'good', 'easy'] as const) {
+      const graded = review(base, rating, new Date(NOW));
+      const e = entry('Vorhang', { fsrs: { ...graded, last_review: undefined } });
+      // 抹掉 last_review 是为了**绕开第一道闸**，单独把第二道闸架出来看
+      expect(buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW }).queue).toEqual([]);
+    }
+  });
+
+  it('两道闸合起来：评完之后重建队列就是空的（不 mock 任何间隔）', () => {
+    const graded = review(newCard(new Date(NOW)), 'again', new Date(NOW));
+    const e = entry('Vorhang', { fsrs: graded });
+    const { queue, nextDueAt } = buildReviewQueue([e], { newPerDay: 10, reviewPerDay: 60, now: NOW });
+    expect(queue).toEqual([]);
+    // 而且「下一张卡什么时候到期」要说得出口 —— 那是今日无卡时界面上唯一的内容（FR-10.6）
+    expect(nextDueAt).not.toBeNull();
+    expect(nextDueAt! - NOW).toBeGreaterThanOrEqual(DAY);
   });
 });
 
