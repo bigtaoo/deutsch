@@ -50,6 +50,21 @@
 会话里用真实 API key 测过一次裸调用（Haiku，返回正常），但接进服务器之后没有端到端走一遍
 （需要先给 VPS 的 `.env` 加 `ANTHROPIC_API_KEY` 并重启 compose，见 `server/.env.example`）。
 
+**收尾追记**：`git push` 之后 **CI 真红了一次**——`sync backend` job 的 `tsc --noEmit` 报
+`Property 'ai' is missing in type 'Config'`。原因是根目录的 `npm run typecheck` 和 server
+自己的 `tsc` 是两套独立的 project references，本次收尾只跑了 `npm --prefix server test`
+（vitest，不做完整类型检查），没跑 `npm --prefix server run typecheck`——而这条命令当时
+没写在 CLAUDE.md 的验证清单里。两处手写 `Config` 字面量的测试文件（`app.test.ts` /
+`align/routes.test.ts`）漏加了新的必填字段 `ai`。已修（补上字段 + 把这条命令写进
+CLAUDE.md），重新 push 后 CI 全绿、`deploy` 成功。**key 已经上了 VPS**：
+`ssh wnet-server "cd ~/deutsch-sync && docker compose logs --tail 20 sync"` 能看到
+`[deutsch-sync] AI 补充解释：开（claude-haiku-4-5-20251001）`；`curl` 裸测
+`POST /v1/ai/explain`（无令牌）回 401（不是 503），路由和依赖装配都对。
+**剩下唯一没验的是「真的登录后点一次」**，见下面「下一步 0n」。
+用户还要求把这把 key 存进 `D:\secrets`（sops 加密仓库）里备份，但 `sops -d` 被 auto mode
+的 Credential Materialization 分类器拦下了——这一步要他自己用 `sops secrets/deutsch/prod.yaml`
+交互式加，见「下一步 0n」。
+
 ## 现状（2026-09-22 晚，一天之内不重复）
 
 **用户的原话是一个问题**：「现在复习的单词，竟然有 6 分钟后再次练习的。这个是正常的复习方式吗？」
@@ -951,14 +966,18 @@ Google 对这个值逐字符比对。第二层要修好第一层才会露出来�
 
 ## 下一步建议（按价值排序）
 
-0n. **把 `ANTHROPIC_API_KEY` 放上 VPS 并端到端验一次「问 AI」**（变更 48，最新，还没验过真链路）。
-   ① SSH 上 `wnet-server`，把 key 加进 `deutsch-sync` 那个 compose 项目的 `.env`
-   （`ANTHROPIC_API_KEY=sk-ant-...`，模型名默认 `claude-haiku-4-5-20251001` 不用改），
-   `docker compose up -d` 重启让配置生效。② 网页登录之后，生词本随便一行点「问 AI」，
-   几秒内那一行应该出现一段中文解释（不是「AI 服务暂时不可用」）。③ 查词面板搜一个编造的
-   复合词（两个词典都没有），应该自动弹出一段 AI 解释而不是干等；加进生词本时那段解释
-   应该跟着收下。④ 顺手看一眼 `GET /v1/healthz` 或容器日志里那行
-   `[deutsch-sync] AI 补充解释：开（claude-haiku-4-5-20251001）`，确认配置真的读到了。
+0n. **登录之后真的点一次「问 AI」**（变更 48，key 已上 VPS，只差这一步）。
+   `ANTHROPIC_API_KEY` 已经加进 `wnet-server` 上 `~/deutsch-sync/.env`，容器日志确认
+   `[deutsch-sync] AI 补充解释：开（claude-haiku-4-5-20251001）`；`curl` 裸测
+   `POST /v1/ai/explain`（无令牌）回 401 而不是 503，说明路由和依赖装配都对。
+   **没验的只剩「真的登录后点一次」**：① 网页登录，生词本随便一行点「问 AI」，
+   几秒内那一行应该出现一段中文解释；② 查词面板搜一个编造的复合词（两个词典都没有），
+   应该自动弹出一段 AI 解释，加进生词本时应该跟着收下。
+   **另外 `D:\secrets` 那份 `deutsch/prod.yaml` 里还没有这把 key**——上次会话想把它也存进去
+   备份，但 `sops -d` 被 auto mode 的「Credential Materialization」分类器拦下了（合理，
+   不该让我看到解密后的凭证）。这一步要他自己跑：
+   `cd D:\secrets && sops secrets/deutsch/prod.yaml`，加一行 `ANTHROPIC_API_KEY: sk-ant-...`，
+   存盘退出自动重新加密，`git add -A && git commit && git push`。
 
 0m. **用一轮看看新的间隔**（不用真机，浏览器就行，几分钟）。
    复习几张卡，确认答完之后卡面写的是「下次 1 天后 / 3 天后」这种**天**级的数，
