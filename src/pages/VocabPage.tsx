@@ -15,6 +15,7 @@ import { Button, EmptyState, Hint, field } from '@/components/ui';
 import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
 import { ZhPanel } from './vocab/ZhPanel';
+import { AiNotesPanel } from './vocab/AiNotesPanel';
 import type { VocabEntry } from '@/types/models';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重学中'] as const;
@@ -101,6 +102,13 @@ export function VocabPage() {
                   lessonTitle={lessons.find((l) => l.id === entry.lessonId)?.title}
                   onEdit={() => setEditing(entry.id)}
                   onToggleSuspend={() => void updateEntry({ ...entry, suspended: !entry.suspended })}
+                  onToggleAskAi={() => {
+                    // 取消标记要**删掉这个可选字段**，不是置 false —— 留一个
+                    // `askAi: false` 在库里，和「从来没标记过」长得不一样，
+                    // 白白给跨设备合并多制造一份差异（FR-9.11）。
+                    const { askAi, ...rest } = entry;
+                    void updateEntry(askAi ? rest : { ...rest, askAi: true });
+                  }}
                   onDelete={() => {
                     if (confirm(`删除「${entry.surface}」？句子上的挖空会保留，但会指向一个不存在的词条。`)) {
                       void removeEntry(entry.id);
@@ -113,8 +121,12 @@ export function VocabPage() {
         </ul>
       )}
 
-      {/* FR-21.9：低频（一年点几次），所以在页底、而且是折叠的 —— 页顶留给查词（§12.11） */}
+      {/* FR-21.9 / FR-9.11：两块都是「复制走 → 在外面做 → 粘回来」，低频、
+          所以在页底而且是折叠的 —— 页顶留给查词（§12.11）。挨着放是故意的：
+          动线逐字相同，分开放会让人以为是两种不同的操作。 */}
       <ZhPanel />
+
+      <AiNotesPanel />
     </div>
   );
 }
@@ -124,12 +136,14 @@ function Row({
   lessonTitle,
   onEdit,
   onToggleSuspend,
+  onToggleAskAi,
   onDelete,
 }: {
   entry: VocabEntry;
   lessonTitle: string | undefined;
   onEdit: () => void;
   onToggleSuspend: () => void;
+  onToggleAskAi: () => void;
   onDelete: () => void;
 }) {
   // 手机上竖排：横排时按钮会压在词条上面（§2.1 手机是复习工位，生词本也得能用）
@@ -161,6 +175,14 @@ function Row({
         <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义待填）</span>}</p>
         {/* FR-21.9：中译补齐之前这里多半是空的，所以没有就不占一行 */}
         {entry.meaningZh && <p className="text-ui text-muted">{entry.meaningZh}</p>}
+        {/* FR-9.12：AI 写回来的详细解释。可能有好几行，`whitespace-pre-line` 保住换行；
+            它是这一行里最长的东西，所以排在原句之前、缩在一条竖线后面，
+            眼睛扫列表时能整块跳过去。 */}
+        {entry.note && (
+          <p className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">
+            {entry.note}
+          </p>
+        )}
         {entry.contextSentence && <p className="text-ui text-muted">{entry.contextSentence}</p>}
         <p className="text-note text-faint">
           {entry.preset ? (
@@ -191,6 +213,11 @@ function Row({
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">
         <Button onClick={onEdit}>编辑</Button>
+        {/* FR-9.11：标记「这个词的解释不够」。词典查不到的词不用点 ——
+            它们靠 `!meaning` 自动进待办，点了也只是同一件事说两遍。 */}
+        <Button variant={entry.askAi ? 'primary' : 'ghost'} onClick={onToggleAskAi}>
+          {entry.askAi ? '已标记 ✓' : '问 AI'}
+        </Button>
         <Button onClick={onToggleSuspend}>{entry.suspended ? '恢复复习' : '暂停复习'}</Button>
         <Button variant="danger" onClick={onDelete}>删除</Button>
       </div>

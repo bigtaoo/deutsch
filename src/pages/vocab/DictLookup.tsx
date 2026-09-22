@@ -139,11 +139,19 @@ export function DictLookup() {
     setSound(speak(word) ? 'tts' : 'none');
   };
 
-  const add = async () => {
-    if (!result) return;
+  /**
+   * 收下一个词。**词形由调用方给**，不从 `result` 里取 —— 查不到的时候
+   * `result` 就是 null，而那恰恰是最需要这个按钮的一条路（§12.11：多词搭配和
+   * 生僻复合词两边都查不到，而那是最值得记的一类）。
+   *
+   * 这里原来写的是 `if (!result) return;`，于是「查不到」那张卡上的
+   * 「加入生词本」**按下去什么都不发生** —— 没有报错、没有提示，
+   * 看起来就像这个词只能丢掉（FR-9.6，2026-09-22 修）。
+   */
+  const add = async (word: string) => {
     const dict = localHit?.entry ?? (onlineHit ? toDictEntry(onlineHit) : null);
     // FR-21.6：例句一并收下 —— 在线那一趟已经拿到了，开读卡时它多半不在了
-    const entry = await createFromLookup({ surface: result.head, dict, examples: result.examples });
+    const entry = await createFromLookup({ surface: word, dict, examples: result?.examples });
     setAdded(entry);
     // 不可重建的数据不过夜（FR-11.6）。失败也不用管：进队列，由状态芯片报出来。
     void syncVocabNow();
@@ -204,7 +212,7 @@ export function DictLookup() {
         <NotFound
           query={query}
           onlineState={online}
-          onAdd={() => void add()}
+          onAdd={() => void add(query)}
           added={added}
           dupes={dupes}
           lessons={lessons}
@@ -217,7 +225,7 @@ export function DictLookup() {
           online={online}
           sound={sound}
           onPlay={() => void play(result.head)}
-          onAdd={() => void add()}
+          onAdd={() => void add(result.head)}
           added={added}
           dupes={dupes}
           lessons={lessons}
@@ -444,7 +452,10 @@ function AddRow({
     return (
       <Note tone="ok">
         <b>{added.surface}</b> 已加进生词本，作为新卡进入复习队列（声音是孤立词发音）。
-        {noDict && ' 没有释义 —— 在下面的列表里编辑补上。'}
+        {/* FR-9.11：查不到的词收下来就是一张空卡，而「下面自己填」在手机上等于不填。
+            它已经自动进了页底那块待办（`!meaning`），这里只是把话说出来 ——
+            一个自己发生的事不说出来，下次打开时它就是一个来路不明的数字。 */}
+        {noDict && ' 两个词典都没有它，所以它已经排进页底的「问 AI 补解释」。'}
       </Note>
     );
   }

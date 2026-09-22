@@ -157,7 +157,7 @@ export async function renderShareCard(
     ctx.font = `500 26px ${SANS}`;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
     ctx.textAlign = 'left';
-    ctx.fillText('德语精听', MARGIN, MARGIN + 26);
+    ctx.fillText('努力学德语', MARGIN, MARGIN + 26);
   });
 
   // ── 底部往上排：数字行 → 名字与日期 → 细线 ──

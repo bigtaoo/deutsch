@@ -157,6 +157,9 @@ export function sampleBackup(now = Date.now()): BackupFile {
       enrolledBands: [],
       onlineDictFallback: false,
       showTranslation: false,
+      // 音效关掉：E2E 跑的是真浏览器，开着会去 fetch + decodeAudioData 三个文件，
+      // 而它对任何一条用例的判据都没有贡献（FR-10.12 由单测守）。
+      soundEffects: false,
       updatedAt: now,
     },
     studyLog: { days: {}, updatedAt: 0 },
@@ -239,6 +242,9 @@ export function readCardBackup(): BackupFile {
       enrolledBands: [],
       onlineDictFallback: false,
       showTranslation: false,
+      // 音效关掉：E2E 跑的是真浏览器，开着会去 fetch + decodeAudioData 三个文件，
+      // 而它对任何一条用例的判据都没有贡献（FR-10.12 由单测守）。
+      soundEffects: false,
       updatedAt: now,
     },
     studyLog: { days: {}, updatedAt: 0 },

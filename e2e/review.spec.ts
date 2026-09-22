@@ -164,3 +164,66 @@ test('读卡的评分落在读卡上 —— 听卡的下次时间不该被动过
   // 读卡那一半确实动了：答错之后它今天还会再来一次，所以列表上仍然有「读 …」
   await expect(page.getByText(/读 /).first()).toBeVisible();
 });
+
+// ── FR-9.11 / FR-9.12：问 AI 补解释 ──────────────────────────────
+//
+// jsdom 问不出来的那一半是**「解释真的落了盘没有」**：粘回来的那一段是
+// 不可重建的数据（它来自一次外部会话，关掉就没了），而 `updateEntries`
+// 写完之后界面上立刻就变了 —— 「界面变了」和「库里写了」在 jsdom 的
+// fake-indexeddb 里分不出来，每个用例都是一个新库。
+
+test('标记一个词 → 那一块出现；粘回解释 → 刷新之后还在（FR-9.12）', async ({ page }) => {
+  await seed(page);
+  await page.goto('/#/vocab');
+
+  // fixture 里的词都有释义，所以待办一开始是空的 —— 这一块整个不出现（§12.16）。
+  await expect(page.getByText(/问 AI 补解释/)).toHaveCount(0);
+
+  // 标记 `Ansammlung` 那一行。
+  const row = page.locator('li', { hasText: 'Ansammlung' }).last();
+  await row.getByRole('button', { name: '问 AI' }).click();
+  await expect(row.getByRole('button', { name: /已标记/ })).toBeVisible();
+
+  const panel = page.locator('details', { hasText: '问 AI 补解释' });
+  await expect(panel).toContainText('1 个词等着');
+  await panel.locator('summary').click();
+
+  await panel.locator('textarea').last().fill('1. 聚集：一群人或物凑到一处，偏中性。\n搭配：eine Ansammlung von Menschen。');
+  // 对照预览是保存前最后一道人眼关卡（§12.16）：编号对着的必须是那个词。
+  await expect(panel.locator('li')).toContainText('Ansammlung');
+  await panel.getByRole('button', { name: /保存这 1 条/ }).click();
+
+  // 写进去之后这个词就不再等着了 —— **整块消失**（§12.16：没有待办就不出现），
+  // 所以「写入 1 条」那句提示也跟着走了。这不是漏了提示：结果就在上面那一行里，
+  // 而 ZhPanel 是同一个行为，双胞胎不该在这一点上分家。
+  await expect(page.getByText(/问 AI 补解释/)).toHaveCount(0);
+  await expect(page.getByText(/eine Ansammlung von Menschen/)).toBeVisible();
+
+  await page.reload();
+  await page.goto('/#/vocab');
+  await expect(page.getByText(/问 AI 补解释/)).toHaveCount(0);
+  // 而解释本身活过了一次真正的刷新（真 IndexedDB，不是内存里的 store）。
+  await expect(page.getByText(/eine Ansammlung von Menschen/)).toBeVisible();
+});
+
+test('查不到的词照样收得下，并且自己排进待办（FR-9.6）', async ({ page }) => {
+  // 走 seed 而不是空库：fixture 的设置里 `onlineDictFallback: false`，
+  // 于是这条用例**一次网络都不发** —— 门禁里一条会去问 de.wiktionary 的用例，
+  // 迟早会因为对方慢一次而变红，而那和这里要守的东西毫无关系。
+  await seed(page);
+  await page.goto('/#/vocab');
+
+  // 内置词典里没有这个编出来的复合词；联网查默认关着（fixture 里 onlineDictFallback: false）,
+  // 所以这一步不碰网络。
+  await page.getByPlaceholder(/课上碰到的词/).fill('Vorabendprogrammgestaltung');
+  await page.getByRole('button', { name: '查', exact: true }).click();
+  await expect(page.getByText(/没查到/)).toBeVisible();
+
+  // 这个按钮曾经是个死按钮：`add()` 第一行看 `result`，而查不到时它是 null，
+  // 于是按下去什么都不发生 —— 看起来就像这个词只能丢掉。
+  await page.getByRole('button', { name: '加入生词本' }).click();
+  await expect(page.getByText(/已加进生词本/)).toBeVisible();
+
+  const panel = page.locator('details', { hasText: '问 AI 补解释' });
+  await expect(panel).toContainText('1 个词等着');
+});

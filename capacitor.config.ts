@@ -21,7 +21,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 // 二进制，原生桥要把它 base64 过一遍 JSON，内存和耗时都翻番，而且拿不到流式响应。
 const config: CapacitorConfig = {
   appId: 'com.gamestao.deutsch',
-  appName: '精听',
+  appName: '努力学德语',
   webDir: 'dist',
   server: {
     // iOS 固定用 capacitor://localhost；这里只影响 Android 的 scheme。

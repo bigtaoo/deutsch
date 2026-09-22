@@ -168,6 +168,16 @@ export function StudySettingsSection() {
       <Note>
         关掉只是不再自动跑 —— 课程页头部那个「自动对齐」按钮永远可用。
       </Note>
+      {/* FR-10.12：这是**每答一题都会发生**的事，所以它需要一个出口 ——
+          否则在图书馆里唯一的办法是把整台手机静音，而那会连德语音频一起关掉。 */}
+      <label className="flex items-center gap-2 text-ui">
+        <input
+          type="checkbox"
+          checked={settings.soundEffects}
+          onChange={(e) => void update({ soundEffects: e.target.checked })}
+        />
+        复习时的音效（点选项、答对、答错）
+      </label>
     </Section>
   );
 }

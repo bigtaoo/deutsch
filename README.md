@@ -1,4 +1,6 @@
-# 德语精听训练器
+# 努力学德语
+
+> 应用名 2026-09-22 从「精听」改成「努力学德语」（SPEC §0 变更 46）。仓库名与内部代号没动。
 
 个人自用的德语精听工具：把一期 DW Alltagsdeutsch 切成句子、**下载完就自动把音频和文稿对齐**，然后跟读、挖空听写，错词进 FSRS 复习队列。
 
@@ -317,6 +319,7 @@ npm run build:dict
 - 词条 / 性 / 音标 / 复数 / 德语释义 / 英译 / 中译 —— [WikDict](https://www.wikdict.com/)（源自 Wiktionary 经 DBnary），**CC BY-SA**
 - 口语词频 —— [hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords)（OpenSubtitles 语料），**MIT**
 - 发音 —— Wikimedia Commons 上的录音，各文件许可随原文件
+- 复习音效（`public/sfx/`）—— [Kenney「Interface Sounds」](https://kenney.nl/assets/interface-sounds)，**CC0**，清单在 `public/sfx/CREDITS.md`
 
 改这个脚本前先读 [SPEC.md](SPEC.md) §7.11 里那**六个把结果整片弄错的坑** ——
 每一个都是实测踩出来的，而其中三个（性被覆盖成空、复数一个都找不到、
@@ -332,11 +335,13 @@ npm run icons
 
 图标是浅色的，所以这几处必须同色系：`index.html` 的 `theme-color`、`vite.config.ts` manifest 的 `theme_color`、`android/app/src/main/res/values/ic_launcher_background.xml`（由脚本生成，等于脚本里的 `TILE`）。
 
-**原生 App 的名字按系统语言取**：中文系统「精听」，其余「Hörtraining」。改名字改这几处，`capacitor.config.ts` 里的 `appName` 不是其中之一（它只在建工程时用过一次）：
+**原生 App 的名字按系统语言取**：中文系统「努力学德语」，其余「Hörtraining」。改名字改这几处，`capacitor.config.ts` 里的 `appName` 不是其中之一（它只在建工程时用过一次）：
 
 - iOS：`ios/App/App/{zh-Hans,de,en}.lproj/InfoPlist.strings`（新增语言还要动 `project.pbxproj`）
 - Android：`android/app/src/main/res/values/strings.xml`（兜底）与 `values-zh/strings.xml`
-- 网页版：`index.html` 的 `<title>` 与 `vite.config.ts` 里的 manifest —— 这两个**不能**按语言分设
+- 网页版：`index.html` 的 `<title>`、`<meta name="apple-mobile-web-app-title">` 与 `vite.config.ts` 里的 manifest —— 这几个**不能**按语言分设
+- 另有两处会露出来：分享图顶部那行（`src/share/card.ts`）与导出 PNG 的文件名（`src/share/save.ts`），
+  以及手机顶栏在「既不是活动页也不是抽屉页」时的兜底标题（`src/components/AppNav.tsx`）
 
 ### 原生打包（Capacitor）
 

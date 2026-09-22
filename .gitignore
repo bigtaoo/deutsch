@@ -24,6 +24,11 @@ npm-debug.log*
 *.mp3
 *.m4a
 *.wav
+# 唯一的例外：复习音效（FR-10.12）。上面那三条挡的是**别人的版权素材**（DW 的 mp3、
+# 课文），而这三个是 CC0 的界面音、一共 43KB，和 public/share/photos/ 的六张底图同类 ——
+# 它们必须入库，否则 CI 构建出来的包里 /sfx/ 全是 404，而那是静默的（点一下没声音而已）。
+# 来源与换法在 public/sfx/CREDITS.md。
+!public/sfx/*.wav
 manuskript/
 backup-*.json
 

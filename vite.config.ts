@@ -35,9 +35,9 @@ export default defineConfig(({ mode }) => {
         registerType: 'autoUpdate',
         includeAssets: ['apple-touch-icon.png'],
         manifest: {
-          name: '德语精听训练器',
-          short_name: '精听',
-          description: '德语精听：切句、打点、跟读、听写、FSRS 复习。素材自备，只存本地。',
+          name: '努力学德语',
+          short_name: '努力学德语',
+          description: '德语精听训练：切句、打点、跟读、听写、FSRS 复习。素材自备，只存本地。',
           lang: 'zh-CN',
           start_url: '/',
           scope: '/',
@@ -61,7 +61,11 @@ export default defineConfig(({ mode }) => {
           // webp 是 FR-18 的六张分享底图（约 1.2MB）。**故意预缓存**：
           // 「练完一课在地铁里把今天的记录发出去」是这个功能的典型场景，
           // 而底图拉不下来时那张图会退化成一块渐变。原生壳里它们本来就在包里。
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webp}'],
+          //
+          // wav 是 FR-10.12 的三个音效（43KB）。同一条理由，而且更硬：
+          // §2.1 写着「手机是复习工位」，离线复习是主路径，不是边角情况 ——
+          // 而一个时有时无的提示音比没有提示音更糟。
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,webp,wav}'],
           navigateFallback: '/index.html',
           cleanupOutdatedCaches: true,
           // 200MB 的对齐权重（public/models/，npm run stage:align）不在 globPatterns 里，

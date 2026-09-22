@@ -68,7 +68,7 @@ export async function shareCardImage(blob: Blob, filename: string): Promise<Shar
   return 'browser-download';
 }
 
-/** `精听-2026-09-15.png`。日期在文件名里，存进相册之后还能看出是哪天的。 */
+/** `努力学德语-2026-09-15.png`。日期在文件名里，存进相册之后还能看出是哪天的。 */
 export function shareCardFileName(dateKey: string): string {
-  return `精听-${dateKey}.png`;
+  return `努力学德语-${dateKey}.png`;
 }

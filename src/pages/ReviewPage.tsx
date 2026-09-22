@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_LESSON_TAB, navigate } from '@/app/router';
 import { audioPlayer } from '@/audio/player';
+import { playSfx, preloadSfx } from '@/audio/sfx';
 import { getAudioBlob } from '@/db/cache';
 import { resolveRange } from '@/lesson/timing';
 import { buildReviewQueue, cardAudioStatus, newCardShortfall, type Deck, type ReviewCard } from '@/srs/queue';
@@ -44,6 +45,15 @@ import type { Lesson, VocabEntry } from '@/types/models';
 /** 答对之后那一闪的时长（FR-10.11）。600ms 看不完卡背，但看得完 `der Vorhang`。 */
 const FLASH_MS = 600;
 
+/**
+ * 点击音和判定音之间隔多久（FR-10.12）。
+ *
+ * 不能是 0：点击音 43ms、判定音紧跟着起头，两个一起响会糊成一声，
+ * 而这两声要说的是两件事（「收到了」和「对/错」）。也不能太长 ——
+ * 判定音要压在那 600ms 的闪之内，否则它落在下一张卡上。
+ */
+const VERDICT_SFX_MS = 120;
+
 type Phase = 'asking' | 'flash' | 'revealed';
 
 export function ReviewPage() {
@@ -63,6 +73,12 @@ export function ReviewPage() {
   const [nextDue, setNextDue] = useState<Date | null>(null);
 
   const breakdownRef = useRef<ReturnType<typeof buildReviewQueue> | null>(null);
+
+  // FR-10.12：三个音效一共 43KB，进页面时先取好。等第一次答题才去 fetch 的话，
+  // 那一声会比「答对」的闪晚半秒到 —— 而晚到的反馈比没有反馈更分神。
+  useEffect(() => {
+    if (settings.soundEffects) void preloadSfx();
+  }, [settings.soundEffects]);
 
   useEffect(() => {
     if (!loaded || session !== null) return;
@@ -144,6 +160,12 @@ export function ReviewPage() {
       // FR-21.1：评分落在**这一次作答的那张卡**上。两张卡的 FSRS 状态各自演化 ——
       // 写错一边的症状是静默的：读卡答对了却把听卡的间隔拉长。
       const card = deck === 'listen' ? current.fsrs : (current.fsrsRead ?? current.fsrs);
+      // FR-10.12：判定音。**排在评分前面**发起（只是个定时器），因为下面这几行
+      // 有一次 await 落库 —— 在慢一点的手机上那是几十毫秒，足够让声音听着像延迟。
+      if (settings.soundEffects) {
+        const verdict = correct ? 'right' : 'wrong';
+        setTimeout(() => playSfx(verdict), VERDICT_SFX_MS);
+      }
       const rating = gradeFromAnswer({ correct, gaveUp: choiceId === null, elapsedMs }, card);
       const next = review(card, rating);
       setNextDue(new Date(next.due));
@@ -154,7 +176,7 @@ export function ReviewPage() {
         setPhase('revealed');
       }
     },
-    [current, deck, phase, updateEntry],
+    [current, deck, phase, settings.soundEffects, updateEntry],
   );
 
   // 答对之后自动进下一张。计时器要能被清掉 —— 否则连点两次会跳两张。
@@ -213,6 +235,7 @@ export function ReviewPage() {
         entries={entries}
         lesson={lesson}
         hasMaterial={Boolean(current.lessonId && caches[current.lessonId]?.hasAudio)}
+        soundOn={settings.soundEffects}
         phase={phase}
         picked={picked}
         nextDue={nextDue}
@@ -229,6 +252,7 @@ function QuizCard({
   entries,
   lesson,
   hasMaterial,
+  soundOn,
   phase,
   picked,
   nextDue,
@@ -240,6 +264,7 @@ function QuizCard({
   entries: VocabEntry[];
   lesson: Lesson | undefined;
   hasMaterial: boolean;
+  soundOn: boolean;
   phase: Phase;
   picked: string | null;
   nextDue: Date | null;
@@ -361,7 +386,21 @@ function QuizCard({
     };
   }, [phase, audioStatus, isRead, entry.surface, entry.examples, examples]);
 
-  const choose = (id: string, correct: boolean) => onAnswer(id, correct, Date.now() - startedAt.current);
+  /**
+   * FR-10.12：点击音。**在这里响、不在 ChoiceGrid 里响** —— 它同时要盖住
+   * 键盘那条路（1–4 选项），而那条路也走这个函数。
+   *
+   * 它还兼着一件 iOS 上必需的事：AudioContext 只能在用户手势里 resume，
+   * 而这是复习页上唯一保证发生在手势中的调用点。
+   */
+  const tap = () => {
+    if (soundOn) playSfx('tap');
+  };
+
+  const choose = (id: string, correct: boolean) => {
+    tap();
+    onAnswer(id, correct, Date.now() - startedAt.current);
+  };
 
   // 键盘：1–4 选项，空格/回车继续。手机上用不到，桌面上一轮几十张卡时差别很大。
   useEffect(() => {
@@ -494,7 +533,10 @@ function QuizCard({
             <Button
               className="w-full py-3"
               disabled={phase !== 'asking'}
-              onClick={() => onAnswer(null, false, Date.now() - startedAt.current)}
+              onClick={() => {
+                tap();
+                onAnswer(null, false, Date.now() - startedAt.current);
+              }}
             >
               {isRead ? '不认识' : '没听清 / 不认识'}
             </Button>
@@ -648,6 +690,14 @@ function CardBack({
       <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义还没填）</span>}</p>
       {/* FR-21.9：中译只出现在卡背，题面一律德语（词典的中译只覆盖约 60%，凑不齐四个选项） */}
       {entry.meaningZh && <p className="text-ui text-muted">{entry.meaningZh}</p>}
+      {/* FR-9.12：从 AI 会话里接回来的详细解释。**排在词典释义之后** ——
+          它是三百字的辨析，先出现的话卡背就变成一篇文章，而卡背的第一件事
+          仍然是「这个词是什么」。答错才会看到这里，篇幅长是对的。 */}
+      {entry.note && (
+        <p className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">
+          {entry.note}
+        </p>
+      )}
       {sentence ? (
         <p className="text-ui text-muted">{sentence}</p>
       ) : (

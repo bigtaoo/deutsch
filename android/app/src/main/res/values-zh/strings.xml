@@ -2,6 +2,6 @@
 <!-- 中文系统（zh 全系，含 zh-Hant）用这个名字。只覆盖名字两条，
      其余 string 继承 values/strings.xml。 -->
 <resources>
-    <string name="app_name">精听</string>
-    <string name="title_activity_main">精听</string>
+    <string name="app_name">努力学德语</string>
+    <string name="title_activity_main">努力学德语</string>
 </resources>

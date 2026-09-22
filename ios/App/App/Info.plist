@@ -10,7 +10,7 @@
 	     只有那些文件都没匹配上时才用这里的。别忘了 capacitor.config.ts 里的 appName 跟这里无关
 	     （它只在 `npx cap add ios` 建工程时用一次，改它对已有工程没有任何作用）。 -->
 	<key>CFBundleDisplayName</key>
-        <string>精听</string>
+        <string>努力学德语</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -22,7 +22,7 @@
 	     CFBundleExecutable 才是二进制名，跟这条无关，所以改这里不影响构建产物。
 	     ≤15 个字符，长了系统会截。 -->
 	<key>CFBundleName</key>
-	<string>精听</string>
+	<string>努力学德语</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

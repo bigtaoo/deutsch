@@ -139,14 +139,25 @@ body {
    sticky 是相对视口定位的，加在 body 的 padding 上导航照样会滑到状态栏底下。
    浏览器里（含 Android 壳，状态栏不覆盖 WebView）env() 是 0，这条规则等于不存在。
    写成普通 CSS 而不是 Tailwind 的 pt-[…]：它要盖掉同一个元素上的 py-*，
-   而 Tailwind v4 的工具类在 @layer utilities 里，未分层的规则才稳赢。 */
+   而 Tailwind v4 的工具类在 @layer utilities 里，未分层的规则才稳赢。
+
+   ── 那两个 -min 变量（变更 46 / §12.15）──
+   iPhone 13 的原生壳上实测出现过「env() 解析成 0，导航压住状态栏」。
+   `src/platform/safeArea.ts` 启动时量一次 env()，量到 0 就按屏幕尺寸把该有的值写进
+   这两个变量。量到非 0 时它们留在 0 上，`max()` 于是自动选 env() —— 也就是说
+   兜底在正常设备上**不产生任何效果**，而不是多出一条白边。 */
+:root {
+  --safe-top-min: 0px;
+  --safe-bottom-min: 0px;
+}
+
 .app-nav {
-  padding-top: calc(0.5rem + env(safe-area-inset-top));
+  padding-top: calc(0.5rem + max(env(safe-area-inset-top), var(--safe-top-min)));
 }
 
 /* 底部标签栏与底部浮层同理：home indicator 那一条必须让出来。 */
 .app-bottom-safe {
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: max(env(safe-area-inset-bottom), var(--safe-bottom-min));
 }
 
 /* 触屏上的点击目标不小于 44px（iOS HIG）。桌面上按钮更紧凑，所以只在粗指针下放大。

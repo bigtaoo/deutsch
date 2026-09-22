@@ -128,11 +128,11 @@ describe('顶部栏', () => {
     expect(screen.queryByText('‹')).toBeNull();
   });
 
-  it('抽屉页上标题显示的是那一页的名字，不是「精听」', () => {
+  it('抽屉页上标题显示的是那一页的名字，不是应用名', () => {
     render(<TopBar route={{ name: 'cache' }} />);
     // 「素材」同时出现在抽屉的链接里，所以只认标题那个 <span>。
     const title = screen.getAllByText('素材').find((el) => el.tagName === 'SPAN');
     expect(title).toBeInTheDocument();
-    expect(screen.queryByText('精听')).toBeNull();
+    expect(screen.queryByText('努力学德语')).toBeNull();
   });
 });

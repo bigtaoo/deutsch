@@ -10,5 +10,5 @@
    Info.plist 的 CFBundleDisplayName），但重新 `cap add ios` 会把整个工程重建，
    那种情况要把这三个 .lproj 和 pbxproj 里的 InfoPlist.strings 变体组一起补回来。 */
 
-"CFBundleDisplayName" = "精听";
-"CFBundleName" = "精听";
+"CFBundleDisplayName" = "努力学德语";
+"CFBundleName" = "努力学德语";

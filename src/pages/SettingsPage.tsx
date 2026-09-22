@@ -344,9 +344,9 @@ function ManualBackupSection() {
     await useSettingsStore.getState().update({ lastBackupAt: Date.now() });
     setExportMessage(
       `已导出 ${backup.lessons.length} 课 / ${backup.vocab.length} 个生词。` +
-        // 原生壳里文件落在 App 的 Documents 目录（「文件」App → 精听），分享面板只是顺手
+        // 原生壳里文件落在 App 的 Documents 目录（「文件」App → 努力学德语），分享面板只是顺手
         // 给一次「存到别处」的机会。不说清楚的话，划掉面板的人会以为这次导出没成。
-        (target === 'native-file' ? '文件已存到「文件」App 的「精听」文件夹。' : ''),
+        (target === 'native-file' ? '文件已存到「文件」App 的「努力学德语」文件夹。' : ''),
     );
   };
 

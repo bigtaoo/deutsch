@@ -17,6 +17,9 @@ export const DEFAULT_SETTINGS: Settings = {
   onlineDictFallback: true,
   // FR-19.4：译文默认不显示 —— 和「文本默认折叠」同一个理由，先用耳朵。
   showTranslation: false,
+  // FR-10.12：音效默认开。答对答错的即时反馈是这张卡片存在的一半，
+  // 默认关掉等于让人先去设置里把它打开才拿得到。
+  soundEffects: true,
 };
 
 export async function getSettings(): Promise<Settings> {

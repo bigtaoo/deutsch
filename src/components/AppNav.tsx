@@ -105,7 +105,7 @@ export function TopBar({ route }: { route: Route }) {
               <span aria-hidden>‹</span> 课程
             </a>
           ) : (
-            <span className="text-title font-semibold">{current?.label ?? drawerPage?.label ?? '精听'}</span>
+            <span className="text-title font-semibold">{current?.label ?? drawerPage?.label ?? '努力学德语'}</span>
           )}
         </div>
 
