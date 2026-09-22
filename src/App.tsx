@@ -82,9 +82,13 @@ function App() {
     // 「现在算不算在练」由下面那个 effect 按路由开关。
     connectStudyClock();
     const stopClockListeners = attachStudyClockListeners();
-    // FR-18.5：屏幕常亮。规范规定页面一不可见浏览器就自动收走这把锁，
-    // 而回到前台不会自己还 —— 所以必须有人在 visibilitychange 上把它要回来。
+    // FR-18.7：屏幕常亮。**范围是整个应用，不跟路由走** —— 见 wakeLock.ts 文件头：
+    // 「盯着屏幕但不碰屏幕」不止发生在那五个练习界面上（读一段 AI 写回来的辨析、
+    // 看变形表、贴译文都是），而一条「有时候亮有时候不亮」的规则比不亮更让人不信任。
+    // 规范规定页面一不可见浏览器就自动收走这把锁，而回到前台不会自己还 ——
+    // 所以必须有人在 visibilitychange 上把它要回来。
     const stopWakeLock = attachWakeLockListener();
+    setKeepAwake(true);
 
     // 顶部安全区的兜底（变更 46）：iPhone 13 上量到过 env(safe-area-inset-top) = 0，
     // 导航因此压住状态栏。**要等 platform 定下来**才能做 —— 只在 iOS 原生壳上补，
@@ -103,11 +107,7 @@ function App() {
   // FR-18.1：进出练习界面就是开表与停表。停表时计时器会把攒着的秒数立刻落库 ——
   // 所以从跟读页走到记录页，那一页看到的就是刚刚练完的数。
   useEffect(() => {
-    const practising = isPracticeRoute(route);
-    studyClock.setActive(practising);
-    // FR-18.5：同一条判据也决定屏幕要不要保持亮着。**共用 isPracticeRoute**，
-    // 不写第二份名单 —— 一个「什么时候算在学习」的问题有两个答案，迟早会漂成两个。
-    setKeepAwake(practising);
+    studyClock.setActive(isPracticeRoute(route));
   }, [route.name, route.name === 'lesson' ? route.tab : '']);
 
   return (

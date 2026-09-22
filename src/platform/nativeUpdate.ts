@@ -201,9 +201,27 @@ export async function runningBuild(): Promise<RunningBuild | null> {
   try {
     const CapacitorUpdater = await updater();
     const { App } = await import('@capacitor/app');
-    const [current, info] = await Promise.all([CapacitorUpdater.current(), App.getInfo()]);
+    // **必须有超时。** 这两个都是过原生桥的调用，而桥调用失败的方式不只是 reject ——
+    // 插件没注册、原生侧没回调，这个 Promise 就**永远不 settle**。调用方（设置页的
+    // 「版本」块）等的是一个会到的答案，等不到就一直停在「还没问出来」那一档。
+    // 2026-09-22 真机上就是这样：整块「版本」在 iPhone 上一次都没出现过，
+    // 而它从 0.4.0 起就在那儿了 —— 没有超时，这种坏法连一行日志都不留。
+    const [current, info] = await withTimeout(
+      Promise.all([CapacitorUpdater.current(), App.getInfo()]),
+      BRIDGE_TIMEOUT_MS,
+    );
     return { native: info.version, bundle: current.bundle.version ?? BUILTIN };
   } catch {
     return null;
   }
+}
+
+/** 过桥问一个数最多等多久。设置页那一块要在这个时间内给出一个答案，哪怕是「问不出来」。 */
+const BRIDGE_TIMEOUT_MS = 4000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('原生桥超时')), ms)),
+  ]);
 }

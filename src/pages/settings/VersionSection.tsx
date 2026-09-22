@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Disclosure, Hint, Note, Section } from '@/components/ui';
 import { pendingUpdateVersion, runningBuild, type RunningBuild } from '@/platform/nativeUpdate';
-import { initSafeArea, safeAreaProbe } from '@/platform/safeArea';
+import { initSafeArea, safeAreaProbe, type Platform } from '@/platform/safeArea';
 import { nativePlatform } from '@/platform/native';
-import { wakeLockSupported } from '@/platform/wakeLock';
+import { wakeLockState } from '@/platform/wakeLock';
 
 // 版本（SPEC §12.12 / 变更 41）。**这一块存在的唯一理由是让热更不是黑箱** ——
 // 接了热更之后「我手机上到底是哪一版」不再能从 App Store 的版本号推出来：
@@ -12,26 +12,38 @@ import { wakeLockSupported } from '@/platform/wakeLock';
 // 形状按 §12.3：平时是静默的两行事实（`Hint` 那一档，不是状态），只有「下好了等着
 // 生效」时才升到一行提示（`Note`）。不给「现在就更新」的按钮 —— 立刻换 bundle 是整个
 // WebView 重载，会清掉只活在 React state 里的听写答案，而这一页恰恰可以从练习中途进来。
+//
+// ── 这一块绝不能把自己整块抹掉（2026-09-22 真机修） ──
+// 原来第一行是 `if (build === undefined) return null;`，而 `build` 来自一个**过原生桥**
+// 的调用。桥调用失败的方式不只是 reject —— 插件没注册、原生侧不回调，那个 Promise
+// 就永远不 settle，于是 `build` 永远是 undefined，**整个「版本」块在 iPhone 上一次
+// 都没出现过**（它从 0.4.0 起就在那儿了）。症状是「设置页翻到底，对齐后端下面什么都没有」。
+//
+// 现在：平台由 `nativePlatform()` 单独问（不过桥，只是一次动态 import），版本号问不出来
+// 就如实写「问不出来」。**诊断块无论如何都画** —— 它正是用来回答「这台设备上到底
+// 发生了什么」的，一个会在出问题时自己消失的诊断等于没有。
 export function VersionSection() {
+  const [platform, setPlatform] = useState<Platform | null>(null);
   const [build, setBuild] = useState<RunningBuild | null | undefined>(undefined);
   const [pending, setPending] = useState<string | null>(null);
 
   useEffect(() => {
+    void nativePlatform().then(setPlatform);
     void runningBuild().then(setBuild);
     // 启动时那次 checkNativeUpdate 通常早跑完了（App.tsx）；没跑完也不等它 ——
     // 下次进这一页就看得到。为一个诊断块去订阅一次性事件不值。
     setPending(pendingUpdateVersion());
   }, []);
 
-  if (build === undefined) return null;
-
   return (
     <Section title="版本">
-      {build === null ? (
+      {platform === null ? (
+        <Hint>正在问这台设备…</Hint>
+      ) : platform === 'web' ? (
         <Hint>
           网页版 —— 有新版时会自己更新，不用做任何事（关掉标签页再打开就是最新的）。
         </Hint>
-      ) : (
+      ) : build ? (
         <>
           <Hint>
             应用壳 {build.native} —— 换它要过 App Store。
@@ -41,28 +53,31 @@ export function VersionSection() {
           </Hint>
           {pending && <Note tone="accent">新版 {pending} 已下好，下次打开这个应用时生效。</Note>}
         </>
+      ) : build === undefined ? (
+        <Hint>正在问原生侧版本号…</Hint>
+      ) : (
+        // 问不出来也要说话。以前这里是「整块消失」，而那让人以为功能没做。
+        <Hint tone="warn">
+          版本号问不出来（原生侧没回应）。热更本身照常工作，只是这一行说不出你现在跑的是哪一份。
+        </Hint>
       )}
-      {/* **两个分支都要有**。原来它只挂在原生那一支上，理由是「浏览器上这两条没有争议」——
-          那句话是错的：iPhone 上的 Safari 与主屏 PWA 也各有一套安全区行为，而它们恰恰是
-          「原生壳上 env() 为什么是 0」的对照组。更实际的是，把它藏进原生分支意味着
-          **只有装了新包的人才看得到它**，而这一块存在的理由就是在装包之前先问出一个数。 */}
+      {/* **无论平台、无论版本号问没问出来都画。** 它正是用来回答「这台设备上到底
+          发生了什么」的，而一个会在出问题时自己消失的诊断等于没有。 */}
       <DeviceDiagnostics />
     </Section>
   );
 }
 
 /**
- * 这台设备上两个**只能在真机上问**的数（变更 46）。
+ * 这台设备上那几个**只能在真机上问**的数（变更 46）。
  *
  * 进 `Disclosure` 而不是摆在外面：按 §12.3，诊断属于「要在但不该占主路径」的东西。
- * **浏览器上也画**：见上面那段 —— 藏进原生分支等于「装了新包才看得到」，
- * 而它就是用来在装包之前先问出一个数的。
  *
  * 安全区那一行是为一个具体的故障留的：iPhone 13 上出现过
- * `env(safe-area-inset-top)` 解析成 0、吸顶导航压住状态栏。兜底已经装上了
- * （safeArea.ts），但**成因没有验过**，而这一行把它一眼验完：
- * 写着「env 报 47」就说明 env 是好的、问题在别处；写着「env 报 0，已兜底到 47」
- * 就说明嫌疑成立，下一步该去动 capacitor.config.ts 的 contentInset。
+ * `env(safe-area-inset-top)` 解析成 0、吸顶导航压住状态栏。
+ *
+ * 常亮那一行分三种状况说，因为「屏幕没保持亮」有三个完全不同的成因、
+ * 三个完全不同的下一步 —— 见 `wakeLockState()` 的注释。
  */
 function DeviceDiagnostics() {
   // 正常情况下 App.tsx 启动时已经量过一次，这里直接读那一份（免得两处数字对不上）。
@@ -72,8 +87,16 @@ function DeviceDiagnostics() {
   const [probe, setProbe] = useState(safeAreaProbe);
   useEffect(() => {
     if (probe) return;
-    void nativePlatform().then((platform) => setProbe(initSafeArea(platform)));
+    void nativePlatform().then((p) => setProbe(initSafeArea(p)));
   }, [probe]);
+
+  // 常亮是**会变的状态**（进出练习界面、切后台），所以定时重读，不是读一次就定住。
+  // 一秒一跳：这一块本来就是打开来盯着看的，而它只是读三个内存里的布尔量。
+  const [lock, setLock] = useState(wakeLockState);
+  useEffect(() => {
+    const timer = setInterval(() => setLock(wakeLockState()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   return (
     <Disclosure summary="这台设备的边距与常亮">
@@ -94,11 +117,31 @@ function DeviceDiagnostics() {
       ) : (
         <Hint>安全区：还没量（应用刚启动那一下才量）。</Hint>
       )}
-      <Hint tone={wakeLockSupported() ? 'neutral' : 'warn'}>
-        {wakeLockSupported()
-          ? '屏幕常亮：这台设备支持，练习界面上会一直亮着（切走或锁屏自动释放）。'
-          : '屏幕常亮：这台 WebView 不支持 —— 练习时屏幕仍会按系统的自动锁屏时间灭掉。'}
+
+      {/* **除了此刻的状态，还要报「上一次申请的结果」。** 申请发生在应用挂载那一刻，
+          而人是过一会儿才走到这一页来看的；中间可能切过后台（系统收走锁、回来再申请），
+          也可能一开始就被拒了。只报此刻状态说不清「刚才那次到底成没成」。 */}
+      <Hint tone={!lock.supported || lock.lastResult === 'rejected' ? 'warn' : 'neutral'}>
+        屏幕常亮：
+        {!lock.supported
+          ? '这台 WebView 没有 Screen Wake Lock —— 屏幕仍会按系统的自动锁屏时间灭掉，只能去原生侧改（要出新包）。'
+          : lock.held
+            ? '锁拿着，这个应用开着的时候屏幕不会自己灭（切到别的 App 或手动锁屏时系统会收回）。'
+            : lock.lastResult === 'rejected'
+              ? `API 在，但最近一次申请（${formatAgo(lock.lastAgoMs)}前）被拒了 —— 省电模式或系统策略。`
+              : lock.lastResult === 'ok'
+                ? `API 在；最近一次申请（${formatAgo(lock.lastAgoMs)}前）拿到过锁，但这一刻没拿着。`
+                : 'API 在，但还没申请到 —— 页面刚打开或正处在后台时会是这样，回到前台几秒后再看。'}
       </Hint>
     </Disclosure>
   );
+}
+
+/** `3 秒` / `2 分钟` / `1 小时`。诊断行里的相对时刻，精度到这一档就够。 */
+function formatAgo(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec} 秒`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} 分钟`;
+  return `${Math.round(min / 60)} 小时`;
 }

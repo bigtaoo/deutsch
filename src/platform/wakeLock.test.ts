@@ -3,6 +3,7 @@ import {
   attachWakeLockListener,
   resetWakeLockForTests,
   setKeepAwake,
+  wakeLockState,
   wakeLockSupported,
 } from './wakeLock';
 
@@ -57,21 +58,37 @@ afterEach(() => {
 });
 
 describe('setKeepAwake', () => {
-  it('进练习界面申请一次，离开就还回去', async () => {
+  it('应用挂载时申请一次，卸载就还回去', async () => {
     setKeepAwake(true);
     await vi.waitFor(() => expect(requests).toHaveLength(1));
     setKeepAwake(false);
     expect(requests[0].released).toBe(true);
   });
 
-  it('重复设成同一个值不会重复申请', async () => {
+  it('已经拿着锁时重复调不会再申请一把', async () => {
     setKeepAwake(true);
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     setKeepAwake(true);
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it('申请还在路上就离开了练习界面 —— 回来的那把锁要立刻还掉，不能留着', async () => {
+  it('第一次申请失败之后还要有第二次机会 —— 否则那台设备上它永远是坏的', async () => {
+    request.mockRejectedValueOnce(new Error('NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    // **必须等那次失败真的落地**（`requesting` 在 finally 里才复位）。
+    // 少了这一步，重试会撞上还没复位的 `requesting` 而被挡掉，
+    // 于是这条用例时绿时红 —— 而会随机变绿的门禁比没有门禁更糟。
+    await new Promise((r) => setTimeout(r, 0));
+
+    // 再调一次（真实世界里来自 visibilitychange 那条路）。
+    setKeepAwake(false);
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(requests).toHaveLength(1);
+  });
+
+  it('申请还在路上应用就关了 —— 回来的那把锁要立刻还掉，不能留着', async () => {
     setKeepAwake(true);
     setKeepAwake(false);
     await vi.waitFor(() => expect(requests).toHaveLength(1));
@@ -107,7 +124,7 @@ describe('回到前台要把锁要回来', () => {
     stop();
   });
 
-  it('回到前台但已经不在练习界面上了 —— 不申请', async () => {
+  it('回到前台但应用已经卸载了 —— 不申请', async () => {
     const stop = attachWakeLockListener();
     setKeepAwake(true);
     await vi.waitFor(() => expect(requests).toHaveLength(1));
@@ -137,5 +154,44 @@ describe('这台设备不支持的时候', () => {
     Reflect.deleteProperty(navigator, 'wakeLock');
     expect(wakeLockSupported()).toBe(false);
     expect(() => setKeepAwake(true)).not.toThrow();
+  });
+});
+
+describe('wakeLockState', () => {
+  it('各字段分别对应一种成因、一个不同的下一步', async () => {
+    expect(wakeLockState()).toMatchObject({ supported: true, wanted: false, held: false, lastResult: null });
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().held).toBe(true));
+    expect(wakeLockState()).toMatchObject({ supported: true, wanted: true, held: true, lastResult: 'ok' });
+  });
+
+  it('申请被拒时是 wanted 而不 held —— 这一档要和「不支持」分得开', async () => {
+    request.mockRejectedValue(new Error('NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('rejected'));
+    expect(wakeLockState()).toMatchObject({ supported: true, wanted: true, held: false });
+  });
+
+  it('这台设备没有这个 API 时 supported 是 false', () => {
+    Reflect.deleteProperty(navigator, 'wakeLock');
+    expect(wakeLockState().supported).toBe(false);
+  });
+
+  // 这一条守的是诊断行**唯一**的用法：人只能站在设置页读它，而那时锁早还回去了。
+  // 只报「此刻有没有拿着」的话，那一行永远写「现在不需要」，等于什么都没说。
+  it('锁还回去之后仍然说得出上一次申请的结果 —— 诊断行就靠这一条才有用', async () => {
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().held).toBe(true));
+    setKeepAwake(false); // 切后台 / 卸载
+    const state = wakeLockState();
+    expect(state.held).toBe(false);
+    expect(state.wanted).toBe(false);
+    expect(state.lastResult).toBe('ok');
+    expect(state.lastAgoMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('一次都还没申请过时 lastResult 是 null，不能报成「被拒」', () => {
+    expect(wakeLockState().lastResult).toBeNull();
+    expect(wakeLockState().lastAgoMs).toBe(0);
   });
 });
