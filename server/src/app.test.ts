@@ -30,6 +30,9 @@ const config: Config = {
     maxQueued: 2,
     resultTtlMs: 60_000,
   },
+  ai: {
+    model: 'claude-haiku-4-5-20251001',
+  },
 };
 
 /** 假校验器：token 就是邮箱本身，前缀 bad- 表示一张伪造的票。 */

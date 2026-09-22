@@ -18,14 +18,20 @@
 ## 验证
 
 ```
-npm run typecheck
-npm run test:run          # 前端 949 个
-npm --prefix server test  # 同步后端 120 个（根目录的 test:run 明确排掉了 server/）
-npm run build             # 动了资源/构建配置时必跑：类型过了不等于构建过了
-npm run test:e2e          # Playwright 42 个，自己 vite build + preview，约 1 分钟
+npm run typecheck              # 只查根 tsconfig 这一份 project references —— 不包含 server/
+npm run test:run               # 前端单测
+npm --prefix server run typecheck  # 同步后端自己的 tsc，根目录那条 typecheck 查不到这里
+npm --prefix server test       # 同步后端单测
+npm run build                  # 动了资源/构建配置时必跑：类型过了不等于构建过了
+npm run test:e2e               # Playwright，自己 vite build + preview，约 1 分钟
 ```
 
-四条都是 CI 门禁（`ci.yml` 三个 job），任一红就不该推 —— push `main` 就是上线。
+五条都是 CI 门禁（`ci.yml` 三个 job：前端 typecheck+test+build 一起、`server` 单独 typecheck+test、`e2e`
+单独一个 job），任一红就不该推 —— push `main` 就是上线。**根目录的 `npm run typecheck` 和
+`server` 那份 `tsc` 是两套完全独立的 project——server 改了 `Config` 之类的公共类型，
+根目录 typecheck 过了不代表 server 也过了**（变更 48 在这里真的红过一次：CI 上
+`sync backend` job 报 `Property 'ai' is missing`，而本地只跑了 `npm --prefix server test`
+没跑它自己的 `typecheck`，vitest 不做完整类型检查，两个手写 `Config` 字面量的测试文件漏检）。
 
 **动了界面、路由、导入/备份/复习任一条路径，`test:e2e` 必跑。** 它守的是前三条守不住的
 那一类：类型过了、单测过了、构建也过了，但打开是白屏 —— 单测跑在 jsdom 里，那里没有真实的

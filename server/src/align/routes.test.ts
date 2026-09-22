@@ -38,6 +38,9 @@ const config: Config = {
     maxQueued: 2,
     resultTtlMs: 60_000,
   },
+  ai: {
+    model: 'claude-haiku-4-5-20251001',
+  },
 };
 
 const verifyGoogleIdToken: GoogleVerifier = async (idToken) => ({
