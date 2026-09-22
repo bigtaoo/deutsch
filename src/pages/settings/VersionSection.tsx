@@ -43,23 +43,45 @@ export function VersionSection() {
         <Hint>
           网页版 —— 有新版时会自己更新，不用做任何事（关掉标签页再打开就是最新的）。
         </Hint>
-      ) : build ? (
-        <>
-          <Hint>
-            应用壳 {build.native} —— 换它要过 App Store。
-            <br />
-            前端 {build.bundle === 'builtin' ? `${build.native}（随包那份）` : build.bundle}
-            {' '}—— 这一份会自己更新。
-          </Hint>
-          {pending && <Note tone="accent">新版 {pending} 已下好，下次打开这个应用时生效。</Note>}
-        </>
       ) : build === undefined ? (
         <Hint>正在问原生侧版本号…</Hint>
+      ) : build === null ? (
+        <Hint>这个壳不带热更（只有 iOS 壳有），换前端要重新装包。</Hint>
       ) : (
-        // 问不出来也要说话。以前这里是「整块消失」，而那让人以为功能没做。
-        <Hint tone="warn">
-          版本号问不出来（原生侧没回应）。热更本身照常工作，只是这一行说不出你现在跑的是哪一份。
-        </Hint>
+        <>
+          {/* 两个数各问各的，所以可能只有一个问得出来 —— 那也比两个都不说强。 */}
+          <Hint>
+            应用壳 {build.native ?? '问不出来'} —— 换它要过 App Store。
+            <br />
+            前端{' '}
+            {build.bundle === undefined
+              ? '问不出来'
+              : build.bundle === 'builtin'
+                ? `${build.native ?? '壳'}（随包那份）`
+                : build.bundle}
+            {' '}—— 这一份会自己更新。
+          </Hint>
+          {/* 桥哑掉是**热更可能停摆**的信号，不是一句「只是显示不出来」就能带过的。
+              2026-09-22 真机上正是这样：同一个桥把更新器也挂住了，手机连着五次冷启动
+              纹丝不动，而修复本身是 JS、只能靠热更下发 —— 死锁只能发新包解开。
+              现在更新器不再被它否决（decideUpdate 里「未知不许否决更新」），但这一行
+              仍要把话说清楚：这台设备的桥有问题，连着几次不换版本就该发包了。 */}
+          {(build.native === undefined || build.bundle === undefined) && (
+            <Hint tone="warn">
+              有版本号问不出来 —— 原生桥没回话。热更会绕开它照常更新，但要是连着几次打开
+              都不换版本，就是这台设备的桥彻底哑了，只能发一个新包解开。
+            </Hint>
+          )}
+          {/* 「下好了等生效」优先报这次会话里刚下的那个；没有就报上次留下的记号
+              （它存在 localStorage，不过桥，所以桥哑了它还在）。 */}
+          {pending ? (
+            <Note tone="accent">新版 {pending} 已下好，下次打开这个应用时生效。</Note>
+          ) : build.queued && !(build.bundle ?? '').endsWith(build.queued) ? (
+            <Note tone="accent">
+              新版 {build.queued} 已下好（上次打开时下的），下次打开这个应用时生效。
+            </Note>
+          ) : null}
+        </>
       )}
       {/* **无论平台、无论版本号问没问出来都画。** 它正是用来回答「这台设备上到底
           发生了什么」的，而一个会在出问题时自己消失的诊断等于没有。 */}

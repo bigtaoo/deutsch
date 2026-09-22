@@ -64,6 +64,19 @@ export type UpdateDecision =
   | { action: 'skip'; reason: string }
   | { action: 'download'; version: string; url: string };
 
+/**
+ * 判断更新时手上**问得出来**的那些数。三个都可能缺 —— 前两个来自原生桥，而桥问不出话
+ * 正是 2026-09-22 那次「手机永远停在变更 46」的成因（见 checkNativeUpdate）。
+ */
+export interface UpdateContext {
+  /** 当前跑着的 bundle version（内置是 `'builtin'`）；`undefined` = 过桥问不出来。 */
+  currentVersion?: string;
+  /** 原生壳版本（App.getInfo().version）；`undefined` = 过桥问不出来。 */
+  nativeVersion?: string;
+  /** 上次下好并登记为「下次启动用」的 buildId。**不过桥**（localStorage），所以桥死了它还在。 */
+  queuedBuildId?: string;
+}
+
 /** `0.3.0` → [0,3,0]。非法输入回 [0,0,0]，让它在比较里输给一切。 */
 function parseVersion(v: string): [number, number, number] {
   const m = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(v.trim());
@@ -94,29 +107,39 @@ export function versionAtLeast(a: string, b: string): boolean {
  * 相等判断没有这个问题：manifest 换了就跟着换，方向无所谓。
  *
  * ── minNative 那道门槛为什么不能省 ──
- * 热更只换 JS，换不了原生代码（align-native 那个 Swift ONNX 插件、AppDelegate 的音频
- * 会话、Capacitor 插件本身）。一旦哪次前端改动开始调用新加的原生方法，推给旧壳就是
- * 「点了没反应」或直接崩 —— 而崩了至少还有 notifyAppReady 的回滚兜着，没反应连兜底都没有。
- * 所以每个包自报它要求的最低壳版本，够不着就不下。
+ * 热更只换 JS，换不了原生代码（AppDelegate 的音频会话、Capacitor 插件本身）。一旦哪次
+ * 前端改动开始调用新加的原生方法，推给旧壳就是「点了没反应」或直接崩 —— 而崩了至少还有
+ * notifyAppReady 的回滚兜着，没反应连兜底都没有。所以每个包自报它要求的最低壳版本。
+ *
+ * ── 问不出来的数**不许否决更新**（2026-09-22 修）──
+ * 这三个数里有两个来自原生桥，而桥问不出话是真实发生过的（见 checkNativeUpdate 的注释）。
+ * 原来的写法把「问不出来」和「不满足」混成一谈，于是桥一哑，更新器就永远拒绝更新 ——
+ * 而这个故障**只能靠发一个新 IPA 才能解开**，因为修复本身也是 JS。两种坏法的代价不对等：
+ *   · 门槛判错（放过一个其实不该下的包）= 「点了没反应」，而且下一版就能修回来；
+ *   · 门槛卡死（永远不下）= 这台设备彻底脱离热更，非过 App Store 不可。
+ * 所以未知一律按「不阻拦」处理，只有**确实问出来了且确实不够**才拦。
  */
-export function decideUpdate(
-  manifest: OtaManifest,
-  currentVersion: string,
-  nativeVersion: string,
-): UpdateDecision {
+export function decideUpdate(manifest: OtaManifest, ctx: UpdateContext): UpdateDecision {
   if (!manifest.buildId || !manifest.url) {
     return { action: 'skip', reason: 'manifest 缺 buildId 或 url' };
   }
-  if (!versionAtLeast(nativeVersion, manifest.minNative)) {
+  if (ctx.nativeVersion !== undefined && !versionAtLeast(ctx.nativeVersion, manifest.minNative)) {
     return {
       action: 'skip',
-      reason: `这个包要求原生壳 ≥ ${manifest.minNative}，当前 ${nativeVersion} —— 要去 TestFlight 装新壳`,
+      reason: `这个包要求原生壳 ≥ ${manifest.minNative}，当前 ${ctx.nativeVersion} —— 要去 TestFlight 装新壳`,
     };
   }
   // 内置 bundle 的 version 是 'builtin'，永远不等于 manifest.version，所以第一次
   // 启动就会下。这是对的：IPA 出包那一刻之后 main 上的改动全都在这个包里。
-  if (currentVersion === manifest.version) {
-    return { action: 'skip', reason: '已经是最新' };
+  if (ctx.currentVersion !== undefined) {
+    if (ctx.currentVersion === manifest.version) {
+      return { action: 'skip', reason: '已经是最新' };
+    }
+  } else if (ctx.queuedBuildId === manifest.buildId) {
+    // 跑着的是哪一版问不出来，但这一版我们自己下过、也登记过了。再下一遍只是把同一个
+    // 10MB 重下一次（而且多半是流量），等下次冷启动生效就好。**这条路只在桥哑掉时走** ——
+    // 桥好的时候 currentVersion 会直接告诉我们答案。
+    return { action: 'skip', reason: '这一版已经下好，等下次冷启动生效' };
   }
   return { action: 'download', version: manifest.version, url: manifest.url };
 }
@@ -125,6 +148,61 @@ export function decideUpdate(
 async function updater() {
   const { CapacitorUpdater } = await import('@capgo/capacitor-updater');
   return CapacitorUpdater;
+}
+
+/** 过桥问一个数最多等多久。要么给出答案，要么给出「问不出来」，不能两者都不给。 */
+const BRIDGE_TIMEOUT_MS = 4000;
+
+/**
+ * 过桥问一个数，**问不出来就是 `undefined`，绝不把调用方挂住**。
+ *
+ * 桥调用失败的方式不只是 reject —— 插件没注册、原生侧不回调，那个 Promise 就永远不
+ * settle。两种失败在这里合并成同一个 `undefined`，因为调用方能做的事一样：这个数没有，
+ * 照常往下走。**每个数各问各的**，不要拿 `Promise.all` 把它们绑在一起 —— 那样一个挂住
+ * 的调用会把另一个本来问得出来的也一起拖死。
+ */
+async function askBridge<T>(make: () => Promise<T>): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      // catch 挂在这里而不是外面：超时之后它才 reject 的话，外面的 try 早就走完了，
+      // 那个 rejection 会变成没人接的 unhandledrejection。
+      make().catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), BRIDGE_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    // make() 自己同步抛（比如插件根本没装，import 之后取不到方法）。
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 上次下好、已经 `next()` 登记为「下次启动用」的 buildId。
+ *
+ * 存 localStorage 而不是问插件：**它不过桥**，而这条路存在的全部意义就是在桥哑掉的时候
+ * 还能回答「这一版是不是已经下过了」。存不下（隐私模式、被清）只是少一层「别重下」的
+ * 保护，不影响更新本身，所以读写都吞掉异常。
+ */
+const QUEUED_BUILD_KEY = 'ota.queuedBuildId';
+
+function readQueuedBuildId(): string | undefined {
+  try {
+    return localStorage.getItem(QUEUED_BUILD_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberQueuedBuildId(buildId: string): void {
+  try {
+    localStorage.setItem(QUEUED_BUILD_KEY, buildId);
+  } catch {
+    // 见上。
+  }
 }
 
 /**
@@ -147,12 +225,26 @@ export async function notifyNativeAppReady(): Promise<void> {
  *
  * 失败一律吞掉：热更拿不到新版是**退化不是故障**，手上这份照样能用，而弹一个
  * 「更新失败」除了打断练习什么也做不了。真要查就去设置页看当前 bundle（§12.12）。
+ *
+ * ── 这里踩过的那个坑：更新器自己挂在原生桥上（2026-09-22）──
+ * 原来这两行是
+ *     `const [current, info] = await Promise.all([CapacitorUpdater.current(), App.getInfo()]);`
+ * —— **没有超时**。而同一天早些时候（600fdb5）已经在真机上查实：这两个调用在 iPhone 上
+ * 永远不 settle，设置页的「版本」块因此从 0.4.0 起一次都没出现过。那次只给
+ * `runningBuild()`（显示用的那条路）加了超时，**漏了这里** —— 而这里才是真正干活的。
+ *
+ * 后果比整块消失严重得多：manifest 拉到了，然后卡死在这一行，走不到 `download()`。
+ * 不报错、不留日志、重启多少次都一样，手机就此**永久脱离热更**。用户 2026-09-22 装上
+ * ios-v0.6.0（内置 bundle = 变更 46）之后就是这样：连着五次冷启动纹丝不动，而修复本身
+ * 又是 JS、只能靠热更下发 —— 死锁只能靠再发一次 TestFlight 解开。
+ *
+ * 所以现在：每个数各问各的、各自超时，问不出来就当「未知」继续往下走（decideUpdate 里
+ * 那段「未知不许否决更新」）。**更新器宁可多下一次包，也不能有一条会把自己锁死的路。**
  */
 export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
   if ((await nativePlatform()) !== 'ios') return null;
   try {
     const CapacitorUpdater = await updater();
-    const { App } = await import('@capacitor/app');
 
     // cache: 'no-store' —— WKWebView 会缓存这个 JSON，缓存住了就等于热更停摆，
     // 而症状是「部署了但手机不更新」，和没接热更一模一样。
@@ -160,8 +252,16 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
     if (!res.ok) return { action: 'skip', reason: `manifest ${res.status}` };
     const manifest = (await res.json()) as OtaManifest;
 
-    const [current, info] = await Promise.all([CapacitorUpdater.current(), App.getInfo()]);
-    const decision = decideUpdate(manifest, current.bundle.version ?? BUILTIN, info.version);
+    const [current, info] = await Promise.all([
+      askBridge(() => CapacitorUpdater.current()),
+      askBridge(async () => (await import('@capacitor/app')).App.getInfo()),
+    ]);
+
+    const decision = decideUpdate(manifest, {
+      currentVersion: current ? (current.bundle.version ?? BUILTIN) : undefined,
+      nativeVersion: info?.version,
+      queuedBuildId: readQueuedBuildId(),
+    });
     if (decision.action === 'skip') return decision;
 
     const bundle = await CapacitorUpdater.download({
@@ -170,6 +270,8 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
     });
     // next 而不是 set：只登记，不重载。见文件顶部「更新时机」。
     await CapacitorUpdater.next({ id: bundle.id });
+    // 先落地再记内存：下次启动桥要是又哑了，就靠这一条判断「这一版不用重下」。
+    rememberQueuedBuildId(manifest.buildId);
     pending = decision.version;
     return decision;
   } catch {
@@ -186,42 +288,31 @@ export function pendingUpdateVersion(): string | null {
 }
 
 export interface RunningBuild {
-  /** 原生壳版本（IPA 的 MARKETING_VERSION）。换它必须过 App Store。 */
-  native: string;
-  /** 现在真正跑着的那份前端。内置是 `'builtin'`。 */
-  bundle: string;
+  /** 原生壳版本（IPA 的 MARKETING_VERSION）。换它必须过 App Store。`undefined` = 问不出来。 */
+  native?: string;
+  /** 现在真正跑着的那份前端，内置是 `'builtin'`。`undefined` = 问不出来。 */
+  bundle?: string;
+  /** 上次下好、等着下次冷启动生效的 buildId。**不过桥**，所以上面两个问不出来时它还在。 */
+  queued?: string;
 }
 
 /**
  * 现在跑的是哪一版。浏览器里回 null —— 那边「哪一版」没有意义，
  * Service Worker 保证你看到的就是最新的（§7.6）。
+ *
+ * **在原生壳上永远回一个对象，哪怕三个字段全是 undefined。** 「问不出来」本身就是这一块
+ * 最该说出口的答案（2026-09-22：原来两个数绑在一个 `Promise.all` 上，一个挂住就整块没有，
+ * 于是「版本」块在 iPhone 上一次都没出现过）。现在两个数各问各的，一个哑了另一个照样报。
  */
 export async function runningBuild(): Promise<RunningBuild | null> {
   if ((await nativePlatform()) !== 'ios') return null;
-  try {
-    const CapacitorUpdater = await updater();
-    const { App } = await import('@capacitor/app');
-    // **必须有超时。** 这两个都是过原生桥的调用，而桥调用失败的方式不只是 reject ——
-    // 插件没注册、原生侧没回调，这个 Promise 就**永远不 settle**。调用方（设置页的
-    // 「版本」块）等的是一个会到的答案，等不到就一直停在「还没问出来」那一档。
-    // 2026-09-22 真机上就是这样：整块「版本」在 iPhone 上一次都没出现过，
-    // 而它从 0.4.0 起就在那儿了 —— 没有超时，这种坏法连一行日志都不留。
-    const [current, info] = await withTimeout(
-      Promise.all([CapacitorUpdater.current(), App.getInfo()]),
-      BRIDGE_TIMEOUT_MS,
-    );
-    return { native: info.version, bundle: current.bundle.version ?? BUILTIN };
-  } catch {
-    return null;
-  }
-}
-
-/** 过桥问一个数最多等多久。设置页那一块要在这个时间内给出一个答案，哪怕是「问不出来」。 */
-const BRIDGE_TIMEOUT_MS = 4000;
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('原生桥超时')), ms)),
+  const [current, info] = await Promise.all([
+    askBridge(async () => (await updater()).current()),
+    askBridge(async () => (await import('@capacitor/app')).App.getInfo()),
   ]);
+  return {
+    native: info?.version,
+    bundle: current ? (current.bundle.version ?? BUILTIN) : undefined,
+    queued: readQueuedBuildId(),
+  };
 }

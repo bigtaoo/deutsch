@@ -87,9 +87,27 @@ describe('VersionSection', () => {
   });
 
   it('版本号问不出来时如实说一句，而不是整块消失', async () => {
-    mockRunning.mockResolvedValue(null); // 原生壳上拿到 null = 问不出来
+    // 原生壳上永远回一个对象；字段为 undefined = 那个数没问出来（2026-09-22 起的契约）。
+    mockRunning.mockResolvedValue({ native: undefined, bundle: undefined });
     render(<VersionSection />);
-    await waitFor(() => expect(screen.getByText(/版本号问不出来/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/原生桥没回话/)).toBeInTheDocument());
+    expect(screen.getAllByText(/问不出来/).length).toBeGreaterThan(0);
+  });
+
+  it('一个问得出来一个问不出来时，把问得出来的那个照常报', async () => {
+    // 两个数各问各的（以前绑在一个 Promise.all 上，一个挂住就两个都没有）。
+    mockRunning.mockResolvedValue({ native: '0.6.0', bundle: undefined });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/应用壳 0\.6\.0/)).toBeInTheDocument());
+    expect(screen.getByText(/原生桥没回话/)).toBeInTheDocument();
+  });
+
+  it('桥哑着也要报「上次下好的那一版」—— 那个记号不过桥', async () => {
+    // 桥问不出任何东西的时候，这一行是唯一能证明「更新器还活着」的东西。
+    mockRunning.mockResolvedValue({ native: undefined, bundle: undefined, queued: 'e209c83' });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/e209c83/)).toBeInTheDocument());
+    expect(screen.getByText(/下次打开/)).toBeInTheDocument();
   });
 
   it('诊断块无论哪条分支都在 —— 会在出问题时消失的诊断等于没有', async () => {
