@@ -21,6 +21,7 @@ import { lookupOnlineEntry, toDictEntry, type OnlineEntry } from '@/dict/online'
 import { buildLookupResult, type LookupResult, type LookupSense } from '@/dict/view';
 import { ensureWordAudio, speak, type WordAudioSource } from '@/dict/audio';
 import { audioPlayer } from '@/audio/player';
+import { aiAvailable, explainWithAi } from '@/ai/explain';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -55,6 +56,14 @@ const ARTICLES = { m: 'der', f: 'die', n: 'das' } as const;
 
 type Pending<T> = T | 'loading';
 
+/**
+ * FR-9.11 的 AI 兜底状态。**不能用 `string | 'unavailable'`** —— `'unavailable'`
+ * 本身就是一个字符串，`typeof x === 'string'` 分不出它是哨兵值还是 AI 真的给的解释，
+ * 一次 `add()` 就会把字面量 `"unavailable"` 当成解释存进 `note`（2026-09-22 修，
+ * e2e 抓到的）。成功的那一支包一层对象，就没有这个歧义了。
+ */
+type AiFallback = 'loading' | 'unavailable' | { note: string };
+
 export function DictLookup() {
   const { settings } = useSettingsStore();
   const { entries, findDuplicates, createFromLookup } = useVocabStore();
@@ -67,6 +76,13 @@ export function DictLookup() {
   const [sound, setSound] = useState<Pending<WordAudioSource> | null>(null);
   const [dupes, setDupes] = useState<VocabEntry[]>([]);
   const [added, setAdded] = useState<VocabEntry | null>(null);
+  /**
+   * FR-9.11：两个词典都查不到时，就地问一次 AI（2026-09-22 起服务器实时调用，
+   * 取代之前「先原样收下、再去生词本页凑一批复制走」那条路）。
+   * `null` = 还不到问的时候（可能查到了，不需要）；'unavailable' 盖住「没登录」
+   * 「服务器没配 key」「上游失败」这几种原因 —— 用户能做的事一样，都是过会儿再试。
+   */
+  const [aiFallback, setAiFallback] = useState<AiFallback | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   /** 只认最后一次提交的结果：连着查两个词时，先回来的那个不该覆盖后查的。 */
   const token = useRef(0);
@@ -81,6 +97,7 @@ export function DictLookup() {
     setSound(null);
     setDupes([]);
     setAdded(null);
+    setAiFallback(null);
 
     void (async () => {
       const hit = await lookupDict(word).catch(() => null);
@@ -123,6 +140,30 @@ export function DictLookup() {
     // entries 变了也要重算：刚加进去的那一条应该立刻算重复。
   }, [result?.head, findDuplicates, entries]);
 
+  // FR-9.11：内置词典和 de.wiktionary 都尘埃落定地没有这个词时，就地问一次 AI。
+  // 「尘埃落定」= 本地已经查完（!busy）且在线不再是 'loading' —— 在线还没回来的时候
+  // 不能提前判「查不到」，那时 result 是 null 只是因为还没等到在线那一份。
+  useEffect(() => {
+    if (busy || !query || result || online === 'loading') return;
+    let cancelled = false;
+    setAiFallback('loading');
+    void (async () => {
+      if (!(await aiAvailable())) {
+        if (!cancelled) setAiFallback('unavailable');
+        return;
+      }
+      try {
+        const note = await explainWithAi({ word: query });
+        if (!cancelled) setAiFallback({ note });
+      } catch {
+        if (!cancelled) setAiFallback('unavailable');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [busy, query, result, online]);
+
   /**
    * 念一遍。走全局单例 `<audio>`（键前缀 `word:`）而不是 new Audio()：
    * §3.2 记着 iOS 只让「用户手势链」上的元素开始播放。
@@ -151,7 +192,9 @@ export function DictLookup() {
   const add = async (word: string) => {
     const dict = localHit?.entry ?? (onlineHit ? toDictEntry(onlineHit) : null);
     // FR-21.6：例句一并收下 —— 在线那一趟已经拿到了，开读卡时它多半不在了
-    const entry = await createFromLookup({ surface: word, dict, examples: result?.examples });
+    // FR-9.11：AI 刚给的解释也一并收下 —— 不这样的话用户还要再去生词本页点一次「问 AI」。
+    const note = aiFallback && typeof aiFallback === 'object' ? aiFallback.note : undefined;
+    const entry = await createFromLookup({ surface: word, dict, examples: result?.examples, note });
     setAdded(entry);
     // 不可重建的数据不过夜（FR-11.6）。失败也不用管：进队列，由状态芯片报出来。
     void syncVocabNow();
@@ -212,6 +255,7 @@ export function DictLookup() {
         <NotFound
           query={query}
           onlineState={online}
+          aiFallback={aiFallback}
           onAdd={() => void add(query)}
           added={added}
           dupes={dupes}
@@ -388,6 +432,7 @@ function SenseBlock({ sense, head }: { sense: LookupSense; head: string }) {
 function NotFound({
   query,
   onlineState,
+  aiFallback,
   onAdd,
   added,
   dupes,
@@ -395,6 +440,7 @@ function NotFound({
 }: {
   query: string;
   onlineState: Pending<OnlineEntry | null> | 'off';
+  aiFallback: AiFallback | null;
   onAdd: () => void;
   added: VocabEntry | null;
   dupes: VocabEntry[];
@@ -417,6 +463,18 @@ function NotFound({
               ? '内置词典里没有，而现在看起来没有网络 —— 联网之后再试一次。'
               : '内置词典和 de.wiktionary 都没有。多词搭配和很生僻的复合词常常是这样。'}
       </Hint>
+
+      {/* FR-9.11：两个词典都没有的时候，就地问一次 AI —— 不用再去生词本页点第二次。 */}
+      {aiFallback === 'loading' && <Note tone="accent">正在问 AI…</Note>}
+      {aiFallback === 'unavailable' && (
+        <Hint tone="warn">
+          AI 服务暂时不可用。先把词收下，去生词本页那一行可以随时重新点「问 AI」。
+        </Hint>
+      )}
+      {aiFallback && typeof aiFallback === 'object' && (
+        <div className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">{aiFallback.note}</div>
+      )}
+
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <a
           className="text-ui underline"
@@ -427,7 +485,7 @@ function NotFound({
           在维基词典里搜
         </a>
       </div>
-      <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={query} noDict />
+      <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={query} noDict aiFallback={aiFallback} />
     </Card>
   );
 }
@@ -440,6 +498,7 @@ function AddRow({
   lessons,
   word,
   noDict = false,
+  aiFallback = null,
 }: {
   onAdd: () => void;
   added: VocabEntry | null;
@@ -447,15 +506,19 @@ function AddRow({
   lessons: Array<{ id: string; title: string }>;
   word: string;
   noDict?: boolean;
+  aiFallback?: AiFallback | null;
 }) {
   if (added) {
     return (
       <Note tone="ok">
         <b>{added.surface}</b> 已加进生词本，作为新卡进入复习队列（声音是孤立词发音）。
         {/* FR-9.11：查不到的词收下来就是一张空卡，而「下面自己填」在手机上等于不填。
-            它已经自动进了页底那块待办（`!meaning`），这里只是把话说出来 ——
-            一个自己发生的事不说出来，下次打开时它就是一个来路不明的数字。 */}
-        {noDict && ' 两个词典都没有它，所以它已经排进页底的「问 AI 补解释」。'}
+            AI 给出结果的话已经跟着这次创建一起收下了；没给出结果就把话说清楚，
+            而不是让这张空卡看起来像一个来路不明的数字。 */}
+        {noDict &&
+          (aiFallback && typeof aiFallback === 'object'
+            ? ' AI 刚给的解释已经跟着这张卡一起存了下来。'
+            : ' AI 解释暂时没要到，释义先空着 —— 去生词本页那一行随时可以点「问 AI」重试。')}
       </Note>
     );
   }

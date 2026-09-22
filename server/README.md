@@ -1,16 +1,19 @@
 # deutsch-sync
 
-德语精听训练器的后端：**同步**（本职）+ **对齐**（2026-09-03 搭上来的第二个用途）。
+德语精听训练器的后端：**同步**（本职）+ **对齐**（2026-09-03 搭上来的第二个用途）+
+**AI 补充解释**（2026-09-22 搭上来的第三个用途，变更 48）。
 **部署步骤在 [`../deploy/README.md`](../deploy/README.md)**，这里只说它是什么。
 
 一个进程 + 一个 SQLite 文件。没有 ORM、没有迁移框架、没有构建步骤：
 Node 26 直接跑 `.ts`（内建类型擦除），存储用 Node 自带的 `node:sqlite`。
 依赖只有三个：`hono`（路由 + CORS）、`@hono/node-server`、`jose`（验 Google 的签名、签自己的令牌），
-加一个 **optional** 的 `onnxruntime-node`（只有对齐要它）。
+加一个 **optional** 的 `onnxruntime-node`（只有对齐要它）；AI 补充解释直接用全局 `fetch` 调
+Anthropic API，不加依赖。
 
-**两个用途的关系是单向的**：对齐可以整块不存在（`ALIGN_ENABLED=false`，或者
-`onnxruntime-node` 在这个平台上装不上），那时对齐的路由回 503 而同步一切照常。
-反过来不成立 —— 对齐要用同一套 Google 登录和白名单。
+**三个用途的关系都是单向的**：对齐和 AI 补充解释都可以整块不存在
+（分别是 `ALIGN_ENABLED=false` / `onnxruntime-node` 装不上，与没配
+`ANTHROPIC_API_KEY`），那时各自的路由回 503 而同步一切照常。反过来不成立 ——
+两者都要用同一套 Google 登录和白名单。
 
 ## 它存什么
 
@@ -50,6 +53,7 @@ Node 26 直接跑 `.ts`（内建类型擦除），存储用 Node 自带的 `node
 | GET | `/v1/align/jobs/:id` | 任务状态 + 进度（`stage` / `chunk` / `chunks`） |
 | GET | `/v1/align/jobs/:id/result` | 取矩阵（二进制，见下）。还没算完 → **409 + 当前状态**；取走即删 |
 | DELETE | `/v1/align/jobs/:id` | 取消（正在跑的那个在下一个块边界停） |
+| POST | `/v1/ai/explain` | `{word, context?, existing?}` → `{note}`。没配 `ANTHROPIC_API_KEY` → 503 `code=ai_off` |
 
 409 把远端现值带回去，是为了让客户端**一次往返**就能跑完「合并 → 重推」——
 合并规则（SPEC §2.4）仍然在客户端，服务器不理解业务语义，只管版本号。
@@ -86,6 +90,14 @@ Node 26 直接跑 `.ts`（内建类型擦除），存储用 Node 自带的 `node
 排障工具：`node src/align/probe.ts <音频文件>` 在真机器上打出解码耗时、权重加载耗时、
 **每块耗时**和一份可对比的指纹。用法见 `../deploy/README.md` §4b。
 
+## AI 补充解释（FR-9.11/9.12，变更 48）
+
+转发一次 Anthropic Messages API 调用（`server/src/ai.ts`），模型默认
+`claude-haiku-4-5-20251001`——解释一个词或一句话不需要强推理能力，便宜模型够用。
+请求体只有用户自己敲的词/句，回复是模型生成的解释，不涉及任何第三方版权内容经手这台
+服务器（与 R-1 的关系见 `SPEC.md` §3.1.1）。失败一律 502 `code=ai_failed`，
+不透传上游响应体（可能带账单相关的细节）。
+
 ## 鉴权
 
 Google ID token（一小时）→ 验签 + `aud` + `email_verified` + 白名单 → 换一张自己签的
@@ -96,7 +108,7 @@ Google ID token（一小时）→ 验签 + `aud` + `email_verified` + 白名单 
 
 ```bash
 npm install
-npm test          # 52 个测试，内存库 + 假的 Google 校验器 + 假的对齐 engine，不碰网络、不碰模型
+npm test          # 133 个测试，内存库 + 假的 Google 校验器 + 假的对齐 engine + 假的 AI explainer，不碰网络、不碰模型
 npm run typecheck
 npm run dev       # 需要 .env（照 .env.example 填）
 ```

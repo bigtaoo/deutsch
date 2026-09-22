@@ -11,6 +11,7 @@ import { extensionOf, type Engine } from './align/engine.ts';
 import type { JobQueue } from './align/jobs.ts';
 import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
 import { serveWeights } from './align/weights.ts';
+import type { AiExplainer } from './ai.ts';
 
 /** 文档 id 直接进 URL 路径，字符集收紧到「课程 id 用得到的那些」。 */
 const DOC_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -35,6 +36,11 @@ export interface AppDeps {
    * 这台服务器仍然可以只当权重站 —— 桌面浏览器那条路要靠它才拿得到权重。
    */
   weightsDir?: string;
+  /**
+   * AI 补充解释（FR-9.11 / FR-9.12）。**同样可以整块缺席**：`ANTHROPIC_API_KEY`
+   * 没配时是 undefined，路由回 503，客户端退回「AI 服务暂时不可用」。
+   */
+  ai?: AiExplainer;
   /** 测试里可以拨快时钟。 */
   now?: () => number;
 }
@@ -295,6 +301,32 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     const cancelled = align.queue.cancel(c.get('userId'), c.req.param('id'));
     if (!cancelled) return c.json({ error: '没有这个对齐任务' }, 404);
     return c.json({ cancelled: true });
+  });
+
+  // ── AI 补充解释（FR-9.11 / FR-9.12）──────────────────────────────────
+  //
+  // 查词面板与生词本页的「问 AI」共用这一个接口：两者要的都是「给一个词/句一段
+  // 中文解释」，区别只在有没有 context / existing，交给调用方决定传不传。
+  app.post('/v1/ai/explain', async (c) => {
+    if (!deps.ai) {
+      return c.json({ error: '这台服务器没有开 AI 解释（缺 ANTHROPIC_API_KEY）', code: 'ai_off' }, 503);
+    }
+    const payload = await c.req.json().catch(() => null);
+    const word = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).word : undefined;
+    if (typeof word !== 'string' || !word.trim()) return c.json({ error: '缺少 word' }, 400);
+
+    const raw = payload as Record<string, unknown>;
+    const context = typeof raw.context === 'string' ? raw.context.trim().slice(0, 1000) : undefined;
+    const existing = typeof raw.existing === 'string' ? raw.existing.trim().slice(0, 500) : undefined;
+
+    try {
+      const note = await deps.ai.explain({ word: word.trim().slice(0, 200), context, existing });
+      return c.json({ note });
+    } catch (err) {
+      // 上游是网络问题还是账单问题，客户端不需要知道 —— 一律「暂时不可用」，
+      // 让用户过一会儿再试，而不是把一段可能带敏感信息的报错原样展示出去。
+      return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
+    }
   });
 
   // ── 历史版本（GitHub 方案里「git 历史可回滚」的替代物）────────────────

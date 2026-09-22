@@ -130,3 +130,20 @@ describe('开关', () => {
     expect(load({ ALIGN_IDLE_MS: '0' }).align.idleMs).toBe(0);
   });
 });
+
+describe('AI 补充解释', () => {
+  it('没配 ANTHROPIC_API_KEY 时是 undefined，不是空字符串 —— app.ts 拿它判断整块开不开', () => {
+    expect(load().ai.apiKey).toBeUndefined();
+    expect(load({ ANTHROPIC_API_KEY: '' }).ai.apiKey).toBeUndefined();
+  });
+
+  it('配了 key 就带着，模型名有默认值', () => {
+    const config = load({ ANTHROPIC_API_KEY: 'sk-test' });
+    expect(config.ai.apiKey).toBe('sk-test');
+    expect(config.ai.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('模型名可以换', () => {
+    expect(load({ ANTHROPIC_MODEL: 'claude-opus-5' }).ai.model).toBe('claude-opus-5');
+  });
+});

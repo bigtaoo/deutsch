@@ -97,6 +97,11 @@ interface VocabState {
      * 内置词典里没有例句）。
      */
     examples?: string[];
+    /**
+     * FR-9.11/9.12：两个词典都查不到时，查词面板已经就地问过一次 AI ——
+     * 有结果就跟着这次创建一起收下，不需要用户再去生词本页点一次「问 AI」。
+     */
+    note?: string;
   }) => Promise<VocabEntry>;
 
   /**
@@ -264,7 +269,7 @@ export const useVocabStore = create<VocabState>((set, get) => ({
     // Q3 记录了这个已知局限：V1 一个词条只挂一个 contextSentence。
   },
 
-  createFromLookup: async ({ surface, dict, examples }) => {
+  createFromLookup: async ({ surface, dict, examples, note }) => {
     const now = Date.now();
     // 词头用词典给的那一份：查 `Plattformen` 建出来的卡应该是 `Plattform`
     // —— 卡面要念这个词、卡背要显示 `die Plattform`，而变形没有性也没有复数。
@@ -276,6 +281,7 @@ export const useVocabStore = create<VocabState>((set, get) => ({
       lookup: true,
       // FR-21.6：cloze 题要用的句子。两条封顶 —— 这是标注层，会进备份也会同步。
       examples: examples?.length ? examples.slice(0, 2) : undefined,
+      note,
       // 与预置卡同理：这里的 false 是如实记账（没有来源句，所以没有时间戳），
       // 卡面靠 cardAudioStatus 走 'word-only' 那一档说明声音是孤立词发音。
       hasTimestamp: false,

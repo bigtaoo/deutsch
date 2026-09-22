@@ -257,6 +257,12 @@ ssh wnet-server 'cd ~/deutsch-sync && docker compose up -d --build'
 `ALIGN_MAX_AUDIO_BYTES`（40MB）、`ALIGN_MAX_SECONDS`（1800）、`ALIGN_MAX_QUEUED`（3）、
 `ALIGN_RESULT_TTL_MS`（30 分钟）。
 
+**AI 补充解释（FR-9.11/9.12，变更 48）同样整块可选**：`.env` 里加 `ANTHROPIC_API_KEY`
+（[console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) 建一个），
+`docker compose up -d` 重启生效；不加就整块关闭，生词本的「问 AI」与查词面板的自动兜底
+统一显示「AI 服务暂时不可用」。`ANTHROPIC_MODEL` 默认 `claude-haiku-4-5-20251001`，
+只解释一个词或一句话，便宜模型够用，一般不用改。
+
 ### 验收（对齐这一半）
 
 ```bash

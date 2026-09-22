@@ -52,6 +52,15 @@ export interface Config {
     /** 结果留多久 —— 「手机切走十分钟再回来取」这条路要靠它。 */
     resultTtlMs: number;
   };
+  /**
+   * AI 补充解释（FR-9.11 / FR-9.12）。**整块可选**：留空 `ANTHROPIC_API_KEY`
+   * 就是没配，路由回 503 说清原因，客户端退回「AI 服务暂时不可用」而不是报错崩溃。
+   */
+  ai: {
+    apiKey?: string;
+    /** 便宜模型足够 —— 只解释一个词或一句话，不需要强推理能力。 */
+    model: string;
+  };
 }
 
 function flag(raw: string | undefined, fallback: boolean): boolean {
@@ -102,6 +111,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxSeconds: Number(env.ALIGN_MAX_SECONDS ?? 1800),
       maxQueued: Number(env.ALIGN_MAX_QUEUED ?? 3),
       resultTtlMs: Number(env.ALIGN_RESULT_TTL_MS ?? 30 * 60_000),
+    },
+    ai: {
+      apiKey: env.ANTHROPIC_API_KEY || undefined,
+      model: env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5-20251001',
     },
   };
 }

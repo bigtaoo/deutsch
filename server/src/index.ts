@@ -8,6 +8,7 @@ import { createGoogleVerifier } from './googleToken.ts';
 import { createApp } from './app.ts';
 import { createEngine } from './align/engine.ts';
 import { createJobQueue } from './align/jobs.ts';
+import { createAiExplainer } from './ai.ts';
 
 const config = loadConfig();
 const store = new Store(join(config.dataDir, 'sync.sqlite'));
@@ -44,6 +45,7 @@ const app = createApp({
   // 权重站与对齐是分开的两件事：`ALIGN_ENABLED=false` 之后这台服务器仍然可以
   // 只当权重站 —— 桌面浏览器那条路要靠它才拿得到权重（见 align/weights.ts）。
   weightsDir: config.align.serveWeights ? config.align.modelDir : undefined,
+  ai: config.ai.apiKey ? createAiExplainer(config.ai.apiKey, config.ai.model) : undefined,
 });
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) => {
@@ -55,6 +57,7 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' 
         ? `开（${config.align.dtype}，${config.align.threads} 线程，权重在 ${config.align.modelDir}）`
         : '关'),
   );
+  console.log('[deutsch-sync] AI 补充解释：' + (config.ai.apiKey ? `开（${config.ai.model}）` : '关'));
 });
 
 function shutdown(signal: string): void {

@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createApp } from './app.ts';
 import { Store } from './db.ts';
 import { GoogleTokenError, type GoogleVerifier } from './googleToken.ts';
 import type { Config } from './config.ts';
 import { signSession } from './session.ts';
+import type { AiExplainer } from './ai.ts';
 
 const SECRET = new TextEncoder().encode('0123456789abcdef0123456789abcdef');
 
@@ -37,9 +38,9 @@ const verifyGoogleIdToken: GoogleVerifier = async (idToken) => {
   return { sub: 'sub-' + idToken, email: idToken, name: 'Tao', picture: null };
 };
 
-function setup() {
+function setup(overrides: { ai?: AiExplainer } = {}) {
   const store = new Store(':memory:');
-  const app = createApp({ store, config, verifyGoogleIdToken });
+  const app = createApp({ store, config, verifyGoogleIdToken, ai: overrides.ai });
   return { store, app };
 }
 
@@ -205,6 +206,56 @@ describe('文档读写', () => {
     const app2 = createApp({ store: ctx.store, config: otherConfig, verifyGoogleIdToken });
     const { token: token2 } = await login(app2, 'b@example.com');
     expect((await app2.request('/v1/docs/vocab', authed(token2))).status).toBe(404);
+  });
+});
+
+describe('AI 补充解释', () => {
+  it('没配 ANTHROPIC_API_KEY（deps.ai 缺席）→ 503 code=ai_off', async () => {
+    const { app } = setup();
+    const { token } = await login(app);
+    const res = await app.request('/v1/ai/explain', authed(token, { method: 'POST', body: JSON.stringify({ word: 'Zug' }) }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'ai_off' });
+  });
+
+  it('要登录 —— 和别的 /v1 接口同一道中间件', async () => {
+    const { app } = setup({ ai: { explain: async () => '解释' } });
+    const res = await app.request('/v1/ai/explain', { method: 'POST', body: JSON.stringify({ word: 'Zug' }) });
+    expect(res.status).toBe(401);
+  });
+
+  it('缺 word → 400，不去问模型', async () => {
+    const explain = vi.fn();
+    const { app } = setup({ ai: { explain } });
+    const { token } = await login(app);
+    const res = await app.request('/v1/ai/explain', authed(token, { method: 'POST', body: JSON.stringify({}) }));
+    expect(res.status).toBe(400);
+    expect(explain).not.toHaveBeenCalled();
+  });
+
+  it('word 原样传给 explainer，context/existing 有给就传、没给就是 undefined', async () => {
+    const explain = vi.fn().mockResolvedValue('这是解释');
+    const { app } = setup({ ai: { explain } });
+    const { token } = await login(app);
+
+    const res = await app.request(
+      '/v1/ai/explain',
+      authed(token, { method: 'POST', body: JSON.stringify({ word: ' Zug ', context: '原句', existing: '词典释义' }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ note: '这是解释' });
+    expect(explain).toHaveBeenCalledWith({ word: 'Zug', context: '原句', existing: '词典释义' });
+
+    await app.request('/v1/ai/explain', authed(token, { method: 'POST', body: JSON.stringify({ word: 'nur' }) }));
+    expect(explain).toHaveBeenLastCalledWith({ word: 'nur', context: undefined, existing: undefined });
+  });
+
+  it('上游调用失败 → 502 code=ai_failed，把 explainer 抛出的话原样带回去', async () => {
+    const { app } = setup({ ai: { explain: async () => { throw new Error('AI 接口返回 HTTP 429'); } } });
+    const { token } = await login(app);
+    const res = await app.request('/v1/ai/explain', authed(token, { method: 'POST', body: JSON.stringify({ word: 'Zug' }) }));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: 'ai_failed', error: 'AI 接口返回 HTTP 429' });
   });
 });
 

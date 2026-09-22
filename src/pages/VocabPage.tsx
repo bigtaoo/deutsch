@@ -15,8 +15,8 @@ import { Button, EmptyState, Hint, field } from '@/components/ui';
 import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
 import { ZhPanel } from './vocab/ZhPanel';
-import { AiNotesPanel } from './vocab/AiNotesPanel';
-import { toggleAskAi } from '@/srs/aiNotes';
+import { explainWithAi } from '@/ai/explain';
+import { syncVocabNow } from '@/sync/trigger';
 import type { VocabEntry } from '@/types/models';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重学中'] as const;
@@ -27,6 +27,10 @@ export function VocabPage() {
   const [lessonFilter, setLessonFilter] = useState('');
   const [stateFilter, setStateFilter] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
+  // FR-9.11/9.12：哪些词正在等 AI 回话、哪个词的上一次请求失败了。
+  // 不进 VocabEntry —— 这是这次点击的瞬时状态，不是要跨设备同步的数据。
+  const [aiPending, setAiPending] = useState<ReadonlySet<string>>(new Set());
+  const [aiErrors, setAiErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
   const filtered = useMemo(
     () =>
@@ -44,6 +48,41 @@ export function VocabPage() {
   );
 
   const missingGender = entries.filter(needsGender).length;
+
+  /**
+   * 问一次 AI（FR-9.11/9.12）。**没有标记这一步了** —— 之前 `askAi` 是「排进待办，
+   * 等着凑一批复制走」，而现在一次点击就是一次完整的请求，中间那个标记状态没有存在的意义。
+   *
+   * 结果直接写回 `note` 并覆盖旧值：再点一次就是「不满意上次的解释，重新问」，
+   * 这也是「即使查到的词也能问 AI」这条要求的落点——不需要区分「第一次问」和「重新问」。
+   */
+  const askAi = async (entry: VocabEntry) => {
+    setAiPending((s) => new Set(s).add(entry.id));
+    setAiErrors((m) => {
+      if (!m.has(entry.id)) return m;
+      const next = new Map(m);
+      next.delete(entry.id);
+      return next;
+    });
+    try {
+      const existing = [entry.meaning, entry.meaningZh].filter(Boolean).join('；') || undefined;
+      const note = await explainWithAi({
+        word: entry.lemma ?? entry.surface,
+        context: entry.contextSentence ?? entry.examples?.[0],
+        existing,
+      });
+      await updateEntry({ ...entry, note, updatedAt: Date.now() });
+      void syncVocabNow(); // 不可重建的数据不过夜（FR-11.6）
+    } catch (err) {
+      setAiErrors((m) => new Map(m).set(entry.id, err instanceof Error ? err.message : 'AI 服务暂时不可用'));
+    } finally {
+      setAiPending((s) => {
+        const next = new Set(s);
+        next.delete(entry.id);
+        return next;
+      });
+    }
+  };
 
   if (!loaded) return <EmptyState>加载中…</EmptyState>;
 
@@ -103,9 +142,9 @@ export function VocabPage() {
                   lessonTitle={lessons.find((l) => l.id === entry.lessonId)?.title}
                   onEdit={() => setEditing(entry.id)}
                   onToggleSuspend={() => void updateEntry({ ...entry, suspended: !entry.suspended })}
-                  // 切换规则（删字段而不是置 false）在 srs/aiNotes.ts 里，有测试 ——
-                  // 那条规则错了不报错，只是在某次跨设备合并里多覆盖一回。
-                  onToggleAskAi={() => void updateEntry(toggleAskAi(entry))}
+                  onAskAi={() => void askAi(entry)}
+                  aiPending={aiPending.has(entry.id)}
+                  aiError={aiErrors.get(entry.id)}
                   onDelete={() => {
                     if (confirm(`删除「${entry.surface}」？句子上的挖空会保留，但会指向一个不存在的词条。`)) {
                       void removeEntry(entry.id);
@@ -118,12 +157,10 @@ export function VocabPage() {
         </ul>
       )}
 
-      {/* FR-21.9 / FR-9.11：两块都是「复制走 → 在外面做 → 粘回来」，低频、
-          所以在页底而且是折叠的 —— 页顶留给查词（§12.11）。挨着放是故意的：
-          动线逐字相同，分开放会让人以为是两种不同的操作。 */}
+      {/* FR-21.9：中译仍然是「复制走 → 在外面翻 → 粘回来」（应用自己不翻译，
+          立场与 FR-9.12 相同），所以还在页底、折叠。AI 解释已经在 2026-09-22
+          改成每行一个「问 AI」按钮直接调用，不再需要单独一块待办面板。 */}
       <ZhPanel />
-
-      <AiNotesPanel />
     </div>
   );
 }
@@ -133,14 +170,18 @@ function Row({
   lessonTitle,
   onEdit,
   onToggleSuspend,
-  onToggleAskAi,
+  onAskAi,
+  aiPending,
+  aiError,
   onDelete,
 }: {
   entry: VocabEntry;
   lessonTitle: string | undefined;
   onEdit: () => void;
   onToggleSuspend: () => void;
-  onToggleAskAi: () => void;
+  onAskAi: () => void;
+  aiPending: boolean;
+  aiError: string | undefined;
   onDelete: () => void;
 }) {
   // 手机上竖排：横排时按钮会压在词条上面（§2.1 手机是复习工位，生词本也得能用）
@@ -172,7 +213,7 @@ function Row({
         <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义待填）</span>}</p>
         {/* FR-21.9：中译补齐之前这里多半是空的，所以没有就不占一行 */}
         {entry.meaningZh && <p className="text-ui text-muted">{entry.meaningZh}</p>}
-        {/* FR-9.12：AI 写回来的详细解释。可能有好几行，`whitespace-pre-line` 保住换行；
+        {/* FR-9.12：AI 给的详细解释。可能有好几行，`whitespace-pre-line` 保住换行；
             它是这一行里最长的东西，所以排在原句之前、缩在一条竖线后面，
             眼睛扫列表时能整块跳过去。 */}
         {entry.note && (
@@ -180,6 +221,7 @@ function Row({
             {entry.note}
           </p>
         )}
+        {aiError && <Hint tone="warn">{aiError}</Hint>}
         {entry.contextSentence && <p className="text-ui text-muted">{entry.contextSentence}</p>}
         <p className="text-note text-faint">
           {entry.preset ? (
@@ -210,10 +252,10 @@ function Row({
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">
         <Button onClick={onEdit}>编辑</Button>
-        {/* FR-9.11：标记「这个词的解释不够」。词典查不到的词不用点 ——
-            它们靠 `!meaning` 自动进待办，点了也只是同一件事说两遍。 */}
-        <Button variant={entry.askAi ? 'primary' : 'ghost'} onClick={onToggleAskAi}>
-          {entry.askAi ? '已标记 ✓' : '问 AI'}
+        {/* FR-9.11：不管词典有没有查到都能点 —— 查不到的本来就没有解释，
+            查到了但那几个字看不出区别的，点一次就是「重新问、覆盖旧的 note」。 */}
+        <Button disabled={aiPending} onClick={onAskAi}>
+          {aiPending ? '解释中…' : entry.note ? '重新问 AI' : '问 AI'}
         </Button>
         <Button onClick={onToggleSuspend}>{entry.suspended ? '恢复复习' : '暂停复习'}</Button>
         <Button variant="danger" onClick={onDelete}>删除</Button>
