@@ -79,6 +79,22 @@ export function aiRequest(ordered: readonly VocabEntry[]): string {
   return `${AI_PROMPT}\n\n${lines.join('\n')}\n`;
 }
 
+/**
+ * 切换「问 AI」标记。
+ *
+ * **取消标记要把字段删掉，不是置 `false`。** 留一个 `askAi: false` 在库里，
+ * 和「从来没标记过」在数据上长得不一样 —— 而 `VocabEntry` 是整条 last-write-wins
+ * 同步的（§2.4），凭空多出来的差异会让两台设备互相覆盖一次，换不来任何信息。
+ *
+ * 单独一个纯函数而不是写在 VocabPage 的 onClick 里：这条规则**错了不报错**，
+ * 只是在某次跨设备合并里多覆盖一回，而那种事没人会追到这一行上来。
+ */
+export function toggleAskAi(entry: VocabEntry): VocabEntry {
+  if (!entry.askAi) return { ...entry, askAi: true };
+  const { askAi: _marked, ...rest } = entry;
+  return rest;
+}
+
 export interface AiApplyResult {
   /** 只含真的变了的那些词条 —— 调用方拿它去落库，不必整表重写。 */
   updated: VocabEntry[];

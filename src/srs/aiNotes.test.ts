@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { AI_PROMPT, aiPreview, aiRequest, applyAiNotes, countMissingMeaning, pendingAi } from './aiNotes';
+import {
+  AI_PROMPT,
+  aiPreview,
+  aiRequest,
+  applyAiNotes,
+  countMissingMeaning,
+  pendingAi,
+  toggleAskAi,
+} from './aiNotes';
 import { parseTranslations } from '@/lesson/translation';
 import type { FSRSCard, VocabEntry } from '@/types/models';
 
@@ -172,5 +180,41 @@ describe('countMissingMeaning / aiPreview', () => {
       new Map([[5, '落空'], [1, ' 解释 ']]),
     );
     expect(rows).toEqual([{ n: 1, word: 'Plattform', note: '解释' }]);
+  });
+});
+
+describe('toggleAskAi', () => {
+  it('第一次点加上标记', () => {
+    expect(toggleAskAi(entry('a')).askAi).toBe(true);
+  });
+
+  it('再点一次**把字段删掉**，不是置 false', () => {
+    const marked = entry('a', { askAi: true });
+    const off = toggleAskAi(marked);
+    expect(off.askAi).toBeUndefined();
+    // 这一条才是关键：`VocabEntry` 整条 last-write-wins 同步，
+    // 留一个 `askAi: false` 会和「从来没标记过」在数据上不一样，
+    // 于是两台设备互相覆盖一次，换不来任何信息。
+    expect('askAi' in off).toBe(false);
+  });
+
+  it('来回切两次回到原样 —— 逐键相等，不是「看着一样」', () => {
+    const original = entry('a');
+    expect(toggleAskAi(toggleAskAi(original))).toEqual(original);
+  });
+
+  it('别的字段一个都不动', () => {
+    const e = entry('a', { note: '解释', meaning: 'Sinn', meaningZh: '中文' });
+    const marked = toggleAskAi(e);
+    expect(marked.note).toBe('解释');
+    expect(marked.meaning).toBe('Sinn');
+    expect(marked.meaningZh).toBe('中文');
+  });
+
+  it('标记 → 进待办；取消 → 有释义的就退出待办', () => {
+    const e = entry('a', { meaning: 'Sinn' });
+    const marked = toggleAskAi(e);
+    expect(pendingAi([marked])).toHaveLength(1);
+    expect(pendingAi([toggleAskAi(marked)])).toHaveLength(0);
   });
 });

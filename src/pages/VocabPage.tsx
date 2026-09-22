@@ -16,6 +16,7 @@ import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
 import { ZhPanel } from './vocab/ZhPanel';
 import { AiNotesPanel } from './vocab/AiNotesPanel';
+import { toggleAskAi } from '@/srs/aiNotes';
 import type { VocabEntry } from '@/types/models';
 
 const STATE_LABELS = ['新卡', '学习中', '复习中', '重学中'] as const;
@@ -102,13 +103,9 @@ export function VocabPage() {
                   lessonTitle={lessons.find((l) => l.id === entry.lessonId)?.title}
                   onEdit={() => setEditing(entry.id)}
                   onToggleSuspend={() => void updateEntry({ ...entry, suspended: !entry.suspended })}
-                  onToggleAskAi={() => {
-                    // 取消标记要**删掉这个可选字段**，不是置 false —— 留一个
-                    // `askAi: false` 在库里，和「从来没标记过」长得不一样，
-                    // 白白给跨设备合并多制造一份差异（FR-9.11）。
-                    const { askAi, ...rest } = entry;
-                    void updateEntry(askAi ? rest : { ...rest, askAi: true });
-                  }}
+                  // 切换规则（删字段而不是置 false）在 srs/aiNotes.ts 里，有测试 ——
+                  // 那条规则错了不报错，只是在某次跨设备合并里多覆盖一回。
+                  onToggleAskAi={() => void updateEntry(toggleAskAi(entry))}
                   onDelete={() => {
                     if (confirm(`删除「${entry.surface}」？句子上的挖空会保留，但会指向一个不存在的词条。`)) {
                       void removeEntry(entry.id);

@@ -19,7 +19,7 @@
 
 ```
 npm run typecheck
-npm run test:run          # 前端 896 个
+npm run test:run          # 前端 949 个
 npm --prefix server test  # 同步后端 120 个（根目录的 test:run 明确排掉了 server/）
 npm run build             # 动了资源/构建配置时必跑：类型过了不等于构建过了
 npm run test:e2e          # Playwright 42 个，自己 vite build + preview，约 1 分钟

@@ -358,6 +358,22 @@ describe('ReviewPage：识词卡（FR-21）', () => {
 describe('ReviewPage：音效（FR-10.12）', () => {
   const played = () => vi.mocked(playSfx).mock.calls.map(([name]) => name);
 
+  /**
+   * 等这张卡组好题，然后把账清空再点。
+   *
+   * 清空这一下不是洁癖：判定音是隔 120ms 发的，上一条用例的那个定时器可能在
+   * 这一条已经开始之后才落地（`afterEach` 的 clearAllMocks 早于它）。
+   * 不清的话这一组用例会按执行顺序时绿时红 —— 而会随机变绿的门禁比没有门禁更糟。
+   */
+  async function ready() {
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    // 先让上一条用例排下的判定定时器落地，再清账。只清不等是不够的：
+    // 那个定时器排在 `afterEach` 的 clearAllMocks 之后才到，会算到这一条头上
+    // （实测就是这样 —— 单独跑绿，连着跑红）。
+    await new Promise((r) => setTimeout(r, 200));
+    vi.mocked(playSfx).mockClear();
+  }
+
   it('进页面就预取 —— 等第一次答题才取的话那一声会迟半秒到', async () => {
     seed([entry('Vorhang')]);
     render(<ReviewPage />);
@@ -368,7 +384,7 @@ describe('ReviewPage：音效（FR-10.12）', () => {
   it('点一个选项：先一声「嗒」，随后是答对那一声', async () => {
     seed([entry('Vorhang', { gender: 'm' })]);
     render(<ReviewPage />);
-    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    await ready();
 
     const correct = choiceButtons().find((b) => b.textContent?.includes('Vorhang'))!;
     await act(async () => correct.click());
@@ -381,7 +397,7 @@ describe('ReviewPage：音效（FR-10.12）', () => {
   it('答错响的是另一声', async () => {
     seed([entry('Vorhang')]);
     render(<ReviewPage />);
-    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    await ready();
 
     const wrong = choiceButtons().find((b) => !b.textContent?.includes('Vorhang'))!;
     await act(async () => wrong.click());
@@ -392,7 +408,7 @@ describe('ReviewPage：音效（FR-10.12）', () => {
   it('「没听清 / 不认识」也算一次作答，同样两声', async () => {
     seed([entry('Vorhang')]);
     render(<ReviewPage />);
-    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    await ready();
 
     await act(async () => screen.getByRole('button', { name: /没听清/ }).click());
 
