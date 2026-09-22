@@ -48,7 +48,18 @@ describe('校验', () => {
 
   it('改过一个字符的令牌不认', async () => {
     const { token } = await signSession(SECRET, 'user-1', 90);
-    const tampered = `${token.slice(0, -2)}${token.at(-1)}${token.at(-2)}`;
+    // 改**签名段的第一个字符**。两处讲究，都踩过：
+    //   · 原来的写法是「把最后两个字符对调」—— 那两个字符碰巧相同时（base64url
+    //     六十四个字母，概率约 1/64）token 一个字节都没变，于是校验理所当然地通过，
+    //     用例红。CI 上真的红过一次（2026-09-22），而本机连跑三遍都是绿的。
+    //   · 也不能改最后一个字符：HS256 的签名是 32 字节 = 256 位，base64url 编成
+    //     43 个字符携带 258 位，**末字符有 2 位是填充位**，解码时被丢掉 ——
+    //     只动到填充位的话签名解出来一模一样，照样通过。
+    // 第一个字符的 6 位全是有效位，改了必然换一个签名。
+    const [header, payload, signature] = token.split('.');
+    const tampered = `${header}.${payload}.${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    // 防呆：万一哪天改法又退化成「其实没改」，这一行会先红。
+    expect(tampered).not.toBe(token);
     await expect(verifySession(SECRET, tampered)).rejects.toBeInstanceOf(SessionError);
   });
 
