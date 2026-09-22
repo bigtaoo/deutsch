@@ -168,10 +168,12 @@ test('读卡的评分落在读卡上 —— 听卡的下次时间不该被动过
 // ── FR-9.11 / FR-9.12：问 AI 补解释 ──────────────────────────────
 //
 // 2026-09-22 起这条路走服务器实时调用（server/src/ai.ts），不再是「复制走 →
-// 在外面问 → 粘回来」。E2E 构建里没有登录会话（没有真的跑一遍 Google 登录），
-// 所以这两条用例守的是**优雅降级**：没登录时点「问 AI」/ 查不到时自动问一次 AI，
+// 在外面问 → 粘回来」；当晚（变更 49）又给查到的词补上了同一个入口——之前只有
+// 查不到的那一支能问。E2E 构建里没有登录会话（没有真的跑一遍 Google 登录），
+// 所以这几条用例守的是**优雅降级**：没登录时点「问 AI」/ 查不到时自动问一次 AI，
 // 都必须说清楚「暂时不可用」，而不是像 FR-9.6 曾经的那个死按钮一样悄悄什么都不做。
-// 真的把请求发到服务器、拿到解释这条链路留给 §10 的人工复验（需要真登录 + 真 API key）。
+// 真的把请求发到服务器、拿到解释这条链路，以及答案缓存跨设备同步，都留给 §10 的
+// 人工复验（需要真登录 + 真 API key）。
 
 test('生词本页「问 AI」在没登录时给出清楚的提示，而不是静默失败（FR-9.11/9.12）', async ({ page }) => {
   await seed(page);
@@ -202,4 +204,24 @@ test('查不到的词照样收得下，AI 也要不到时说清楚，而不是�
   await page.getByRole('button', { name: '加入生词本' }).click();
   await expect(page.getByText(/已加进生词本/)).toBeVisible();
   await expect(page.getByText(/AI 解释暂时没要到/)).toBeVisible();
+});
+
+test('查到的词也有「问 AI」入口，不是只有查不到才能问（变更 49）', async ({ page }) => {
+  await seed(page);
+  await page.goto('/#/vocab');
+
+  // Zuversicht 是内置词典里真有的词（离线可查，bucket.test.ts 也拿它钉分桶号），
+  // 走到的是 ResultCard 那一支 —— 这条路以前完全没有 AI 入口。
+  await page.getByPlaceholder(/课上碰到的词/).fill('Zuversicht');
+  await page.getByRole('button', { name: '查', exact: true }).click();
+  // 不能用 exact 精确匹配：词头前面挨着 der/die/das（同一个 <p> 里的相邻节点），
+  // 拼起来的文本是「dieZuversicht」，没有哪个元素的文本恰好等于「Zuversicht」。
+  await expect(page.getByText(/Zuversicht/).first()).toBeVisible();
+
+  // 查到的词不自动问（会让每次查一个查到过的词都白花一次调用），得点按钮。
+  // 按钮要scope 在「查词」这个 section 里 —— 生词本列表每一行也有自己的「问 AI」。
+  const lookupSection = page.locator('section', { has: page.getByRole('heading', { name: '查词' }) });
+  await expect(lookupSection.getByText(/AI 服务暂时不可用/)).toHaveCount(0);
+  await lookupSection.getByRole('button', { name: '问 AI' }).click();
+  await expect(lookupSection.getByText(/AI 服务暂时不可用/)).toBeVisible();
 });

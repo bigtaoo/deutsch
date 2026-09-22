@@ -21,7 +21,7 @@ import { lookupOnlineEntry, toDictEntry, type OnlineEntry } from '@/dict/online'
 import { buildLookupResult, type LookupResult, type LookupSense } from '@/dict/view';
 import { ensureWordAudio, speak, type WordAudioSource } from '@/dict/audio';
 import { audioPlayer } from '@/audio/player';
-import { aiAvailable, explainWithAi } from '@/ai/explain';
+import { aiAvailable, explainWithAi, getCachedAiNote } from '@/ai/explain';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -57,12 +57,13 @@ const ARTICLES = { m: 'der', f: 'die', n: 'das' } as const;
 type Pending<T> = T | 'loading';
 
 /**
- * FR-9.11 的 AI 兜底状态。**不能用 `string | 'unavailable'`** —— `'unavailable'`
- * 本身就是一个字符串，`typeof x === 'string'` 分不出它是哨兵值还是 AI 真的给的解释，
- * 一次 `add()` 就会把字面量 `"unavailable"` 当成解释存进 `note`（2026-09-22 修，
- * e2e 抓到的）。成功的那一支包一层对象，就没有这个歧义了。
+ * FR-9.11/9.12 的 AI 状态：查不到词时自动问一次，查到的词是按钮入口，两条路共用同一个状态。
+ * **不能用 `string | 'unavailable'`** —— `'unavailable'` 本身就是一个字符串，
+ * `typeof x === 'string'` 分不出它是哨兵值还是 AI 真的给的解释，一次 `add()` 就会把
+ * 字面量 `"unavailable"` 当成解释存进 `note`（2026-09-22 修，e2e 抓到的）。
+ * 成功的那一支包一层对象，就没有这个歧义了。
  */
-type AiFallback = 'loading' | 'unavailable' | { note: string };
+type AiState = 'loading' | 'unavailable' | { note: string };
 
 export function DictLookup() {
   const { settings } = useSettingsStore();
@@ -77,12 +78,12 @@ export function DictLookup() {
   const [dupes, setDupes] = useState<VocabEntry[]>([]);
   const [added, setAdded] = useState<VocabEntry | null>(null);
   /**
-   * FR-9.11：两个词典都查不到时，就地问一次 AI（2026-09-22 起服务器实时调用，
-   * 取代之前「先原样收下、再去生词本页凑一批复制走」那条路）。
-   * `null` = 还不到问的时候（可能查到了，不需要）；'unavailable' 盖住「没登录」
-   * 「服务器没配 key」「上游失败」这几种原因 —— 用户能做的事一样，都是过会儿再试。
+   * FR-9.11/9.12：查不到词时自动问一次 AI；查到的词也给一个「问 AI」入口（变更 49，
+   * 之前只有查不到那一支有）。`null` = 还没有答案（查到的词等按钮点，查不到的词等自动问
+   * 或缓存命中）；'unavailable' 盖住「没登录」「服务器没配 key」「上游失败」这几种原因 ——
+   * 用户能做的事一样，都是过会儿再试。
    */
-  const [aiFallback, setAiFallback] = useState<AiFallback | null>(null);
+  const [aiState, setAiState] = useState<AiState | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   /** 只认最后一次提交的结果：连着查两个词时，先回来的那个不该覆盖后查的。 */
   const token = useRef(0);
@@ -97,7 +98,7 @@ export function DictLookup() {
     setSound(null);
     setDupes([]);
     setAdded(null);
-    setAiFallback(null);
+    setAiState(null);
 
     void (async () => {
       const hit = await lookupDict(word).catch(() => null);
@@ -117,6 +118,7 @@ export function DictLookup() {
   const onlineHit = online === 'loading' || online === 'off' ? null : online;
   const busy = local === 'loading';
   const result = query ? buildLookupResult(query, localHit, onlineHit) : null;
+  const resultHead = result?.head;
 
   // 去重（FR-9.3 的那一套键）：查到的词可能早就在生词本里了 ——
   // 而「加进去发现多了一张重复卡」要到复习时才会被发现。
@@ -140,29 +142,60 @@ export function DictLookup() {
     // entries 变了也要重算：刚加进去的那一条应该立刻算重复。
   }, [result?.head, findDuplicates, entries]);
 
-  // FR-9.11：内置词典和 de.wiktionary 都尘埃落定地没有这个词时，就地问一次 AI。
-  // 「尘埃落定」= 本地已经查完（!busy）且在线不再是 'loading' —— 在线还没回来的时候
-  // 不能提前判「查不到」，那时 result 是 null 只是因为还没等到在线那一份。
-  useEffect(() => {
-    if (busy || !query || result || online === 'loading') return;
-    let cancelled = false;
-    setAiFallback('loading');
+  /**
+   * 问一次 AI（按钮点击、或下面那个 effect 判定「查不到」之后自动调用）。
+   * 用 `token` 而不是自己的 `cancelled` 变量把控失效 —— 这是一次可能由用户手动
+   * 触发的请求，生命周期跟“这次提交”绑在一起，而不是跟某个 effect 的一轮执行绑在一起。
+   */
+  const runAskAi = (word: string) => {
+    const mine = token.current;
+    setAiState('loading');
     void (async () => {
       if (!(await aiAvailable())) {
-        if (!cancelled) setAiFallback('unavailable');
+        if (token.current === mine) setAiState('unavailable');
         return;
       }
       try {
-        const note = await explainWithAi({ word: query });
-        if (!cancelled) setAiFallback({ note });
+        const note = await explainWithAi({ word });
+        if (token.current === mine) setAiState({ note });
       } catch {
-        if (!cancelled) setAiFallback('unavailable');
+        if (token.current === mine) setAiState('unavailable');
       }
+    })();
+  };
+
+  /**
+   * 变更 49：先看有没有缓存过的答案 —— 不管这个词查没查到，缓存命中就直接显示，
+   * 不用再问一遍模型。没有缓存时，查不到词的那一支照旧自动问一次 AI（FR-9.11）；
+   * 查到词的那一支不自动问，等用户点「问 AI」——查到的词已经有内容了，自动问一次
+   * 会让每次查一个查到过的词都白花一次调用。
+   *
+   * 依赖用 `resultHead` 而不是 `result` 本身：`buildLookupResult` 每次渲染都会
+   * 返回一个新对象，用 `result` 当依赖会让 setAiState 触发的重渲染又把这个 effect
+   * 跑一遍，形成死循环（`result?.head` 才是真正变了没变的信号，去重那个 effect
+   * 已经是这么写的）。
+   */
+  useEffect(() => {
+    if (busy || !query) return;
+    let cancelled = false;
+    void (async () => {
+      const cached = await getCachedAiNote(query);
+      if (cancelled) return;
+      if (cached !== undefined) {
+        setAiState({ note: cached });
+        return;
+      }
+      // 「尘埃落定」= 本地已经查完且在线不再是 'loading' —— 在线还没回来的时候
+      // 不能提前判「查不到」，那时 resultHead 是 undefined 只是因为还没等到在线那一份。
+      if (resultHead || online === 'loading') return;
+      runAskAi(query);
     })();
     return () => {
       cancelled = true;
     };
-  }, [busy, query, result, online]);
+    // runAskAi 没放进依赖数组：它每次渲染都是新的函数引用，但内部只读 query（闭包变量）
+    // 且靠 token 自己控制失效，放进依赖只会让这个 effect 在无关的重渲染上多跑几次。
+  }, [busy, query, resultHead, online]);
 
   /**
    * 念一遍。走全局单例 `<audio>`（键前缀 `word:`）而不是 new Audio()：
@@ -193,7 +226,7 @@ export function DictLookup() {
     const dict = localHit?.entry ?? (onlineHit ? toDictEntry(onlineHit) : null);
     // FR-21.6：例句一并收下 —— 在线那一趟已经拿到了，开读卡时它多半不在了
     // FR-9.11：AI 刚给的解释也一并收下 —— 不这样的话用户还要再去生词本页点一次「问 AI」。
-    const note = aiFallback && typeof aiFallback === 'object' ? aiFallback.note : undefined;
+    const note = aiState && typeof aiState === 'object' ? aiState.note : undefined;
     const entry = await createFromLookup({ surface: word, dict, examples: result?.examples, note });
     setAdded(entry);
     // 不可重建的数据不过夜（FR-11.6）。失败也不用管：进队列，由状态芯片报出来。
@@ -255,7 +288,8 @@ export function DictLookup() {
         <NotFound
           query={query}
           onlineState={online}
-          aiFallback={aiFallback}
+          aiState={aiState}
+          onAskAi={() => runAskAi(query)}
           onAdd={() => void add(query)}
           added={added}
           dupes={dupes}
@@ -268,6 +302,8 @@ export function DictLookup() {
           result={result}
           online={online}
           sound={sound}
+          aiState={aiState}
+          onAskAi={() => runAskAi(result.head)}
           onPlay={() => void play(result.head)}
           onAdd={() => void add(result.head)}
           added={added}
@@ -283,6 +319,8 @@ function ResultCard({
   result,
   online,
   sound,
+  aiState,
+  onAskAi,
   onPlay,
   onAdd,
   added,
@@ -292,6 +330,8 @@ function ResultCard({
   result: LookupResult;
   online: Pending<OnlineEntry | null> | 'off';
   sound: Pending<WordAudioSource> | null;
+  aiState: AiState | null;
+  onAskAi: () => void;
   onPlay: () => void;
   onAdd: () => void;
   added: VocabEntry | null;
@@ -388,8 +428,33 @@ function ResultCard({
         </a>
       </div>
 
+      {/* 变更 49：查到的词以前完全没有 AI 入口——词典给的释义再详细，也不是每个词都够，
+          尤其是搭配和语用层面的细节。缓存命中时不用点就直接显示（见上面那个 effect）。 */}
+      <AiBlock aiState={aiState} onAsk={onAskAi} />
+
       <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={result.head} />
     </Card>
+  );
+}
+
+/** AI 补充解释那一块：查到的词是按钮入口，查不到的词（NotFound）也用它，只是外层文案不同。 */
+function AiBlock({ aiState, onAsk }: { aiState: AiState | null; onAsk: () => void }) {
+  return (
+    <div className="space-y-1 border-t border-line pt-3">
+      <div className="flex items-center gap-2">
+        <p className="text-note text-faint">AI 补充</p>
+        {aiState !== 'loading' && (
+          <Button className="ml-auto" onClick={onAsk}>
+            {aiState && typeof aiState === 'object' ? '重新问 AI' : '问 AI'}
+          </Button>
+        )}
+      </div>
+      {aiState === 'loading' && <Note tone="accent">正在问 AI…</Note>}
+      {aiState === 'unavailable' && <Hint tone="warn">AI 服务暂时不可用，过会儿再试。</Hint>}
+      {aiState && typeof aiState === 'object' && (
+        <div className="whitespace-pre-line text-ui text-muted">{aiState.note}</div>
+      )}
+    </div>
   );
 }
 
@@ -432,7 +497,8 @@ function SenseBlock({ sense, head }: { sense: LookupSense; head: string }) {
 function NotFound({
   query,
   onlineState,
-  aiFallback,
+  aiState,
+  onAskAi,
   onAdd,
   added,
   dupes,
@@ -440,7 +506,8 @@ function NotFound({
 }: {
   query: string;
   onlineState: Pending<OnlineEntry | null> | 'off';
-  aiFallback: AiFallback | null;
+  aiState: AiState | null;
+  onAskAi: () => void;
   onAdd: () => void;
   added: VocabEntry | null;
   dupes: VocabEntry[];
@@ -464,16 +531,9 @@ function NotFound({
               : '内置词典和 de.wiktionary 都没有。多词搭配和很生僻的复合词常常是这样。'}
       </Hint>
 
-      {/* FR-9.11：两个词典都没有的时候，就地问一次 AI —— 不用再去生词本页点第二次。 */}
-      {aiFallback === 'loading' && <Note tone="accent">正在问 AI…</Note>}
-      {aiFallback === 'unavailable' && (
-        <Hint tone="warn">
-          AI 服务暂时不可用。先把词收下，去生词本页那一行可以随时重新点「问 AI」。
-        </Hint>
-      )}
-      {aiFallback && typeof aiFallback === 'object' && (
-        <div className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">{aiFallback.note}</div>
-      )}
+      {/* FR-9.11：两个词典都没有的时候，就地问一次 AI，不用等用户去点。
+          失败了也不用先把词收下再去生词本页重试——AiBlock 自带的按钮当场就能重问。 */}
+      <AiBlock aiState={aiState} onAsk={onAskAi} />
 
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <a
@@ -485,7 +545,7 @@ function NotFound({
           在维基词典里搜
         </a>
       </div>
-      <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={query} noDict aiFallback={aiFallback} />
+      <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={query} noDict aiState={aiState} />
     </Card>
   );
 }
@@ -498,7 +558,7 @@ function AddRow({
   lessons,
   word,
   noDict = false,
-  aiFallback = null,
+  aiState = null,
 }: {
   onAdd: () => void;
   added: VocabEntry | null;
@@ -506,7 +566,7 @@ function AddRow({
   lessons: Array<{ id: string; title: string }>;
   word: string;
   noDict?: boolean;
-  aiFallback?: AiFallback | null;
+  aiState?: AiState | null;
 }) {
   if (added) {
     return (
@@ -516,9 +576,9 @@ function AddRow({
             AI 给出结果的话已经跟着这次创建一起收下了；没给出结果就把话说清楚，
             而不是让这张空卡看起来像一个来路不明的数字。 */}
         {noDict &&
-          (aiFallback && typeof aiFallback === 'object'
+          (aiState && typeof aiState === 'object'
             ? ' AI 刚给的解释已经跟着这张卡一起存了下来。'
-            : ' AI 解释暂时没要到，释义先空着 —— 去生词本页那一行随时可以点「问 AI」重试。')}
+            : ' AI 解释暂时没要到，释义先空着 —— 上面的「问 AI」随时可以再点一次。')}
       </Note>
     );
   }

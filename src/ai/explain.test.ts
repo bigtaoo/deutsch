@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getDB, _resetDBForTests } from '@/db';
+import { DB_NAME } from '@/db/schema';
 
 vi.stubEnv('VITE_SYNC_API_BASE', 'https://sync.example.test');
 vi.stubEnv('VITE_GOOGLE_WEB_CLIENT_ID', 'client-id');
@@ -8,16 +10,25 @@ vi.mock('@/sync/session', () => ({
   getSessionToken: () => getSessionToken(),
 }));
 
-const { aiAvailable, explainWithAi, resetAiAvailability } = await import('./explain');
+const { aiAvailable, explainWithAi, getCachedAiNote, resetAiAvailability } = await import('./explain');
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals();
   getSessionToken.mockReset();
   resetAiAvailability();
+  const db = await getDB();
+  db.close();
+  _resetDBForTests();
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    req.onblocked = () => resolve();
+  });
 });
 
 describe('aiAvailable', () => {
@@ -81,5 +92,22 @@ describe('explainWithAi', () => {
     getSessionToken.mockResolvedValue('tok');
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(502, { error: 'AI 接口返回 HTTP 429', code: 'ai_failed' })));
     await expect(explainWithAi({ word: 'Zug' })).rejects.toThrow('AI 接口返回 HTTP 429');
+  });
+
+  it('成功之后答案进了缓存（变更 49）——下次查同一个词不用再问一遍', async () => {
+    getSessionToken.mockResolvedValue('tok');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { note: '一列火车' })));
+
+    await explainWithAi({ word: ' Zug ' });
+    await vi.waitFor(async () => {
+      expect(await getCachedAiNote('zug')).toBe('一列火车');
+    });
+  });
+
+  it('失败时不写缓存', async () => {
+    getSessionToken.mockResolvedValue('tok');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(502, { error: '坏了', code: 'ai_failed' })));
+    await expect(explainWithAi({ word: 'Zug' })).rejects.toThrow();
+    expect(await getCachedAiNote('Zug')).toBeUndefined();
   });
 });

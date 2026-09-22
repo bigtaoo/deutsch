@@ -24,10 +24,12 @@ import { META_KEYS } from '@/db/schema';
 import { debounceByKey } from '@/lib/debounce';
 import { mergeSettings, mergeVocabEntries } from '@/backup/merge';
 import { getStudyLog, mergeStudyLogs, putStudyLog, type StudyLog } from '@/study/log';
+import { getAiCache, mergeAiCaches, putAiCache, type AiCache } from '@/ai/cache';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { SyncAuthError, SyncConflictError } from './client';
 import { getSessionToken } from './session';
 import {
+  AI_CACHE_DOC_ID,
   SETTINGS_DOC_ID,
   STUDY_DOC_ID,
   VOCAB_DOC_ID,
@@ -61,6 +63,11 @@ const SETTINGS_DEBOUNCE_MS = 5_000;
  * 真正要紧的那两个时刻（离开练习界面、切后台）本来就各会落一次库、各带一次去抖。
  */
 const STUDY_DEBOUNCE_MS = 60_000;
+/**
+ * AI 缓存的去抖跟设置同一档：一次「问 AI」是一次性动作，不像课程标注那样连续改好几下，
+ * 而用户问完一个词之后确实可能立刻想在另一台设备上看到答案（比如手机上问完想在电脑上接着抄）。
+ */
+const AI_CACHE_DEBOUNCE_MS = 5_000;
 
 export interface SyncHooks {
   /** UI 用来刷新 pendingCount / lastSuccessAt / 错误横幅。 */
@@ -199,6 +206,32 @@ async function pushStudyLog(token: string): Promise<void> {
   await recordSuccess();
 }
 
+// ── AI 补充解释缓存（变更 49）────────────────────────────────────────────
+
+async function pushAiCache(token: string): Promise<void> {
+  const local = await getAiCache();
+  const docId = AI_CACHE_DOC_ID;
+
+  try {
+    const { version } = await putRemoteDoc(token, docId, await getKnownVersion(docId), local);
+    await rememberVersion(docId, version);
+  } catch (err) {
+    if (!(err instanceof SyncConflictError)) throw err;
+
+    // 409：另一台设备也问过 AI。逐词比 ts，见 ai/cache.ts。
+    const remote = (err.body ?? null) as AiCache | null;
+    const { merged, changed } = remote ? mergeAiCaches(local, remote) : { merged: local, changed: false };
+    if (changed) {
+      await putAiCache(merged);
+      hooks.onRemoteDataWritten?.();
+    }
+    const { version } = await putRemoteDoc(token, docId, err.version, merged);
+    await rememberVersion(docId, version);
+  }
+
+  await recordSuccess();
+}
+
 // ── 统一的「试一次，失败就进队列」外壳 ───────────────────────────────────
 
 async function runPush(item: QueuedPush): Promise<void> {
@@ -207,6 +240,7 @@ async function runPush(item: QueuedPush): Promise<void> {
   if (item.kind === 'vocab') return pushVocab(token);
   if (item.kind === 'settings') return pushSettings(token);
   if (item.kind === 'study') return pushStudyLog(token);
+  if (item.kind === 'aiCache') return pushAiCache(token);
   if (!item.lessonId) return;
   if (item.kind === 'lesson') return pushLesson(token, item.lessonId);
   return pushLessonDeletion(token, item.lessonId);
@@ -248,6 +282,8 @@ const settingsDebouncer = debounceByKey<'settings', []>(
 
 const studyDebouncer = debounceByKey<'study', []>(() => attempt('study'), STUDY_DEBOUNCE_MS);
 
+const aiCacheDebouncer = debounceByKey<'aiCache', []>(() => attempt('aiCache'), AI_CACHE_DEBOUNCE_MS);
+
 /**
  * 去抖窗口一开始就把这一项标脏落库（§0 变更 43）。
  *
@@ -283,11 +319,18 @@ export function scheduleStudySync(): void {
   studyDebouncer.schedule('study');
 }
 
+/** 变更 49：`explainWithAi` 每次问到新答案后触发，去抖 5s。 */
+export function scheduleAiCacheSync(): void {
+  markDirty('aiCache');
+  aiCacheDebouncer.schedule('aiCache');
+}
+
 /** 测试与卸载用；正常流程让去抖自然到期。 */
 export function cancelScheduledSyncs(): void {
   lessonDebouncer.cancelAll();
   settingsDebouncer.cancelAll();
   studyDebouncer.cancelAll();
+  aiCacheDebouncer.cancelAll();
 }
 
 /** FR-11.6：每次复习会话结束触发。 */
@@ -347,6 +390,7 @@ export async function pullSyncNow(options: { force?: boolean } = {}): Promise<Pu
       if (result.vocabNeedsPush) await attempt('vocab');
       if (result.settingsNeedsPush) await attempt('settings');
       if (result.studyNeedsPush) await attempt('study');
+      if (result.aiCacheNeedsPush) await attempt('aiCache');
       for (const lessonId of result.lessonsNeedPush) await attempt('lesson', lessonId);
 
       // 单个文档坏掉不让整次拉取失败（pull.ts），但也不能一声不响。

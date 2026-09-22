@@ -16,6 +16,7 @@ import { getAllLessons, putLesson } from '@/db/lessons';
 import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
 import { DEFAULT_SETTINGS, getSettings, putSettings } from '@/db/meta';
 import { getStudyLog, putStudyLog, type StudyLog } from '@/study/log';
+import { getAiCache, putAiCache, type AiCache } from '@/ai/cache';
 import { SyncAuthError } from './client';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import type { RemoteDoc, RemoteDocMeta } from './docs';
@@ -88,6 +89,10 @@ function studyLog(days: StudyLog['days'], updatedAt = 1000): StudyLog {
   return { days, updatedAt };
 }
 
+function aiCache(entries: AiCache['entries'], updatedAt = 1000): AiCache {
+  return { entries, updatedAt };
+}
+
 beforeEach(() => {
   getSessionToken.mockResolvedValue('tok');
   remote = {};
@@ -114,13 +119,14 @@ describe('前提', () => {
 });
 
 describe('恢复到空设备', () => {
-  it('四种文档各自落到对的地方', async () => {
+  it('五种文档各自落到对的地方', async () => {
     remote = {
       'lesson:l1': doc('lesson:l1', lesson()),
       'lesson:l2': doc('lesson:l2', lesson({ id: 'l2', title: '第二课' })),
       vocab: doc('vocab', [vocab(), vocab({ id: 'v2', surface: 'Zweites' })]),
       settings: doc('settings', { ...DEFAULT_SETTINGS, newPerDay: 42, updatedAt: 5000 } as Settings),
       study: doc('study', studyLog({ '2026-09-20': { 'dev-a': 600 } })),
+      aiCache: doc('aiCache', aiCache({ zug: { note: '一列火车', ts: 100 } })),
     };
 
     const result = await restoreFromServer();
@@ -129,12 +135,14 @@ describe('恢复到空设备', () => {
     expect(result.vocabFetched).toBe(2);
     expect(result.settingsRestored).toBe(true);
     expect(result.studyRestored).toBe(true);
+    expect(result.aiCacheRestored).toBe(true);
     expect(result.failures).toEqual([]);
 
     expect((await getAllLessons()).map((l) => l.id).sort()).toEqual(['l1', 'l2']);
     expect((await getAllVocabEntries()).map((v) => v.id).sort()).toEqual(['v1', 'v2']);
     expect((await getSettings()).newPerDay).toBe(42);
     expect((await getStudyLog()).days).toEqual({ '2026-09-20': { 'dev-a': 600 } });
+    expect((await getAiCache()).entries).toEqual({ zug: { note: '一列火车', ts: 100 } });
   });
 
   it('每拉到一份都记下版本号 —— 不记的话恢复完第一次推送必撞 409', async () => {
@@ -143,11 +151,13 @@ describe('恢复到空设备', () => {
       vocab: doc('vocab', [], 7),
       settings: doc('settings', DEFAULT_SETTINGS as Settings, 2),
       study: doc('study', studyLog({})),
+      aiCache: doc('aiCache', aiCache({}), 4),
     };
     await restoreFromServer();
     expect(rememberVersion).toHaveBeenCalledWith('lesson:l1', 3);
     expect(rememberVersion).toHaveBeenCalledWith('vocab', 7);
     expect(rememberVersion).toHaveBeenCalledWith('settings', 2);
+    expect(rememberVersion).toHaveBeenCalledWith('aiCache', 4);
   });
 
   it('认不出的文档类型整块跳过，连取都不取', async () => {
@@ -166,6 +176,7 @@ describe('恢复到空设备', () => {
       vocabFetched: 0,
       settingsRestored: false,
       studyRestored: false,
+      aiCacheRestored: false,
       failures: [],
     });
   });
@@ -228,6 +239,34 @@ describe('恢复到一台已有数据的设备（§2.4 的合并规则，不是�
     const result = await restoreFromServer();
     expect(result.studyRestored).toBe(false);
     expect((await getStudyLog()).days['2026-09-20']).toEqual({ 'dev-a': 900 });
+  });
+
+  it('AI 缓存逐词取 ts 更新的那条：本地问过的词不会被更旧的远端答案顶掉', async () => {
+    await putAiCache(aiCache({ zug: { note: '本地重新问过的', ts: 900 }, haus: { note: '只有本地', ts: 1 } }));
+    remote = {
+      aiCache: doc('aiCache', aiCache({ zug: { note: '远端旧答案', ts: 100 }, brot: { note: '只有远端', ts: 1 } })),
+    };
+    const result = await restoreFromServer();
+    expect(result.aiCacheRestored).toBe(true);
+    expect((await getAiCache()).entries).toEqual({
+      zug: { note: '本地重新问过的', ts: 900 },
+      haus: { note: '只有本地', ts: 1 },
+      brot: { note: '只有远端', ts: 1 },
+    });
+  });
+
+  it('远端的 AI 缓存没带来新东西时不写库', async () => {
+    await putAiCache(aiCache({ zug: { note: '本地', ts: 900 } }));
+    remote = { aiCache: doc('aiCache', aiCache({ zug: { note: '远端旧的', ts: 1 } })) };
+    expect((await restoreFromServer()).aiCacheRestored).toBe(false);
+  });
+
+  it('远端的 aiCache 文档形状不对（没有 entries）时整块忽略，不炸也不清空本地', async () => {
+    await putAiCache(aiCache({ zug: { note: '本地', ts: 900 } }));
+    remote = { aiCache: doc('aiCache', { updatedAt: 1 }) };
+    const result = await restoreFromServer();
+    expect(result.aiCacheRestored).toBe(false);
+    expect((await getAiCache()).entries.zug).toEqual({ note: '本地', ts: 900 });
   });
 });
 

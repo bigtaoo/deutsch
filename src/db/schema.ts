@@ -74,4 +74,6 @@ export const META_KEYS = {
   // FR-18：这台设备在 studyLog 里占的那一格的名字。**不备份、不同步** ——
   // 恢复到新设备上就该是一个新名字，否则两台设备会抢同一格（见 study/log.ts）。
   studyDevice: 'studyDevice',
+  // 变更 49：AI 补充解释缓存（归一化词 → 解释），标注层，备份 + 同步（见 ai/cache.ts）。
+  aiCache: 'aiCache',
 } as const;

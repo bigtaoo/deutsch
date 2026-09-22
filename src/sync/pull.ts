@@ -36,10 +36,18 @@ import {
   studyLogNeedsPush,
   type StudyLog,
 } from '@/study/log';
+import {
+  aiCacheNeedsPush as localAiCacheNeedsPush,
+  getAiCache,
+  mergeAiCaches,
+  putAiCache,
+  type AiCache,
+} from '@/ai/cache';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { SyncAuthError } from './client';
 import { getSessionToken } from './session';
 import {
+  AI_CACHE_DOC_ID,
   SETTINGS_DOC_ID,
   STUDY_DOC_ID,
   VOCAB_DOC_ID,
@@ -62,10 +70,13 @@ export interface PullResult {
   settingsWritten: boolean;
   /** 远端那份学习记录里有本地没有的格子，已经合进本地库（FR-18） */
   studyWritten: boolean;
+  /** 远端那份 AI 缓存里有本地没有（或更新）的词，已经合进本地库（变更 49） */
+  aiCacheWritten: boolean;
   /** 本地有远端没有（或本地更新）的生词 —— 调用方该回推一次 */
   vocabNeedsPush: boolean;
   settingsNeedsPush: boolean;
   studyNeedsPush: boolean;
+  aiCacheNeedsPush: boolean;
   /** 本地这几课比远端新（多半是两台设备的钟差）—— 同样要回推，否则它们停在这台设备上 */
   lessonsNeedPush: string[];
   /** 单个文档坏掉不该让整次拉取失败：坏的记在这里，好的照常写入。 */
@@ -80,9 +91,11 @@ function emptyResult(): PullResult {
     vocabWritten: 0,
     settingsWritten: false,
     studyWritten: false,
+    aiCacheWritten: false,
     vocabNeedsPush: false,
     settingsNeedsPush: false,
     studyNeedsPush: false,
+    aiCacheNeedsPush: false,
     lessonsNeedPush: [],
     failures: [],
   };
@@ -94,7 +107,8 @@ export function pullWroteData(result: PullResult): boolean {
     result.lessonsWritten > 0 ||
     result.vocabWritten > 0 ||
     result.settingsWritten ||
-    result.studyWritten
+    result.studyWritten ||
+    result.aiCacheWritten
   );
 }
 
@@ -126,6 +140,8 @@ export async function pullFromServer(options: { force?: boolean } = {}): Promise
         await pullSettings(token, meta.id, result);
       } else if (meta.id === STUDY_DOC_ID) {
         await pullStudy(token, meta.id, result);
+      } else if (meta.id === AI_CACHE_DOC_ID) {
+        await pullAiCache(token, meta.id, result);
       } else if (lessonIdFromDocId(meta.id) !== null) {
         await pullLesson(token, meta.id, result);
       }
@@ -211,6 +227,25 @@ async function pullStudy(token: string, docId: string, result: PullResult): Prom
   // 「远端赢了」和「本地要回推」在这份数据上**可以同时成立** —— 两台设备各占各的
   // 格子，合并之后双方都拿到了对方没有的东西。所以这里不是 else if。
   if (studyLogNeedsPush(local, remote)) result.studyNeedsPush = true;
+}
+
+// ── AI 补充解释缓存（变更 49）────────────────────────────────────────────
+
+async function pullAiCache(token: string, docId: string, result: PullResult): Promise<void> {
+  const doc = await getRemoteDoc<AiCache>(token, docId);
+  if (!doc) return;
+  result.fetched++;
+
+  const local = await getAiCache();
+  const remote = doc.body?.entries ? doc.body : { entries: {}, updatedAt: 0 };
+  const { merged, changed } = mergeAiCaches(local, remote);
+  if (changed) {
+    await putAiCache(merged);
+    result.aiCacheWritten = true;
+  }
+  await rememberVersion(docId, doc.version);
+  // 同一份数据上「远端赢了」和「本地要回推」也能同时成立：两边各问过对方没问过的词。
+  if (localAiCacheNeedsPush(local, remote)) result.aiCacheNeedsPush = true;
 }
 
 // ── 「上次拉取」的时刻 ────────────────────────────────────────────────────
