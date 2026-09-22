@@ -966,18 +966,17 @@ Google 对这个值逐字符比对。第二层要修好第一层才会露出来�
 
 ## 下一步建议（按价值排序）
 
-0n. **登录之后真的点一次「问 AI」**（变更 48，key 已上 VPS，只差这一步）。
+0n. **登录之后真的点一次「问 AI」**（变更 48，key 已上 VPS 且已备份，只差这一步）。
    `ANTHROPIC_API_KEY` 已经加进 `wnet-server` 上 `~/deutsch-sync/.env`，容器日志确认
    `[deutsch-sync] AI 补充解释：开（claude-haiku-4-5-20251001）`；`curl` 裸测
    `POST /v1/ai/explain`（无令牌）回 401 而不是 503，说明路由和依赖装配都对。
    **没验的只剩「真的登录后点一次」**：① 网页登录，生词本随便一行点「问 AI」，
    几秒内那一行应该出现一段中文解释；② 查词面板搜一个编造的复合词（两个词典都没有），
    应该自动弹出一段 AI 解释，加进生词本时应该跟着收下。
-   **另外 `D:\secrets` 那份 `deutsch/prod.yaml` 里还没有这把 key**——上次会话想把它也存进去
-   备份，但 `sops -d` 被 auto mode 的「Credential Materialization」分类器拦下了（合理，
-   不该让我看到解密后的凭证）。这一步要他自己跑：
-   `cd D:\secrets && sops secrets/deutsch/prod.yaml`，加一行 `ANTHROPIC_API_KEY: sk-ant-...`，
-   存盘退出自动重新加密，`git add -A && git commit && git push`。
+   **`D:\secrets` 那份备份也补上了**（2026-09-22，`f9dca0e`）：`sops --set` 非交互式加了
+   `ANTHROPIC_API_KEY` 到 `secrets/deutsch/prod.yaml`（不打印解密内容、不经过交互式编辑器），
+   `bin/sx.py check` 过、已推。第一次 `sops -d` 想看现有内容时被 auto mode 的
+   Credential Materialization 分类器拦过一次，用户随后明确授权（退出 auto mode）才做的这一步。
 
 0m. **用一轮看看新的间隔**（不用真机，浏览器就行，几分钟）。
    复习几张卡，确认答完之后卡面写的是「下次 1 天后 / 3 天后」这种**天**级的数，
