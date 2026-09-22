@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   checkNativeUpdate,
   decideUpdate,
+  notifyNativeAppReady,
   runningBuild,
   versionAtLeast,
   type OtaManifest,
@@ -17,11 +18,13 @@ const current = vi.fn();
 const getInfo = vi.fn();
 const download = vi.fn();
 const next = vi.fn();
+const notifyAppReady = vi.fn();
 vi.mock('@capgo/capacitor-updater', () => ({
   CapacitorUpdater: {
     current: () => current(),
     download: (opts: unknown) => download(opts),
     next: (opts: unknown) => next(opts),
+    notifyAppReady: () => notifyAppReady(),
   },
 }));
 vi.mock('@capacitor/app', () => ({ App: { getInfo: () => getInfo() } }));
@@ -337,5 +340,36 @@ describe('checkNativeUpdate', () => {
     vi.mocked(nativePlatform).mockResolvedValue('web');
     await expect(checkNativeUpdate()).resolves.toBeNull();
     expect(download).not.toHaveBeenCalled();
+  });
+});
+
+// ── notifyNativeAppReady：热更的回滚安全网 ─────────────────────────────
+//
+// 不调它的后果是「下次启动退回上一个 bundle」，而那看起来就是「热更根本没生效」——
+// 又一个不报错、不留日志的坏法。它由 App.tsx 在启动时序的 onAlive 那一档调用
+// （src/app/boot.ts：**一张读不完的表不能把它挡住**，否则插件 20 秒后就回滚了）。
+
+describe('notifyNativeAppReady', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    notifyAppReady.mockResolvedValue(undefined);
+  });
+
+  it('iOS 上真的告诉原生侧「这一版起来了」', async () => {
+    await notifyNativeAppReady();
+    expect(notifyAppReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('浏览器里是空操作，一次桥都不过', async () => {
+    vi.mocked(nativePlatform).mockResolvedValue('web');
+    await notifyNativeAppReady();
+    expect(notifyAppReady).not.toHaveBeenCalled();
+  });
+
+  it('插件没装时安静跳过 —— 旧壳照常跑它自己那份 dist', async () => {
+    notifyAppReady.mockRejectedValue(new Error('plugin not implemented'));
+    // 抛给调用方的话，App.tsx 那一档里排在它后面的「查更新」就不跑了。
+    await expect(notifyNativeAppReady()).resolves.toBeUndefined();
   });
 });

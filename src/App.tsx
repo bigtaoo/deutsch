@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useRoute, useScrollToTopOnRouteChange } from '@/app/router';
+import { scheduleBoot } from '@/app/boot';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
@@ -31,30 +32,33 @@ function App() {
   useScrollToTopOnRouteChange(route);
 
   useEffect(() => {
-    // 四个 store 各读一次 IndexedDB。都是几百 KB 的标注层，一次读完最省事。
-    const ready = Promise.allSettled([
-      useSettingsStore.getState().load(),
-      useLessonStore.getState().load(),
-      useVocabStore.getState().load(),
-      useSyncStore.getState().hydrate(),
-      useStudyStore.getState().load(),
-    ]);
-    // 原生壳的启动图等这四张表读完再关（capacitor.config.ts 里 launchAutoHide: false）。
-    // allSettled 而不是 all：某张表读挂了也得关，否则用户对着启动图干等。
-    // 浏览器里这是空操作。
-    void ready.then(() => {
-      hideNativeSplash();
-      // FR-21：热更的两件事都挂在「表读完了」这一刻。
-      // notifyNativeAppReady 取消原生侧的回滚倒计时 —— 判据必须是「库真的读出来了」，
-      // 放在模块顶层等于没判：一个连 IndexedDB 都打不开的构建照样能执行到 import。
-      void notifyNativeAppReady();
-      // 查更新排在同步后面：它要下 36MB，而「打开就想用」的那几秒该留给同步。
-      // 下载在原生侧的后台线程上，不占 WebView，所以不用再额外延时。
-      void checkNativeUpdate();
-      // FR-11.19：启动时同步一次 —— 先把排队的推出去，再把别的设备改过的拉回来。
-      // **必须等这四张表读完**：拉取会往库里写，写完由 onRemoteDataWritten 让 store 重读，
-      // 而初次 load() 如果晚于那次重读，界面就退回到拉取之前的旧值了。
-      void syncNow();
+    // 五个 store 各读一次 IndexedDB。都是几百 KB 的标注层，一次读完最省事。
+    // 时序分两档，理由在 boot.ts 的文件头：**一张读不完的表不该把整个 bundle 判死**。
+    scheduleBoot({
+      loads: [
+        useSettingsStore.getState().load(),
+        useLessonStore.getState().load(),
+        useVocabStore.getState().load(),
+        useSyncStore.getState().hydrate(),
+        useStudyStore.getState().load(),
+      ],
+      onAlive: () => {
+        // 原生壳的启动图由这里关（capacitor.config.ts 里 launchAutoHide: false）。
+        // 浏览器里是空操作。
+        hideNativeSplash();
+        // notifyNativeAppReady 取消原生侧的回滚倒计时 —— 判据是「库读出来了、或者读了
+        // 8 秒还没读完但应用本身是好的」。放在模块顶层等于没判：一个连 IndexedDB 都打不开
+        // 的构建照样能执行到 import。
+        void notifyNativeAppReady();
+        // 查更新：下载在原生侧的后台线程上，不占 WebView。
+        void checkNativeUpdate();
+      },
+      onStoresReady: () => {
+        // FR-11.19：启动时同步一次 —— 先把排队的推出去，再把别的设备改过的拉回来。
+        // **必须等这五张表真的读完**：拉取会往库里写，写完由 onRemoteDataWritten 让 store
+        // 重读，而初次 load() 如果晚于那次重读，界面就退回到拉取之前的旧值了。
+        void syncNow();
+      },
     });
 
     // FR-15：启动时问一次黑匣子「上次自动对齐是不是被系统杀掉的」。

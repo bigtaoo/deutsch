@@ -1583,7 +1583,7 @@ PWA 那侧做不到同样的事：manifest 的 `name`/`short_name` 是单值，�
 | 版本比较 | **buildId（commit 短 sha）相等判断** | 不比 semver 大小：只有 main 一条线，而比大小会让**回滚**（版本号往回走）被拒绝，恰好在最需要更新时不生效 |
 | 门槛 | `minNative`（手改，在 `scripts/build-ota.mjs` 里） | 热更换不了原生代码。用到新 Swift 方法的 JS 推给旧壳 = 「点了没反应」，比崩溃难查（崩溃有 `notifyAppReady` 回滚兜着） |
 | 生效 | `next()`：后台下好，**下次冷启动**生效 | `set()` 立刻重载整个 WebView，会清掉只活在 React state 里的听写答案 —— 变更 30 那条「不在打字的当口刷」在这里加倍成立。界面上**不给**「现在就更新」的按钮 |
-| 安全网 | `notifyAppReady()` 挂在「四张 IndexedDB 表读完」之后（App.tsx），超时 20 秒回滚 | 放模块顶层证明不了什么：连库都打不开的构建照样能执行到 import |
+| 安全网 | `notifyAppReady()` 挂在启动时序的 `onAlive` 那一档（`src/app/boot.ts`），超时 20 秒回滚 | 放模块顶层证明不了什么：连库都打不开的构建照样能执行到 import。但也**不能无条件等到表全读完**——`Promise.allSettled` 接得住 reject，接不住「永不 settle」（IndexedDB 的 `blocked`），那样一张卡住的表就会让这个 bundle 被判死并回滚。所以 `onAlive` 最多等 8 秒（变更 50） |
 | 装新 IPA | `resetWhenUpdate: true`，丢掉所有热更 bundle | 新壳可能带了新的原生方法，而留着的旧 JS 不知道它们存在 |
 
 #### 真正的障碍：`/models/` 与 `/dict/`
@@ -2110,6 +2110,22 @@ Android 那条仍未跑过。
 - [x] `VersionSection`（新增 3 条）：两个版本号都问不出来时如实写「问不出来」并给出
       「原生桥没回话」那句警告、只有一个问得出来时把问得出来的照常报、
       桥哑着时仍报出「上次下好等着生效的那一版」（那个记号不过桥，是唯一能证明更新器还活着的东西）
+
+- [x] **启动时序（`src/app/boot.ts` + `boot.test.ts`，7 条）**：补这一组的时候发现启动链上
+      **有同一个坑**——`App.tsx` 原来是 `Promise.allSettled(五张表).then(关启动图 /
+      notifyAppReady / 查更新 / 同步)`，而注释写的是「allSettled 而不是 all：某张表读挂了
+      也得关」——想到的是 reject，**没想到「永不 settle」`allSettled` 一样接不住**
+      （IndexedDB 的 `blocked` 就会这样：不成功也不失败）。一张表卡住 = 启动图不关 +
+      `notifyAppReady` 不调（插件 20 秒后判定这个 bundle 起不来而**回滚**）+ 连更新都不查
+      一次，也就是「设备退回旧版并且再也更新不动」。<br>改法：时序拆成两档。`onAlive`
+      （关启动图 / 取消回滚倒计时 / 查更新）**最多等 8 秒**——一张读不完的表不该把整个
+      bundle 判死；`onStoresReady`（同步）**不设超时**，因为它有一条真实的顺序约束
+      （拉取会写库并让 store 重读，初次 `load()` 晚于它就会把界面退回旧值），而它坏掉的
+      方式只是「显示旧数据」，比回滚轻得多。用例覆盖：顺利时两档各一次、某张表 reject
+      照常走、**永不 settle 时 onAlive 照样到**（核心回归）、`onStoresReady` 不被超时提前
+      触发、超时说过之后表读完不再说第二遍、读得快时不等满超时、默认超时明显小于 20 秒
+- [x] `notifyNativeAppReady`（3 条，以前一条都没有）：iOS 上真的通知原生侧、浏览器里是
+      空操作、插件没装时安静跳过（抛出去的话 `onAlive` 里排在它后面的「查更新」就不跑了）
 
 *没验的（要真机）*
 
