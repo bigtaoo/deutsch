@@ -99,6 +99,9 @@ describe('playSfx', () => {
     const ctx = FakeContext.instances[0];
     playSfx('tap');
     expect(ctx.resumed).toBe(1);
+    // start() 要等 resume() 的 promise 真的 resolve 才发生——WKWebView 上，
+    // suspended 时排的音在 resume 之后并不会响，所以这里不能提前断言。
+    await Promise.resolve();
     expect(ctx.sources).toHaveLength(1);
     expect(ctx.sources[0].start).toHaveBeenCalled();
   });
@@ -114,6 +117,7 @@ describe('playSfx', () => {
     expect(ctx.gain.gain.value).toBeGreaterThan(0);
     expect(ctx.gain.gain.value).toBeLessThan(1);
     playSfx('wrong');
+    await Promise.resolve();
     expect(ctx.sources[0].connect).toHaveBeenCalledWith(ctx.gain);
   });
 

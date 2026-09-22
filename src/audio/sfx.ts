@@ -8,8 +8,12 @@
 //
 // ── iOS 上的手势链在这里仍然成立 ──
 // AudioContext 在没有手势的情况下建出来是 `suspended` 的。所以 `playSfx` 每次
-// 都先 `resume()`（它自己就跑在点击处理器里，是合法的手势），再 start。
-// suspended 期间 `currentTime` 不走，排上去的音会在 resume 之后立刻响，不会丢。
+// 都先 `resume()`（它自己就跑在点击处理器里，是合法的手势），**等它真的 resolve
+// 了再 start**。之前的写法是 resume 不等就直接 start：Chrome 桌面上这样也响
+// （排上去的音会在 resume 之后立刻响，不丢），但在真机上验证时发现 WKWebView
+// 不认这一套——在 suspended 的上下文里 start() 排的音，resume 之后并不会响，
+// 静默丢在原地（没有报错，因为整个模块的失败出口本来就是「不抛不提示」）。
+// 网页上正常、手机上没声音，根子就在这一行「先后」顺序上。
 //
 // ── 失败一律静默 ──
 // 这个模块里没有一件事值得让复习页报错：没有 AudioContext（jsdom、老 WebView）、
@@ -99,15 +103,24 @@ export function preloadSfx(): Promise<void> {
 export function playSfx(name: SfxName): void {
   const context = audioContext();
   const buffer = buffers.get(name);
-  if (!context || !gain || !buffer) return;
-  if (context.state === 'suspended') void context.resume().catch(() => {});
-  try {
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(gain);
-    source.start();
-  } catch {
-    // 上下文被系统回收了（iOS 长时间后台）之类 —— 下一次点击会重新 resume。
+  const destination = gain;
+  if (!context || !destination || !buffer) return;
+  const start = (): void => {
+    try {
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(destination);
+      source.start();
+    } catch {
+      // 上下文被系统回收了（iOS 长时间后台）之类 —— 下一次点击会重新 resume。
+    }
+  };
+  // 必须等 resume 真的 resolve 了再 start——WKWebView 上，suspended 的上下文
+  // 里排的音在 resume 之后不会响，是静默丢失，不是晚到（见上面模块头的注释）。
+  if (context.state === 'suspended') {
+    void context.resume().then(start).catch(() => {});
+  } else {
+    start();
   }
 }
 
