@@ -68,6 +68,12 @@ describe('measureEnvInsets', () => {
 });
 
 describe('applySafeAreaFallback', () => {
+  it('平台跟着结果走 —— 少了它，诊断行里那个 0 有三种含义', () => {
+    stubScreen(390, 844);
+    expect(applySafeAreaFallback('web').platform).toBe('web');
+    expect(applySafeAreaFallback('ios').platform).toBe('ios');
+  });
+
   it('iOS 上 env 报 0 且是刘海机 —— 兜底写进 CSS 变量', () => {
     stubScreen(390, 844);
     const probe = applySafeAreaFallback('ios');

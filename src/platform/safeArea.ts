@@ -22,8 +22,18 @@
 // 屏幕的 CSS 尺寸是唯一还能信的东西，而它和机型一一对应。表里没有的机型退到
 // 「长宽比 ≥ 2 就是有刘海/灵动岛」+ 一个保守的默认值。
 
+export type Platform = 'ios' | 'android' | 'web';
+
 /** 一次实测的结果。设置页的诊断块把它原样摆出来。 */
 export interface SafeAreaProbe {
+  /**
+   * 量到这个数的时候，这份代码跑在哪儿。
+   *
+   * **没有它那个数就读不懂**：`env() = 0` 在桌面浏览器和 iPhone 的普通 Safari 标签页里
+   * 都是**正确**的（那里 web 内容本来就不在刘海底下），只有在 **iOS 原生壳**里它才是故障。
+   * 诊断行少了这一项，等于让人拿一个 0 去猜三种含义。
+   */
+  platform: Platform;
   /** `env(safe-area-inset-top)` 在这台设备上解析出来的像素数。 */
   top: number;
   bottom: number;
@@ -95,9 +105,9 @@ export function expectedTopInset(screenWidth: number, screenHeight: number): num
  *
  * 幂等，返回实测结果供诊断块显示。
  */
-export function applySafeAreaFallback(platform: 'ios' | 'android' | 'web'): SafeAreaProbe {
+export function applySafeAreaFallback(platform: Platform): SafeAreaProbe {
   const { top, bottom } = measureEnvInsets();
-  const result: SafeAreaProbe = { top, bottom, fallbackApplied: false, fallbackTop: 0 };
+  const result: SafeAreaProbe = { platform, top, bottom, fallbackApplied: false, fallbackTop: 0 };
   if (platform !== 'ios' || top > 0 || typeof document === 'undefined') return result;
 
   const expected = expectedTopInset(window.screen?.width ?? 0, window.screen?.height ?? 0);
@@ -114,7 +124,7 @@ export function applySafeAreaFallback(platform: 'ios' | 'android' | 'web'): Safe
 /** 最近一次实测。设置页的诊断块读它 —— 不自己再量一遍，免得两处数字对不上。 */
 let lastProbe: SafeAreaProbe | null = null;
 
-export function initSafeArea(platform: 'ios' | 'android' | 'web'): SafeAreaProbe {
+export function initSafeArea(platform: Platform): SafeAreaProbe {
   lastProbe = applySafeAreaFallback(platform);
   return lastProbe;
 }
