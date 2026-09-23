@@ -1871,7 +1871,14 @@ zip 由插件的 `download()` 走原生 URLSession 下载，不受 CORS 管。`_
    —— 放在锁外的话，下一趟刚下完、还没 `next` 的那个包会被当成没人要的删掉。步骤记
    `nextBundle:ok(..)`、`cleanup:none` / `cleanup:deleted-N/M` / `cleanup:delete-rejected(id)`。
 
-纯 JS，走热更下发即可。手机上那个多出来的 `73AgXfHfNw` 会在拿到这一版后的下一次查更新时被清掉。
+纯 JS，走热更下发即可。
+
+**上线后的真机复验更正了一处判断**（`1790167173811-xtherv` / `1790167209248-0tkmvb`）：「代码里一个包都不删、
+多出来那份永远 pending」**不对** —— 插件在冷启动 `load()` 里自己会清旧包（`cleanupObsoleteVersions`）。
+旧代码那一趟把 `be01a38` 在 7 秒内下了三次，加上之前的两个，手机上一度有五个包；冷启动切到新包之后，
+我们的清理还没跑 `list` 就只剩一个，于是新代码第一趟记的是 `cleanup:none`。所以真正的损失是**重复下载的流量**
+（每次 10MB），由 ①② 修掉；③ 只是兜底「本会话内、还没重启时多出来的」那种，留着无害。
+新代码那一趟：`nextBundle:ok(1ms) → decide:skip（已经是最新）→ cleanup:none`，行为符合预期。
 
 #### 真正的障碍：`/models/` 与 `/dict/`
 
