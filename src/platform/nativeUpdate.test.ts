@@ -767,6 +767,47 @@ describe('checkNativeUpdate 的诊断日志', () => {
     expect(log?.outcome).toContain('异常');
   });
 
+  // ── 取 manifest 这一步（变更 60）────────────────────────────────────
+  // ios-v0.6.6 的真机报告：步骤 `platform:ios → plugin:cached → fetch:threw:Load failed`。
+  // 那是 WKWebView 对「跨域响应没有放行头」的报法——它**立刻**失败，不是悬着，
+  // 上面那条「fetch 悬着」的用例盖不到这种形状。
+  it('manifest 立刻失败（WKWebView 的 Load failed）：原因原样进日志，后面几步一步都不走', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Load failed')));
+    await expect(checkNativeUpdate()).resolves.toBeNull();
+    const log = readLastCheckLog();
+    expect(log?.steps).toEqual(['platform:ios', 'plugin:core', 'fetch:threw:Load failed']);
+    expect(log?.outcome).toContain('Load failed');
+    expect(current).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('manifest 回非 2xx：记下状态码、这次跳过，不去下载', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({}) }));
+    await checkNativeUpdate();
+    const log = readLastCheckLog();
+    expect(log?.steps.at(-1)).toBe('fetch:http-404');
+    expect(log?.outcome).toContain('404');
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  // `public/_headers` 给 /ota/* 的是 `Access-Control-Allow-Origin: *`，而 `*` 只对
+  // **简单请求**成立：一带凭据（credentials: 'include'）浏览器就拒收 `*`；一加自定义
+  // 请求头就要先发 OPTIONS 预检，而静态资源不回预检。两种改法都会让热更在手机上
+  // 重新停在 `fetch:threw`，网页版（同源）却照样正常——这条用例替手机先红。
+  it('取 manifest 的请求保持「简单请求」：绝对 URL、不带凭据、不加请求头', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => body });
+    vi.stubGlobal('fetch', fetchMock);
+    await checkNativeUpdate();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // 壳里相对路径会指向 capacitor://localhost 自己。
+    expect(new URL(url).pathname).toBe('/ota/manifest.json');
+    expect(url).toMatch(/^https:\/\//);
+    expect(opts.credentials).not.toBe('include');
+    expect(opts.headers).toBeUndefined();
+    expect(opts.method ?? 'GET').toBe('GET');
+  });
+
   it('记录里带着那一刻的插件注册情况 —— 查完不用再猜是哪一种哑', async () => {
     Object.defineProperty(window, 'Capacitor', {
       value: { PluginHeaders: [{ name: 'App', methods: [{ name: 'getInfo' }] }] },
