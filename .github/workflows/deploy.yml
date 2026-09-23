@@ -106,10 +106,22 @@ jobs:
       # 手机壳的 origin 是 capacitor://localhost，manifest 没有 CORS 放行头时热更整个停摆，
       # 而网页版对此毫无感觉（同源）。靠 public/_headers 放开，这里在线上确认它真的生效了。
       - name: check ota manifest CORS
+        # 要重试：deploy 刚结束时边缘节点可能还在回旧缓存（第一次跑就撞上了——ORD 回的是
+        # 上一版 manifest 的 ETag），立刻取一次会误报。
         run: |
           set -eu
-          curl -fsS -D - -o /dev/null -H 'Origin: capacitor://localhost'             https://d.gamestao.com/ota/manifest.json | tee /tmp/h.txt
-          grep -qi '^access-control-allow-origin:' /tmp/h.txt
+          for i in $(seq 1 18); do
+            curl -fsS -D - -o /dev/null -H 'Origin: capacitor://localhost'               https://d.gamestao.com/ota/manifest.json > /tmp/h.txt
+            if grep -qi '^access-control-allow-origin:' /tmp/h.txt; then
+              cat /tmp/h.txt
+              exit 0
+            fi
+            echo "第 $i 次：还没有放行头，10 秒后再取"
+            sleep 10
+          done
+          cat /tmp/h.txt
+          echo '::error::3 分钟后 /ota/manifest.json 仍然没有 Access-Control-Allow-Origin —— 手机壳取不到 manifest，热更会停摆'
+          exit 1
 
   # ── 同步后端 ────────────────────────────────────────────────────────────
   # 这个 job 拿到的那把密钥**不能登录那台机器**：它在服务器的 authorized_keys 里
