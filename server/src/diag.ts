@@ -63,7 +63,8 @@ export function createFileDiagSink(rootDir: string): DiagSink {
         const id = n.slice(0, -5);
         return { id, at: Number(id.slice(0, 13)), bytes: statSync(join(dir, n)).size };
       })
-      .sort((a, b) => b.at - a.at);
+      // 同一毫秒进来的两份按 id 排，别让顺序取决于 readdir —— 删旧的那一步也靠这个顺序。
+      .sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   };
 
   return {
