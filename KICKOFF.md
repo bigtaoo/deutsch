@@ -10,6 +10,21 @@
 附录 A 是 DW 接口的实测结果（A.6 是实现完成后用真实期次做的复验），附录 B 是 GitHub API 的实测结果——
 这些是真实探测出来的事实，不要重新假设，也不用重新验证（除非怀疑对方改版了）。
 
+## 现状（2026-09-23 收尾后，热更停在取 manifest：CORS——变更 60）
+
+`ios-v0.6.6` 的真机诊断（服务器 `~/deutsch-sync/data/diag/<uid>/1790164398739-qwgelj.json`）：
+变更 59 修对了——步骤走过了 `plugin:cached`，`notifyAppReady` 第一次真的到了原生侧。
+新的停点是 `fetch:threw:Load failed`：壳的 origin 是 `capacitor://localhost`，取
+`https://d.gamestao.com/ota/manifest.json` 是跨域，而线上响应**没有 CORS 放行头**。
+加了 `public/_headers`（`/ota/*` → `Access-Control-Allow-Origin: *`）+ `deploy.yml` 发布后线上检查。
+**纯服务器响应头，不必出包。**
+
+**下一步**：推上线后在手机上点「现在就查一次更新」，看步骤是否走到 `download`/`next`；
+再冷启动一次，`current()` 的 `bundle.id` 不再是 `builtin` 才算热更真的通了。
+如果 `download` 那一步又失败，看它是不是原生 URLSession 取 zip（10MB）出的问题。
+
+---
+
 ## 现状（2026-09-23 最最晚，热更卡住的那一行找到了——变更 59）
 
 `ios-v0.6.5` 的真机诊断发到了服务器（`~/deutsch-sync/data/diag/<uid>/1790159360683-vmjl2f.json`，

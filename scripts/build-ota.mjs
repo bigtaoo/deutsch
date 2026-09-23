@@ -40,7 +40,8 @@ const DIST = join(ROOT, 'dist');
 const OUT_DIR = join(ROOT, 'ota-staging');
 
 /** 不进热更包的顶层目录。见文件顶部。 */
-const EXCLUDE = new Set(['models', 'dict']);
+// `_headers` 是 Cloudflare 读的响应头规则，进了热更包也没人读。
+const EXCLUDE = new Set(['models', 'dict', '_headers']);
 
 /**
  * 能吃这个包的最低原生壳版本（MARKETING_VERSION）。

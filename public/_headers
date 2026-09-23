@@ -1,0 +1,9 @@
+# Cloudflare Workers static assets 的响应头规则（wrangler 发 dist/ 时读这份）。
+#
+# /ota/*：原生壳里页面的 origin 是 `capacitor://localhost`（Android 是 `https://localhost`），
+# 取 https://d.gamestao.com/ota/manifest.json 是跨域请求 —— 没有放行头，WKWebView 一律报
+# `Load failed`，热更在「取 manifest」这一步就停了（变更 60，ios-v0.6.6 的真机诊断）。
+# 给 `*` 而不是列 origin：manifest 本来就是公开文件，请求不带凭据。
+# zip 本身由插件走原生 URLSession 下载，不受 CORS 管，这里一并放开只是为了规则简单。
+/ota/*
+  Access-Control-Allow-Origin: *
