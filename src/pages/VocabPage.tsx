@@ -11,7 +11,7 @@ import { useMemo, useState } from 'react';
 import { href } from '@/app/router';
 import { useLessonStore } from '@/state/useLessonStore';
 import { needsGender, useVocabStore } from '@/state/useVocabStore';
-import { Button, EmptyState, Hint, field } from '@/components/ui';
+import { Button, Disclosure, EmptyState, Hint, field } from '@/components/ui';
 import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
 import { ZhPanel } from './vocab/ZhPanel';
@@ -213,13 +213,14 @@ function Row({
         <p className="text-ui">{entry.meaning ?? <span className="text-faint">（释义待填）</span>}</p>
         {/* FR-21.9：中译补齐之前这里多半是空的，所以没有就不占一行 */}
         {entry.meaningZh && <p className="text-ui text-muted">{entry.meaningZh}</p>}
-        {/* FR-9.12：AI 给的详细解释。可能有好几行，`whitespace-pre-line` 保住换行；
-            它是这一行里最长的东西，所以排在原句之前、缩在一条竖线后面，
-            眼睛扫列表时能整块跳过去。 */}
+        {/* FR-9.12：AI 给的详细解释，默认折叠 —— default 决定的是内容出现时开不开，
+            这里是「反正会盖住一整块列表」，跟 LessonNotes 那种笔记不一样，故意 defaultOpen=false。 */}
         {entry.note && (
-          <p className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">
-            {entry.note}
-          </p>
+          <Disclosure summary="AI 解释">
+            <p className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">
+              {entry.note}
+            </p>
+          </Disclosure>
         )}
         {aiError && <Hint tone="warn">{aiError}</Hint>}
         {entry.contextSentence && <p className="text-ui text-muted">{entry.contextSentence}</p>}
