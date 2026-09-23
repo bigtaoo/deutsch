@@ -7,6 +7,13 @@ import { initNativeShell } from './platform/native';
 import { syncNow } from './sync/trigger';
 import { initAppShellUpdates } from './platform/pwa';
 import { isOAuthPopupReturn } from './sync/session';
+import { installConsoleTap } from './platform/consoleTap';
+
+// **第一件事**：把 console 抄一份留在内存里（变更 56）。越早越好 —— Capgo 热更插件的
+// 原生日志是 `evaluateJavaScript("console.info(…)")` 打进来的，那是这个项目唯一能看见
+// 插件 `load()` 内部的路（开发机是 Windows，从来没有 Xcode 控制台可看）。
+// 装在这里而不是 bootApp 里：登录弹窗那条分支也该抄，它自己也会出问题。
+installConsoleTap();
 
 // web 版的 Google 登录弹窗跳回来时落在的就是这个入口（重定向地址是本站 origin）。
 // 那个窗口不该再启动一遍 App —— 只要 import 一下登录插件，它的 import 副作用会把令牌

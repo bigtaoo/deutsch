@@ -41,9 +41,29 @@ const verifyGoogleIdToken: GoogleVerifier = async (idToken) => {
   return { sub: 'sub-' + idToken, email: idToken, name: 'Tao', picture: null };
 };
 
-function setup(overrides: { ai?: AiExplainer } = {}) {
+/** 内存版收件箱 —— 路由测试不该碰真盘（文件那一份自己在 diag.test.ts 里测）。 */
+function memoryDiag() {
+  const saved = new Map<string, string>();
+  return {
+    sink: {
+      save(userId: string, report: unknown) {
+        const id = `${Date.now()}-abc123`;
+        saved.set(`${userId}/${id}`, JSON.stringify(report));
+        return { id, at: Date.now(), bytes: 1 };
+      },
+      list: (userId: string) =>
+        [...saved.keys()]
+          .filter((k) => k.startsWith(userId + '/'))
+          .map((k) => ({ id: k.split('/')[1], at: 1, bytes: 1 })),
+      get: (userId: string, id: string) => saved.get(`${userId}/${id}`) ?? null,
+    },
+    saved,
+  };
+}
+
+function setup(overrides: { ai?: AiExplainer; diag?: ReturnType<typeof memoryDiag>['sink'] } = {}) {
   const store = new Store(':memory:');
-  const app = createApp({ store, config, verifyGoogleIdToken, ai: overrides.ai });
+  const app = createApp({ store, config, verifyGoogleIdToken, ai: overrides.ai, diag: overrides.diag });
   return { store, app };
 }
 
@@ -270,5 +290,77 @@ describe('CORS', () => {
 
     const bad = await app.request('/v1/healthz', { headers: { origin: 'https://evil.example' } });
     expect(bad.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});
+
+// ── 设备诊断（变更 56）─────────────────────────────────────────────────
+// 存在的理由：iPhone 上热更停摆，而开发机是 Windows——没有 Mac、没有 Xcode 控制台，
+// 手机内部发生了什么一个字都看不到。这一组守的是「点一下就能发过来」这条路本身。
+describe('/v1/diag', () => {
+  it('登录之后能把报告发进来，回一个 id', async () => {
+    const diag = memoryDiag();
+    const { app } = setup({ diag: diag.sink });
+    const { token } = await login(app);
+    const res = await app.request(
+      '/v1/diag',
+      authed(token, { method: 'POST', body: JSON.stringify({ schema: 1, platform: 'ios' }) }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { id: string }).toHaveProperty('id');
+    expect([...diag.saved.values()][0]).toContain('"platform":"ios"');
+  });
+
+  it('没登录就发不进来 —— 这是一个往盘上写文件的接口', async () => {
+    const { app } = setup({ diag: memoryDiag().sink });
+    const res = await app.request('/v1/diag', {
+      method: 'POST',
+      body: JSON.stringify({ schema: 1 }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('太大的报告拒掉 —— 几百 KB 已经很多了，再大就是客户端出了 bug', async () => {
+    const { app } = setup({ diag: memoryDiag().sink });
+    const { token } = await login(app);
+    const res = await app.request(
+      '/v1/diag',
+      authed(token, { method: 'POST', body: JSON.stringify({ blob: 'x'.repeat(2_100_000) }) }),
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it('不是合法 JSON 就回 400，不往盘上落半个文件', async () => {
+    const diag = memoryDiag();
+    const { app } = setup({ diag: diag.sink });
+    const { token } = await login(app);
+    const res = await app.request('/v1/diag', authed(token, { method: 'POST', body: '{not json' }));
+    expect(res.status).toBe(400);
+    expect(diag.saved.size).toBe(0);
+  });
+
+  it('列表与取回只看得到自己的那些', async () => {
+    const diag = memoryDiag();
+    const { app } = setup({ diag: diag.sink });
+    const { token } = await login(app);
+    const posted = await app.request(
+      '/v1/diag',
+      authed(token, { method: 'POST', body: JSON.stringify({ schema: 1 }) }),
+    );
+    const { id } = (await posted.json()) as { id: string };
+    const list = (await (await app.request('/v1/diag', authed(token))).json()) as {
+      reports: { id: string }[];
+    };
+    expect(list.reports.map((r) => r.id)).toContain(id);
+    const one = await app.request('/v1/diag/' + id, authed(token));
+    expect(one.status).toBe(200);
+    expect((await one.json()) as { schema: number }).toEqual({ schema: 1 });
+  });
+
+  // 整块可缺席：没给收件箱时说清楚，手机上退回「复制诊断」那条路。
+  it('这台服务器没开收件箱时回 503，不是 404', async () => {
+    const { app } = setup();
+    const { token } = await login(app);
+    const res = await app.request('/v1/diag', authed(token, { method: 'POST', body: '{}' }));
+    expect(res.status).toBe(503);
   });
 });

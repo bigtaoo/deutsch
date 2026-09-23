@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Disclosure, Hint, Note, Section } from '@/components/ui';
+import { Button, Disclosure, field, Hint, Note, Section } from '@/components/ui';
 import {
   checkNativeUpdate,
   pendingUpdateVersion,
@@ -9,6 +9,13 @@ import {
   type CheckLogEntry,
   type RunningBuild,
 } from '@/platform/nativeUpdate';
+import {
+  collectDeviceReport,
+  reportToText,
+  runUpdaterSelfTest,
+  sendDeviceReport,
+  type MethodOutcome,
+} from '@/platform/bridgeDiag';
 import { initSafeArea, safeAreaProbe, type Platform } from '@/platform/safeArea';
 import { nativePlatform } from '@/platform/native';
 import { wakeLockState } from '@/platform/wakeLock';
@@ -39,12 +46,24 @@ import { wakeLockState } from '@/platform/wakeLock';
 // 变更 50 那次死锁：没有 Mac、看不到 Xcode 控制台时，「push 了 main，手机到底拿到
 // 没有」原来要等下次冷启动才能看到结果，现在能在设置页当场把这个回路闭上，
 // 而且查完就能看见 `readLastCheckLog()` 那份逐步记录，不再是「查了但不知道发生了什么」。
+/**
+ * 「现在就查一次更新」最多转多久（变更 57）。
+ *
+ * `checkNativeUpdate()` 里每一步都有自己的超时，加起来最坏约 113 秒
+ * （fetch 8 + 冷启动的 current 25 + download 45 + next 10，再留一点余量）。
+ * 但**「每一步都有超时」不等于「整个函数一定会返回」** —— 真机上按钮就是一直转着，
+ * 而那恰恰说明有个 `await` 没被任何一道超时盖到。这一层不负责找出是哪一个，
+ * 只负责让按钮**一定**会放开。
+ */
+const CHECK_HARD_TIMEOUT_MS = 150_000;
+
 export function VersionSection() {
   const [platform, setPlatform] = useState<Platform | null>(null);
   const [build, setBuild] = useState<RunningBuild | null | undefined>(undefined);
   const [pending, setPending] = useState<string | null>(null);
   const [log, setLog] = useState<CheckLogEntry | null>(() => readLastCheckLog());
   const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
 
   useEffect(() => {
     void nativePlatform().then(setPlatform);
@@ -56,12 +75,29 @@ export function VersionSection() {
 
   const runCheckNow = async (): Promise<void> => {
     setChecking(true);
+    setCheckNote(null);
     try {
       // checkNativeUpdate() 的生产实现把所有失败都收在自己的 try/catch/finally 里，
       // 正常情况下不会 reject——但这一按钮不该把「它一定不会 reject」当成前提。
       // 少这个 catch 的话，一次意外的 reject 会变成未处理的 rejection，
       // 且下面 finally 之后不会再报错，用户看到的只是按钮修好了、但控制台炸了一下。
-      await checkNativeUpdate().catch(() => null);
+      //
+      // **再加一道总闸**（变更 57）：里面每一步都有超时，但「每一步都有超时」不等于
+      // 「整个函数一定会返回」——2026-09-23 真机上按钮就是一直转着不停，而那说明
+      // 有某个 `await` 不在任何一道超时的覆盖范围里。这一层不管是哪一个：
+      // 到点就把按钮放开，并且**明说它没有回来**，因为「按钮转个不停」本身
+      // 是要报告的事实，不是一个可以让人一直等下去的状态。
+      await Promise.race([
+        checkNativeUpdate().catch(() => null),
+        new Promise((resolve) =>
+          setTimeout(() => {
+            setCheckNote(
+              `查了 ${Math.round(CHECK_HARD_TIMEOUT_MS / 1000)} 秒还没有回来 —— 下面「上次查更新」那一行停在哪一步，就是卡住的那一步。`,
+            );
+            resolve(null);
+          }, CHECK_HARD_TIMEOUT_MS),
+        ),
+      ]);
     } finally {
       setChecking(false);
       // 查完这几个数可能都变了：build 里的 queued 字段、pending、以及诊断块要读的日志。
@@ -128,6 +164,7 @@ export function VersionSection() {
           ) : null}
         </>
       )}
+      {checkNote && <Hint tone="warn">{checkNote}</Hint>}
       {/* **无论平台、无论版本号问没问出来都画。** 它正是用来回答「这台设备上到底
           发生了什么」的，而一个会在出问题时自己消失的诊断等于没有。 */}
       <DeviceDiagnostics log={log} />
@@ -238,14 +275,127 @@ function DeviceDiagnostics({ log }: { log: CheckLogEntry | null }) {
             : 'CapacitorUpdater 不在这份名单里 —— 这不是调用超时，是这个类没链进这次构建，热更这一版起不来，只能发新包。'}
         </Hint>
       )}
-      {log && (
+      {/* **没有记录这件事本身就要说出来**（变更 57）。变更 52 当初定的是「从没查过就
+          不画，别留一个空壳」——2026-09-23 的真机反馈把这条立场推翻了：用户报的正是
+          「没有『上次查更新』这个信息，也没有步骤的信息」，而那时候这一块不画，
+          于是这条**最强的线索**在界面上长得和「一切正常、只是还没查过」一模一样。
+          （记录现在是逐步落盘的，见 `startCheckLog()`：连「开始了」那一笔都没有，
+          就说明它连第一行都没跑到，或者这台设备根本写不了 localStorage。） */}
+      {log ? (
         <Hint>
           上次查更新（{formatAgo(Date.now() - log.at)}前）：{log.outcome}
           <br />
           步骤：{log.steps.length > 0 ? log.steps.join(' → ') : '（还没走到任何一步）'}
         </Hint>
+      ) : (
+        <Hint tone="warn">
+          从来没有记下过一次查更新 —— 连「开始了」那一笔都没有。查更新现在是每一步
+          立刻落盘的，所以这说明它连第一行都没跑到，或者这台设备写不了 localStorage。
+        </Hint>
       )}
+      {probe?.platform === 'ios' && <BridgeSelfTest />}
     </Disclosure>
+  );
+}
+
+/**
+ * 桥自检与诊断上报（变更 56）。
+ *
+ * ── 为什么要逐个方法试 ──
+ * 「原生桥没回话」这一句底下至少压着四种故障，而它们的下一步完全不同：插件类没注册
+ * （要动 Swift）、插件实例整个造不出来（要换方案）、只是**头一次调用慢**（插件 `load()`
+ * 在主线程做一大堆磁盘活，我们等 4 秒就放弃了——那只要放宽超时）、或者只有某一个方法
+ * 坏了。把一组只读方法串行试一遍、各自计时，这四种就有了各自的形状：全哑、头一个特别慢
+ * 后面都快、个别哑。见 `src/platform/bridgeDiag.ts` 顶部。
+ *
+ * ── 为什么两个出口都要有 ──
+ * 「发到服务器」省事，但它要求登录是好的；而诊断真正用得上的时候，坏的可能正是登录。
+ * 所以「复制诊断」是一条完全不经过网络的平行路，剪贴板再被 WKWebView 拒掉，
+ * 还能退到「把文本摊开来自己选中」。**一个在出问题时会自己失效的诊断出口等于没有。**
+ */
+function BridgeSelfTest() {
+  const [running, setRunning] = useState(false);
+  const [results, setResults] = useState<MethodOutcome[] | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  // 剪贴板被拒时把全文摊在这里让他自己选 —— 和 ZhPanel 那条退路同一个理由。
+  const [rawText, setRawText] = useState<string | null>(null);
+
+  const run = async (): Promise<MethodOutcome[]> => {
+    setRunning(true);
+    setStatus(null);
+    try {
+      const r = await runUpdaterSelfTest().catch(() => []);
+      setResults(r);
+      return r;
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  // 发之前先确保真的有一份自检结果：一份没有自检的报告基本说明不了问题，
+  // 而「我点了发送」到「服务器上那份没用」之间隔着一次出包，代价太大。
+  const send = async (): Promise<void> => {
+    setStatus('正在收集…');
+    const selfTest = results ?? (await run());
+    setStatus('正在发送…');
+    try {
+      const report = await collectDeviceReport(selfTest);
+      const { id } = await sendDeviceReport(report);
+      setStatus(`已发送：${id}`);
+    } catch (err) {
+      setStatus(`发送失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const copy = async (): Promise<void> => {
+    setStatus('正在收集…');
+    const selfTest = results ?? (await run());
+    const text = reportToText(await collectDeviceReport(selfTest));
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus('已复制到剪贴板');
+      setRawText(null);
+    } catch {
+      // WKWebView 可能直接拒掉剪贴板 —— 不假装成功，摊开来让他自己选。
+      setRawText(text);
+      setStatus('剪贴板用不了，下面这段自己选中复制');
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={() => void run()} disabled={running}>
+          {running ? '自检中…' : '跑一次桥自检'}
+        </Button>
+        <Button onClick={() => void send()} disabled={running}>
+          发到服务器
+        </Button>
+        <Button onClick={() => void copy()} disabled={running}>
+          复制诊断
+        </Button>
+      </div>
+      {/* 自检最长可能跑一分多钟（桥没回过话时每个调用都按冷启动给足时间），
+          不先说一句的话会以为是又卡住了 —— 而「又卡住了」正是这一块要查的东西。 */}
+      <Hint>
+        自检会把更新器的只读方法逐个调一遍，桥要是不回话，每个最多等 25 秒，
+        整轮可能要一两分钟。耗时本身就是答案，请等它跑完。
+      </Hint>
+      {results && results.length > 0 && (
+        <Hint tone={results.some((r) => r.outcome === 'timeout') ? 'warn' : 'neutral'}>
+          {results.map((r) => (
+            <span key={r.method}>
+              {r.method} → {r.outcome}（{r.ms}ms）
+              <br />
+            </span>
+          ))}
+        </Hint>
+      )}
+      {status && <Hint>{status}</Hint>}
+      {rawText && (
+        <textarea readOnly value={rawText} rows={10} className={`${field} w-full p-2 font-mono text-note`} />
+      )}
+    </div>
   );
 }
 

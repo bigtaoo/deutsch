@@ -9,6 +9,7 @@ import { createApp } from './app.ts';
 import { createEngine } from './align/engine.ts';
 import { createJobQueue } from './align/jobs.ts';
 import { createAiExplainer } from './ai.ts';
+import { createFileDiagSink } from './diag.ts';
 
 const config = loadConfig();
 const store = new Store(join(config.dataDir, 'sync.sqlite'));
@@ -46,6 +47,10 @@ const app = createApp({
   // 只当权重站 —— 桌面浏览器那条路要靠它才拿得到权重（见 align/weights.ts）。
   weightsDir: config.align.serveWeights ? config.align.modelDir : undefined,
   ai: config.ai.apiKey ? createAiExplainer(config.ai.apiKey, config.ai.model) : undefined,
+  // 设备诊断收件箱（变更 56）。无条件开：它没有配置项、不占内存、不加启动时间，
+  // 而它存在的场合恰恰是「手机上出了事、而我什么都看不到」—— 那种时候最不该再去
+  // 改一个环境变量重启一次。
+  diag: createFileDiagSink(join(config.dataDir, 'diag')),
 });
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) => {

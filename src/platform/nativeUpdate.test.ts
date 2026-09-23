@@ -5,6 +5,7 @@ import {
   notifyNativeAppReady,
   probePlugins,
   readLastCheckLog,
+  resetBridgeWarmupForTests,
   runningBuild,
   versionAtLeast,
   type OtaManifest,
@@ -56,6 +57,14 @@ const memoryStorage = () => {
     },
   };
 };
+
+// **每个用例都要从「桥还没回过话」重新开始。**「桥回过一次话就把超时缩回 4 秒」
+// 是模块级状态（nativeUpdate 的 `bridgeEverAnswered`），不清的话前一个用例里一次成功的
+// 调用会让后一个用例的超时窗口悄悄从 25 秒变成 4 秒 —— 那正是「单独跑绿、一起跑红」
+// 那一类泄漏，而且它会让「冷启动给足时间」这条用例在污染下**假装通过**。
+beforeEach(() => {
+  resetBridgeWarmupForTests();
+});
 
 const manifest = (over: Partial<OtaManifest> = {}): OtaManifest => ({
   buildId: 'a1b2c3d',
@@ -238,6 +247,16 @@ describe('runningBuild', () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(settled).toBe(true);
   });
+  // 变更 56 在写自检用例时撞出来的一个真缺口：原来这里是 `current.bundle.version`，
+  // 原生侧回一个没有 `bundle` 的对象就会抛 TypeError——而这个返回值直接喂给
+  // `void runningBuild().then(setBuild)`，抛出去就是一个没人接的 rejection，
+  // 设置页永远停在「正在问原生侧版本号…」。**桥回话了反而比不回话更糟**，不能这样。
+  it('原生侧回的形状不认识时也不抛 —— 当成 builtin，别把那一块整个抹掉', async () => {
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    current.mockResolvedValue({});
+    getInfo.mockResolvedValue({ version: '0.6.4' });
+    await expect(runningBuild()).resolves.toMatchObject({ native: '0.6.4', bundle: 'builtin' });
+  });
 });
 
 // ── checkNativeUpdate：更新器自己不能被桥挂死 ───────────────────────────
@@ -289,7 +308,7 @@ describe('checkNativeUpdate', () => {
     getInfo.mockReturnValue(new Promise(() => {}));
 
     const pending = checkNativeUpdate();
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(26_000);
 
     // 修之前：这里永远等不到，download 一次都不会被调用，设备永久脱离热更。
     await expect(pending).resolves.toMatchObject({ action: 'download' });
@@ -303,12 +322,12 @@ describe('checkNativeUpdate', () => {
     getInfo.mockReturnValue(new Promise(() => {}));
 
     const first = checkNativeUpdate();
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(26_000);
     await first;
     expect(download).toHaveBeenCalledTimes(1);
 
     const second = checkNativeUpdate();
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(26_000);
     await expect(second).resolves.toMatchObject({ action: 'skip' });
     expect(download).toHaveBeenCalledTimes(1);
   });
@@ -319,17 +338,54 @@ describe('checkNativeUpdate', () => {
     getInfo.mockReturnValue(new Promise(() => {}));
 
     const first = checkNativeUpdate();
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(26_000);
     await first;
 
     body.buildId = 'newer99';
     body.version = '0.6.1+newer99';
     const second = checkNativeUpdate();
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(26_000);
     await expect(second).resolves.toMatchObject({ action: 'download' });
     expect(download).toHaveBeenCalledTimes(2);
     body.buildId = 'e209c83';
     body.version = '0.6.0+e209c83';
+  });
+
+  // ── 冷启动窗口（变更 56）────────────────────────────────────────────
+  // 起因：真机上 `probePlugins()` 已经确认 CapacitorUpdater 注册成功，`current()` 还是
+  // 超时——而它的 Swift 实现是纯同步、拿到 BundleInfo 立刻 resolve，根本不可能慢。
+  // 唯一能让它慢的是它前面那一步：Capacitor 懒加载插件，第一次调用才跑插件的 `load()`，
+  // 而 Capgo 的 `load()` 在主线程上做一整套磁盘活 + 发一次统计 + 切 serverBasePath。
+  // 4 秒很可能不是「桥哑了」，是**我们在插件正初始化的当口就放弃等待了**。
+  it('桥还没回过话时，4 秒不算超时 —— 那可能只是插件正在 load()', async () => {
+    vi.useFakeTimers();
+    let resolveCurrent: ((v: unknown) => void) | undefined;
+    current.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCurrent = resolve;
+      }),
+    );
+    const pending = checkNativeUpdate();
+    // 旧窗口（4 秒）之后：如果这时就判超时，下面这次迟到的回答就白给了。
+    await vi.advanceTimersByTimeAsync(9000);
+    resolveCurrent!({ bundle: { version: '0.6.0+e209c83' } });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(pending).resolves.toMatchObject({ action: 'skip', reason: '已经是最新' });
+  });
+
+  it('桥回过一次话之后，超时窗口缩回 4 秒 —— 那之后再慢就真的是有问题', async () => {
+    vi.useFakeTimers();
+    // 第一趟：正常回答，把「桥是活的」这件事记下来。
+    await checkNativeUpdate();
+    // 第二趟：这次 current 永远不回。窗口已经缩回 4 秒，所以 5 秒就该判超时，
+    // 不用再等满 25 秒。
+    current.mockReturnValue(new Promise(() => {}));
+    const second = checkNativeUpdate();
+    await vi.advanceTimersByTimeAsync(5000);
+    await second;
+    expect(readLastCheckLog()?.steps).toContainEqual(
+      expect.stringMatching(/^current:timeout\(/),
+    );
   });
 
   it('manifest 拉不到就安静跳过，不抛给调用方', async () => {
@@ -428,7 +484,7 @@ describe('notifyNativeAppReady', () => {
     void notifyNativeAppReady().then(() => {
       settled = true;
     });
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(24_000);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(2000);
     expect(settled).toBe(true);
@@ -600,7 +656,10 @@ describe('checkNativeUpdate 的诊断日志', () => {
   it('正常跑完：每一步都按顺序记下，outcome 说人话', async () => {
     await checkNativeUpdate();
     const log = readLastCheckLog();
-    expect(log?.steps).toEqual([
+    // 过桥那几步带上耗时（`current:ok(3ms)`）—— 没有这个数，「4 秒就放弃」和
+    // 「等满 25 秒还没回」在日志里长得一模一样，而两者的下一步完全不同。
+    expect(log?.steps.map((s) => s.replace(/\(\d+ms\)$/, ''))).toEqual([
+      'platform:ios',
       'plugin-import:ok',
       'fetch:ok',
       'current:ok',
@@ -609,6 +668,7 @@ describe('checkNativeUpdate 的诊断日志', () => {
       'download:ok',
       'next:ok',
     ]);
+    expect(log?.steps).toContainEqual(expect.stringMatching(/^current:ok\(\d+ms\)$/));
     expect(log?.outcome).toContain(body.version);
   });
 
@@ -616,11 +676,14 @@ describe('checkNativeUpdate 的诊断日志', () => {
     vi.useFakeTimers();
     current.mockReturnValue(new Promise(() => {}));
     const pending = checkNativeUpdate();
-    await vi.advanceTimersByTimeAsync(5000);
+    // 26 秒而不是 5 秒：桥在这个会话里还一次都没回过话，所以走的是冷启动窗口
+    // （`COLD_BRIDGE_TIMEOUT_MS` = 25 秒）。推 5 秒就断言超时，只有在别的用例
+    // 污染了 warmup 标记时才会「通过」。
+    await vi.advanceTimersByTimeAsync(26_000);
     await pending;
     const log = readLastCheckLog();
-    expect(log?.steps).toContain('current:timeout');
-    expect(log?.steps).toContain('getInfo:ok');
+    expect(log?.steps).toContainEqual(expect.stringMatching(/^current:timeout\(\d+ms\)$/));
+    expect(log?.steps).toContainEqual(expect.stringMatching(/^getInfo:ok\(/));
     // 未知不拦更新（decideUpdate 的既有约定），所以照样走到下载。
     expect(log?.steps).toContain('decide:download');
   });
@@ -661,6 +724,33 @@ describe('checkNativeUpdate 的诊断日志', () => {
     });
   });
 
+  // ── 走不完也要留下记录（变更 57）────────────────────────────────────
+  // 2026-09-23 真机上最关键的一条反馈：设置页里**连「上次查更新」那一块都不存在**。
+  // 那说明这份记录一次都没写成过——原来它只在 `finally` 里写一次，而函数根本没返回。
+  // 于是「最该被记下来的那种故障」恰恰是唯一不留记录的那种。现在每一步立刻落盘。
+  it('卡在半路也留得下记录 —— 日志停在哪一步，就是卡在哪一步', async () => {
+    vi.useFakeTimers();
+    // 让 manifest 那一步永远吊着：AbortController 的 abort 也不理它。
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    void checkNativeUpdate();
+    await vi.advanceTimersByTimeAsync(0);
+    const log = readLastCheckLog();
+    expect(log).not.toBeNull();
+    // 停在 `plugin-import:ok` —— 下一步（拉 manifest）就是卡住的那一步。
+    expect(log?.steps).toEqual(['platform:ios', 'plugin-import:ok']);
+    // 这句话留在那里本身就是答案。
+    expect(log?.outcome).toContain('没有走到结束');
+    vi.useRealTimers();
+  });
+
+  it('连平台都还没问出来时，那一笔「开始了」也已经在盘上了', async () => {
+    vi.mocked(nativePlatform).mockReturnValue(new Promise(() => {}));
+    void checkNativeUpdate();
+    const log = readLastCheckLog();
+    expect(log?.steps).toEqual([]);
+    expect(log?.outcome).toContain('没有走到结束');
+  });
+
   it('从没查过时是 null，不是抛错', () => {
     expect(readLastCheckLog()).toBeNull();
   });
@@ -678,7 +768,7 @@ describe('checkNativeUpdate 的诊断日志', () => {
     current.mockRejectedValue(new Error('CapacitorUpdater is not initialized'));
     await checkNativeUpdate();
     const log = readLastCheckLog();
-    expect(log?.steps).toContain('current:rejected');
+    expect(log?.steps).toContainEqual(expect.stringMatching(/^current:rejected\(/));
   });
 
   // `askBridgeVerbose` 的第三种失败：`make()` 自己同步抛，不走 Promise 那条路——
@@ -689,6 +779,6 @@ describe('checkNativeUpdate 的诊断日志', () => {
     });
     await checkNativeUpdate();
     const log = readLastCheckLog();
-    expect(log?.steps).toContain('current:threw');
+    expect(log?.steps).toContainEqual(expect.stringMatching(/^current:threw\(/));
   });
 });

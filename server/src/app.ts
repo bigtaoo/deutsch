@@ -12,9 +12,13 @@ import type { JobQueue } from './align/jobs.ts';
 import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
 import { serveWeights } from './align/weights.ts';
 import type { AiExplainer } from './ai.ts';
+import type { DiagSink } from './diag.ts';
 
 /** 文档 id 直接进 URL 路径，字符集收紧到「课程 id 用得到的那些」。 */
 const DOC_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** 一份设备诊断最多这么大。几百 KB 已经很多了 —— 见 POST /v1/diag。 */
+const MAX_DIAG_BYTES = 2_000_000;
 
 /** 登录接口的粗粒度限流：同一 IP 每小时最多试这么多次。 */
 const AUTH_ATTEMPTS_PER_HOUR = 30;
@@ -41,6 +45,11 @@ export interface AppDeps {
    * 没配时是 undefined，路由回 503，客户端退回「AI 服务暂时不可用」。
    */
   ai?: AiExplainer;
+  /**
+   * 设备诊断的收件箱（变更 56）。**同样可以整块缺席** —— 没给就回 503，
+   * 手机上退回「复制诊断」那条路（它不依赖服务器，见 src/platform/bridgeDiag.ts）。
+   */
+  diag?: DiagSink;
   /** 测试里可以拨快时钟。 */
   now?: () => number;
 }
@@ -327,6 +336,39 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
       // 让用户过一会儿再试，而不是把一段可能带敏感信息的报错原样展示出去。
       return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
     }
+  });
+
+  // ── 设备诊断（变更 56）────────────────────────────────────────────────
+  // 起因：iPhone 上热更停摆，而开发机是 Windows —— 没有 Mac、没有 Xcode 控制台，
+  // 手机内部发生了什么**一个字都看不到**。手机上点一下把报告发到这儿，
+  // 我在这台机器上 `cat` 一下就行。存的是原样 JSON，形状由客户端定（它带 `schema`）。
+  app.post('/v1/diag', async (c) => {
+    if (!deps.diag) {
+      return c.json({ error: '这台服务器没有开诊断收件箱', code: 'diag_off' }, 503);
+    }
+    const raw = await c.req.text();
+    // 上限比文档松不了多少：一份报告几百 KB 已经很多了，再大就是客户端出了 bug，
+    // 而一个能往盘上写任意大文件的接口比没有诊断危险得多。
+    if (raw.length > MAX_DIAG_BYTES) return c.json({ error: '诊断报告太大' }, 413);
+    let report: unknown;
+    try {
+      report = JSON.parse(raw);
+    } catch {
+      return c.json({ error: '诊断报告不是合法 JSON' }, 400);
+    }
+    return c.json(deps.diag.save(c.get('userId'), report));
+  });
+
+  app.get('/v1/diag', (c) => {
+    if (!deps.diag) return c.json({ error: '这台服务器没有开诊断收件箱', code: 'diag_off' }, 503);
+    return c.json({ reports: deps.diag.list(c.get('userId')) });
+  });
+
+  app.get('/v1/diag/:id', (c) => {
+    if (!deps.diag) return c.json({ error: '这台服务器没有开诊断收件箱', code: 'diag_off' }, 503);
+    const text = deps.diag.get(c.get('userId'), c.req.param('id'));
+    if (text === null) return c.json({ error: '没有这份报告' }, 404);
+    return c.body(text, 200, { 'content-type': 'application/json; charset=utf-8' });
   });
 
   // ── 历史版本（GitHub 方案里「git 历史可回滚」的替代物）────────────────

@@ -21,6 +21,11 @@ import {
   runningBuild,
 } from '@/platform/nativeUpdate';
 import { nativePlatform } from '@/platform/native';
+import {
+  collectDeviceReport,
+  runUpdaterSelfTest,
+  sendDeviceReport,
+} from '@/platform/bridgeDiag';
 
 vi.mock('@/platform/nativeUpdate', () => ({
   runningBuild: vi.fn(),
@@ -32,6 +37,15 @@ vi.mock('@/platform/nativeUpdate', () => ({
 
 vi.mock('@/platform/native', () => ({
   nativePlatform: vi.fn(),
+}));
+
+// 桥自检整块假掉：它自己那一套（逐方法调用、串行、冷启动窗口）在
+// `bridgeDiag.test.ts` 里测，这里只关心**按下按钮之后界面说了什么**。
+vi.mock('@/platform/bridgeDiag', () => ({
+  runUpdaterSelfTest: vi.fn(),
+  collectDeviceReport: vi.fn(),
+  sendDeviceReport: vi.fn(),
+  reportToText: vi.fn(() => '一份诊断全文'),
 }));
 
 // `safeArea.ts` 的 `lastProbe` 是模块级缓存（同一份跑到底不重量，见该文件注释），
@@ -56,6 +70,9 @@ const mockPlatform = vi.mocked(nativePlatform);
 const mockCheck = vi.mocked(checkNativeUpdate);
 const mockProbe = vi.mocked(probePlugins);
 const mockLog = vi.mocked(readLastCheckLog);
+const mockSelfTest = vi.mocked(runUpdaterSelfTest);
+const mockCollect = vi.mocked(collectDeviceReport);
+const mockSend = vi.mocked(sendDeviceReport);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -70,6 +87,9 @@ beforeEach(() => {
     updaterMethods: null,
   });
   mockLog.mockReturnValue(null);
+  mockSelfTest.mockResolvedValue([]);
+  mockCollect.mockResolvedValue({} as never);
+  mockSend.mockResolvedValue({ id: '1758600000000-abc123' });
 });
 
 afterEach(() => {
@@ -220,6 +240,26 @@ describe('VersionSection', () => {
     expect(screen.queryByText('查询中…')).not.toBeInTheDocument();
   });
 
+  // 变更 57：每一步都有超时 ≠ 整个函数一定会返回。真机上按钮就是一直转着不停，
+  // 而那说明有个 await 不在任何一道超时的覆盖范围里。这一层不管是哪一个。
+  it('查更新整个卡住时按钮也一定会放开，并且明说它没有回来', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.4', bundle: 'builtin' });
+    mockCheck.mockReturnValue(new Promise(() => {}));
+    render(<VersionSection />);
+    // 真实计时器等挂载，之后再切成假的 —— 反过来的话 waitFor 自己也被冻住。
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByText('现在就查一次更新'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText('查询中…')).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(151_000);
+    // 放开按钮之后 finally 还要重读 build/pending/log，那几个 then 各占一轮微任务。
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText('现在就查一次更新')).toBeInTheDocument();
+    expect(screen.getByText(/还没有回来/)).toBeInTheDocument();
+  });
+
   it('CapacitorUpdater 没注册上时明说「不是超时，是没链进这次构建」', async () => {
     mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
     mockProbe.mockReturnValue({
@@ -261,11 +301,90 @@ describe('VersionSection', () => {
     expect(screen.getByText(/current:timeout/)).toBeInTheDocument();
   });
 
-  it('从没查过时不显示那一块，不留一个空壳', async () => {
+  // 立场在变更 57 反转了：变更 52 当初定的是「从没查过就不画空壳」，而 2026-09-23
+  // 的真机反馈恰恰是「没有『上次查更新』这个信息」——那时候这一块不画，于是这条
+  // **最强的线索**长得和「一切正常、只是还没查过」一模一样。记录现在是逐步落盘的，
+  // 「一笔都没有」因此有了确切含义：它连第一行都没跑到。
+  it('一笔记录都没有时**要说出来** —— 那本身就是最强的线索，不是「还没查过」', async () => {
     mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
     mockLog.mockReturnValue(null);
     render(<VersionSection />);
     await waitFor(() => expect(screen.getByText(/应用壳/)).toBeInTheDocument());
-    expect(screen.queryByText(/上次查更新/)).not.toBeInTheDocument();
+    expect(screen.getByText(/从来没有记下过一次查更新/)).toBeInTheDocument();
+  });
+});
+
+// ── 桥自检与诊断上报（变更 56）───────────────────────────────────────────
+// 存在的理由：「原生桥没回话」底下压着至少四种故障，它们的下一步互不相同，
+// 而分辨它们靠的是「逐个方法调一遍、各自计时」这份结果。这一组守的是那份结果
+// 真的会显示出来，以及**两个出口都在** —— 发到服务器要求登录是好的，
+// 而诊断真正用得上的时候坏的可能正是登录，所以复制那条路必须平行存在。
+describe('VersionSection 的桥自检', () => {
+  const ios = () => {
+    mockRunning.mockResolvedValue({ native: '0.6.4', bundle: 'builtin' });
+  };
+
+  it('iOS 上三个出口都在：自检、发到服务器、复制', async () => {
+    ios();
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('跑一次桥自检')).toBeInTheDocument());
+    expect(screen.getByText('发到服务器')).toBeInTheDocument();
+    expect(screen.getByText('复制诊断')).toBeInTheDocument();
+  });
+
+  it('自检结果按「方法 → 结果（耗时）」一行行摆出来 —— 耗时本身就是答案', async () => {
+    ios();
+    mockSelfTest.mockResolvedValue([
+      { method: 'getPluginVersion', outcome: 'ok', ms: 8123 },
+      { method: 'current', outcome: 'ok', ms: 4 },
+      { method: 'App.getInfo', outcome: 'ok', ms: 3 },
+    ]);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('跑一次桥自检')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('跑一次桥自检'));
+    // 头一个特别慢、后面都快 —— 这个形状就是「插件 load() 慢」而不是「桥哑了」。
+    await waitFor(() => expect(screen.getByText(/getPluginVersion → ok（8123ms）/)).toBeInTheDocument());
+    expect(screen.getByText(/current → ok（4ms）/)).toBeInTheDocument();
+  });
+
+  it('发到服务器成功后把 id 说出来 —— 我在 VPS 上按它取那一份', async () => {
+    ios();
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('发到服务器')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('发到服务器'));
+    await waitFor(() => expect(screen.getByText(/已发送：1758600000000-abc123/)).toBeInTheDocument());
+    // 没自检过就直接发的话，那份报告基本说明不了问题 —— 所以先自己跑一遍。
+    expect(mockSelfTest).toHaveBeenCalled();
+  });
+
+  it('发送失败时说清楚为什么，而不是静静地什么都不发生', async () => {
+    ios();
+    mockSend.mockRejectedValue(new Error('还没登录 —— 先去上面登录，或者用「复制诊断」'));
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('发到服务器')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('发到服务器'));
+    await waitFor(() => expect(screen.getByText(/发送失败.*还没登录/)).toBeInTheDocument());
+  });
+
+  it('剪贴板被 WKWebView 拒掉时把全文摊开，不假装复制成功', async () => {
+    ios();
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('复制诊断')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('复制诊断'));
+    await waitFor(() => expect(screen.getByText(/剪贴板用不了/)).toBeInTheDocument());
+    expect(screen.getByDisplayValue('一份诊断全文')).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it('web 上不摆这一组 —— 那边没有桥可自检', async () => {
+    mockPlatform.mockResolvedValue('web');
+    mockRunning.mockResolvedValue(null);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/网页版/)).toBeInTheDocument());
+    expect(screen.queryByText('跑一次桥自检')).not.toBeInTheDocument();
   });
 });

@@ -250,10 +250,41 @@ function errMessage(err: unknown): string {
   }
 }
 
-/** `askBridgeVerbose` 的结果 —— 比 `T | undefined` 多说一句「问不出来是因为什么」。 */
+/**
+ * **桥还一次都没回过话时**，每个调用至少等这么久（变更 56）。
+ *
+ * 起因是 2026-09-23 那次真机：`probePlugins()` 已经确认 `CapacitorUpdater` 注册成功，
+ * 可 `current()` 还是 4 秒超时 —— 而 `current()` 的 Swift 实现是纯同步、拿到 BundleInfo
+ * 立刻 `call.resolve()`（CapacitorUpdaterPlugin.swift 的 `@objc func current`），
+ * 它**不可能慢**。唯一能让它慢的是它前面那一步：Capacitor 的插件是懒加载的，
+ * 第一次桥调用才 `loadPlugin()` → 跑插件的 `load()`，而 Capgo 的 `load()` 在主线程上
+ * 做了一整套磁盘活（`cleanupObsoleteVersions`、默认频道状态文件、`autoReset`）、
+ * 发一次统计到 capgo 的服务器、最后还要 `initialLoad()` 去切 WebView 的 serverBasePath。
+ * 4 秒很可能根本不是「桥哑了」，而是**我们在插件正初始化的当口就放弃等待了**。
+ *
+ * 所以：**在这个会话里桥还一次都没回过话之前，一律按冷启动算，给足时间。**
+ * 只要有过一次回话（resolve 或 reject 都算 —— 原生侧真的动了），就切回 4 秒，
+ * 因为那之后再慢就真的是有问题了。代价只有「最坏情况下多等二十几秒」，
+ * 而这几个调用没有一个是挡在用户前面的。
+ */
+const COLD_BRIDGE_TIMEOUT_MS = 25_000;
+
+/** 这个会话里原生桥有没有回过话（resolve/reject 都算）。见 `COLD_BRIDGE_TIMEOUT_MS`。 */
+let bridgeEverAnswered = false;
+
+/** 测试用：把「桥回过话」的记号清掉，让下一次调用重新按冷启动算。 */
+export function resetBridgeWarmupForTests(): void {
+  bridgeEverAnswered = false;
+}
+
+/**
+ * `askBridgeVerbose` 的结果 —— 比 `T | undefined` 多说两句：「问不出来是因为什么」
+ * 和「等了多久」。**耗时是这一块最贵的诊断数据**：同一个 `timeout`，等了 4 秒和等了
+ * 25 秒是两种完全不同的故障；而一个 9 秒才回来的 `ok`，直接就指认出「慢」而不是「哑」。
+ */
 export type BridgeOutcome<T> =
-  | { ok: true; value: T }
-  | { ok: false; reason: 'timeout' | 'rejected' | 'threw'; message?: string };
+  | { ok: true; value: T; ms: number }
+  | { ok: false; reason: 'timeout' | 'rejected' | 'threw'; message?: string; ms: number };
 
 /**
  * 过桥问一个数，**问不出来也要说清楚是哪一种问不出来**，绝不把调用方挂住。
@@ -262,33 +293,63 @@ export type BridgeOutcome<T> =
  * 「诊断」那段）、`rejected`（原生侧真的报了错）、`threw`（`make()` 自己同步抛，比如
  * 插件的 JS chunk 都没 import 成功）。**每个数各问各的**，不要拿 `Promise.all` 把它们
  * 绑在一起 —— 那样一个挂住的调用会把另一个本来问得出来的也一起拖死。
+ *
+ * 传进来的 `timeoutMs` 是**下限**：桥还没回过话时按 `COLD_BRIDGE_TIMEOUT_MS` 放宽。
+ *
+ * `allowCold=false` 关掉那条放宽 —— **给显示用的那条路**（`runningBuild()`）。
+ * 设置页那两行版本号是人盯着等的，「4 秒级，不能久到让人以为这一页坏了」是它从一开始
+ * 就有的约定；而放宽超时要换的东西是「后台那几个调用别半途放弃」，两者不冲突，
+ * 也不该互相迁就：干活的那条路等久一点没人看见，显示的那条路等久一点就是坏掉的观感。
  */
-async function askBridgeVerbose<T>(
+export async function askBridgeVerbose<T>(
   make: () => Promise<T>,
   timeoutMs: number = BRIDGE_TIMEOUT_MS,
+  allowCold = true,
 ): Promise<BridgeOutcome<T>> {
+  const started = Date.now();
+  const effectiveTimeout =
+    bridgeEverAnswered || !allowCold ? timeoutMs : Math.max(timeoutMs, COLD_BRIDGE_TIMEOUT_MS);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    const outcome = await Promise.race([
       // catch 挂在这里而不是外面：超时之后它才 reject 的话，外面的 try 早就走完了，
       // 那个 rejection 会变成没人接的 unhandledrejection。
       make()
         .then((value) => ({ ok: true, value }) as const)
         .catch((err: unknown) => ({ ok: false, reason: 'rejected', message: errMessage(err) }) as const),
-      new Promise<BridgeOutcome<T>>((resolve) => {
-        timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), timeoutMs);
+      new Promise<{ ok: false; reason: 'timeout' }>((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), effectiveTimeout);
       }),
     ]);
+    // reject 也算「回过话」：原生侧真的执行了，慢的那一段（插件 load()）已经过去了。
+    if (outcome.ok || outcome.reason === 'rejected') bridgeEverAnswered = true;
+    const ms = Date.now() - started;
+    return outcome.ok
+      ? { ok: true, value: outcome.value, ms }
+      : { ok: false, reason: outcome.reason, message: 'message' in outcome ? outcome.message : undefined, ms };
   } catch (err) {
-    return { ok: false, reason: 'threw', message: errMessage(err) };
+    return { ok: false, reason: 'threw', message: errMessage(err), ms: Date.now() - started };
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** 只要答案、不要诊断时的简化版 —— `runningBuild()` 用这个。 */
+/**
+ * 一步的记录，形如 `current:ok(37ms)` / `current:timeout(25003ms)`。
+ *
+ * **耗时必须写进去**：没有它，「4 秒就放弃」和「等满 25 秒还没回」在日志里长得一模一样，
+ * 而这两种情况的下一步完全不同（前者是我们等得不够，后者才是桥真的哑了）。
+ */
+function step<T>(name: string, outcome: BridgeOutcome<T>): string {
+  return `${name}:${outcome.ok ? 'ok' : outcome.reason}(${outcome.ms}ms)`;
+}
+
+/**
+ * 只要答案、不要诊断时的简化版 —— `runningBuild()` 用这个。
+ * **不走冷启动放宽**（见 `askBridgeVerbose` 的 `allowCold`）：这条路是给人看的。
+ */
 async function askBridge<T>(make: () => Promise<T>): Promise<T | undefined> {
-  const r = await askBridgeVerbose(make);
+  const r = await askBridgeVerbose(make, BRIDGE_TIMEOUT_MS, false);
   return r.ok ? r.value : undefined;
 }
 
@@ -348,6 +409,42 @@ function writeCheckLog(entry: CheckLogEntry): void {
   }
 }
 
+/**
+ * **每一步都立刻落盘**的日志笔（变更 57）。
+ *
+ * ── 为什么不能等到最后一起写 ──
+ * 原来这份记录只在 `checkNativeUpdate()` 的 `finally` 里写一次。那对「跑完了但结果不对」
+ * 是够的，对**「根本跑不完」**却完全无效：函数不返回，`finally` 就不执行，一个字都不留。
+ * 2026-09-23 真机上正是这样——按钮一直显示「查询中」，而设置页里连「上次查更新」那一块
+ * 都不存在。于是最该被记下来的那种故障，恰恰是唯一不会留下记录的那种。
+ *
+ * 现在：进门先写一笔「开始了」，之后每一步 append 并立刻覆盖写。卡在哪一步，
+ * 下次打开设置页就直接看得见——**日志停在哪儿，就是卡在哪儿**。
+ *
+ * 代价是每一步一次 `localStorage.setItem`，一次查更新统共七八次，可以忽略。
+ */
+function startCheckLog() {
+  const at = Date.now();
+  const steps: string[] = [];
+  const probe = probePlugins();
+  // 这句话会一直留在那里，直到某一步把它换掉。**留着就是答案**：看到它，
+  // 就说明这一趟从来没有走到结束。
+  let outcome = '（开始了，但没有走到结束——卡在下面最后那一步上）';
+  const flush = (): void => writeCheckLog({ at, steps, outcome, probe });
+  flush();
+  return {
+    steps,
+    step(s: string): void {
+      steps.push(s);
+      flush();
+    },
+    finish(text: string): void {
+      outcome = text;
+      flush();
+    },
+  };
+}
+
 /** 上一次 `checkNativeUpdate()` 跑下来的记录；从没跑过（或存不下）时是 `null`。给设置页用。 */
 export function readLastCheckLog(): CheckLogEntry | null {
   try {
@@ -404,18 +501,28 @@ export async function notifyNativeAppReady(): Promise<void> {
  * 都一样，且什么都不剩」，而诊断的价值恰恰是把「什么都不剩」变成「剩一份能看的记录」。
  */
 export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
-  const steps: string[] = [];
-  const probe = probePlugins();
-  if ((await nativePlatform()) !== 'ios') return null; // 浏览器：不记日志，那边这个函数本来就不该被调用。
+  // **进门第一件事就是落一笔。** 这一行之后无论卡在哪里，设置页都看得见「开始了、
+  // 走到了第几步」——见 `startCheckLog()`。在这之前不能有任何 `await`：2026-09-23
+  // 真机上「连『上次查更新』那一块都不存在」正是因为原来第一个 `await` 就在这上面。
+  const log = startCheckLog();
+
+  // `nativePlatform()` 只是一次动态 import，不过桥——但它照样是个 `await`，
+  // 而这一整条路上「某个 await 永不 settle」已经发生过三次了，所以它也要留脚印。
+  const platform = await nativePlatform();
+  log.step(`platform:${platform}`);
+  if (platform !== 'ios') {
+    log.finish('不是 iOS 壳，热更这条路本来就不走');
+    return null;
+  }
 
   let outcome: UpdateDecision | null = null;
   let outcomeText = '（异常中断）';
   try {
     const CapacitorUpdater = await updater().catch((err: unknown) => {
-      steps.push(`plugin-import:threw:${errMessage(err)}`);
+      log.step(`plugin-import:threw:${errMessage(err)}`);
       throw err;
     });
-    steps.push('plugin-import:ok');
+    log.step('plugin-import:ok');
 
     // cache: 'no-store' —— WKWebView 会缓存这个 JSON，缓存住了就等于热更停摆，
     // 而症状是「部署了但手机不更新」，和没接热更一模一样。
@@ -429,32 +536,34 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
       signal: fetchController.signal,
     })
       .catch((err: unknown) => {
-        steps.push(`fetch:threw:${errMessage(err)}`);
+        log.step(`fetch:threw:${errMessage(err)}`);
         throw err;
       })
       .finally(() => clearTimeout(fetchTimer));
     if (!res.ok) {
-      steps.push(`fetch:http-${res.status}`);
+      log.step(`fetch:http-${res.status}`);
       outcome = { action: 'skip', reason: `manifest ${res.status}` };
       outcomeText = outcome.reason;
       return outcome;
     }
-    steps.push('fetch:ok');
+    log.step('fetch:ok');
     const manifest = (await res.json()) as OtaManifest;
 
     const [current, info] = await Promise.all([
       askBridgeVerbose(() => CapacitorUpdater.current()),
       askBridgeVerbose(async () => (await import('@capacitor/app')).App.getInfo()),
     ]);
-    steps.push(`current:${current.ok ? 'ok' : current.reason}`);
-    steps.push(`getInfo:${info.ok ? 'ok' : info.reason}`);
+    log.step(step('current', current));
+    log.step(step('getInfo', info));
 
     const decision = decideUpdate(manifest, {
-      currentVersion: current.ok ? (current.value.bundle.version ?? BUILTIN) : undefined,
+      // `?.` 一路到底：原生侧回的是什么形状不由我们说了算，而一个 `undefined.version`
+      // 在这里会把整趟查更新变成「异常」，等于**桥回话了反而更糟**。
+      currentVersion: current.ok ? (current.value?.bundle?.version ?? BUILTIN) : undefined,
       nativeVersion: info.ok ? info.value.version : undefined,
       queuedBuildId: readQueuedBuildId(),
     });
-    steps.push(`decide:${decision.action}`);
+    log.step(`decide:${decision.action}`);
     if (decision.action === 'skip') {
       outcome = decision;
       outcomeText = decision.reason;
@@ -465,7 +574,7 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
       () => CapacitorUpdater.download({ url: decision.url, version: decision.version }),
       DOWNLOAD_TIMEOUT_MS,
     );
-    steps.push(`download:${downloaded.ok ? 'ok' : downloaded.reason}`);
+    log.step(step('download', downloaded));
     if (!downloaded.ok) {
       // 45 秒还没回应，十有八九是桥没回话，不是文件大——不值得再等，留到下次
       // 冷启动或下次手动点「现在就查一次更新」再试。**绝不能卡在这里不返回**：
@@ -480,7 +589,7 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
       () => CapacitorUpdater.next({ id: downloaded.value.id }),
       NEXT_TIMEOUT_MS,
     );
-    steps.push(`next:${registered.ok ? 'ok' : registered.reason}`);
+    log.step(step('next', registered));
     if (!registered.ok) {
       // 包已经下好了，但没能登记成「下次启动用它」——不能假装这一趟成功了
       // （那样设置页会显示「已下好，下次打开生效」，而原生侧其实什么都没登记）。
@@ -499,7 +608,9 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
     outcomeText = `异常：${errMessage(err)}`;
     return null;
   } finally {
-    writeCheckLog({ at: Date.now(), steps, outcome: outcomeText, probe });
+    // 每一步其实都已经写过了；这里只是把结论补上去。**走不到这里也没关系** ——
+    // 那正是改成逐步落盘要解决的情况，日志会停在最后一步并保留「没有走到结束」那句话。
+    log.finish(outcomeText);
   }
 }
 
@@ -536,7 +647,10 @@ export async function runningBuild(): Promise<RunningBuild | null> {
   ]);
   return {
     native: info?.version,
-    bundle: current ? (current.bundle.version ?? BUILTIN) : undefined,
+    // 同上：`current` 有、但里面没有 `bundle` 时也该报 builtin，而不是抛出去 ——
+    // 这条路的返回值直接喂给 `void runningBuild().then(setBuild)`，抛了就是
+    // 一个没人接的 rejection，设置页永远停在「正在问原生侧版本号…」。
+    bundle: current ? (current.bundle?.version ?? BUILTIN) : undefined,
     queued: readQueuedBuildId(),
   };
 }
