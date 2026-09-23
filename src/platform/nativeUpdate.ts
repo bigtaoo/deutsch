@@ -157,10 +157,114 @@ export function decideUpdate(manifest: OtaManifest, ctx: UpdateContext): UpdateD
   return { action: 'download', version: manifest.version, url: manifest.url };
 }
 
-/** 插件是懒加载的 —— 和 native.ts 里其它插件一样，别把它拽进首屏包。 */
-async function updater() {
-  const { CapacitorUpdater } = await import('@capgo/capacitor-updater');
-  return CapacitorUpdater;
+/**
+ * 给任何一个 promise 一个死线。超时回 `null`，**不抛** —— 调用方要的是
+ * 「这条路这次走不通」，不是一个新的失败方式。
+ *
+ * 和 `askBridgeVerbose` 的分工：那个管**过桥**的调用（要分辨 timeout/rejected/threw、
+ * 要记耗时、要认冷启动），这个管**拿东西**的那一步（动态 import、造代理）。
+ * 2026-09-23 那次真机故障恰恰卡在后者上 —— 前者每一处都有死线，而它前面那一步没有。
+ *
+ * 导出只为了能单独测它：**「这条路上的每一个 await 都有死线」这句话本身要有用例守着**，
+ * 而它在 `acquireUpdater()` 里那两处的参数是动态 import，在 jsdom 里没法让它们真的吊住。
+ */
+export async function withDeadline<T>(make: () => Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      // catch 挂在里面：超时之后它才 reject 的话，外面早就走完了，那会变成
+      // 没人接的 unhandledrejection（和 askBridgeVerbose 同一个理由）。
+      (async () => make())().catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 拿插件这一步最多等多久。两条路各自算，加起来最坏 16 秒 —— 没有人在等这个结果。 */
+const PLUGIN_TIMEOUT_MS = 8000;
+
+/** 只用到这几个方法。**手写而不是 import 插件包的类型**，理由见 `acquireUpdater()`。 */
+export interface UpdaterPlugin {
+  current(): Promise<{ bundle?: { version?: string } }>;
+  download(opts: { url: string; version: string }): Promise<{ id: string }>;
+  next(opts: { id: string }): Promise<unknown>;
+  notifyAppReady(): Promise<unknown>;
+}
+
+/** 这个会话里已经拿到的插件代理。拿到过一次就不再重新取。 */
+let updaterPlugin: UpdaterPlugin | null = null;
+
+/**
+ * 拿到更新器插件，**并说清楚是从哪条路拿到的**。
+ *
+ * ── 2026-09-23 那份真机诊断指认的就是这里（变更 59）──
+ * `probePlugins()` 说 `CapacitorUpdater` 注册成功、七个只读方法逐个调都是 0~5 毫秒，
+ * 桥、插件、原生侧全是好的。而同一份报告里「上次查更新」的步骤停在 `['platform:ios']`
+ * —— `checkNativeUpdate()` 走到这个函数就再也没有回来。同一次启动里
+ * `notifyNativeAppReady()` 也没有到达原生侧（原生日志里没有那句「notifyAppReady was
+ * called」，只有回滚检查自己的定时器打出来的「Built-in bundle is active」），
+ * 而它在平台判断之后的下一步同样是这个函数。**两条路停在同一行**：
+ * `await import('@capgo/capacitor-updater')`。
+ *
+ * 旁证在原生日志里：那次启动打过一条 `Semaphore wait timed out after 20000ms` ——
+ * 插件 `load()` armed 的那个信号量等满 20 秒才放开，而这段时间它正在主线程上做磁盘活
+ * 并 `setServerBasePath()` 切 WebView 的 web 根。**chunk 是同一个 WebView 取的**：
+ * 根在切、handler 在忙，这一次 4KB 的 chunk 请求就悬在那儿，既不成功也不失败，
+ * 而 `import()` 对「请求永远不回」的表现就是 promise 永远不 settle。
+ *
+ * ── 为什么改成不走那个 import ──
+ * 插件包的 JS 层是一层壳：`registerPlugin('CapacitorUpdater')` 造一个代理，代理的每个
+ * 方法就是 `Capacitor.nativePromise('CapacitorUpdater', 方法名, 参数)`（见
+ * node_modules/@capacitor/core/dist/index.js 的 `createPluginMethod`）。而
+ * `registerPlugin` 在 `@capacitor/core` 里，core 这个 chunk **在走到这里之前必然已经
+ * 加载完了** —— `nativePlatform()` 用的就是它，日志里那句 `platform:ios` 就是证据。
+ * 所以：直接用 core 造代理，热更这条路上从此**一个新 chunk 都不用取**，
+ * 「取 chunk 取到一半 web 根被换掉」那个窗口就不存在了。
+ *
+ * 跳过的是插件包 JS 层的副作用（它给 history 打的那个补丁，服务于
+ * `keep_url_path_after_reload`）——本项目是 hash 路由、也没开那个选项，用不到。
+ * 类型也因此手写（上面的 `UpdaterPlugin`）：`import type` 不留运行时代码，但会把
+ * 「这个包必须存在」写进构建，而这里的目的正是让热更不再依赖它。
+ *
+ * ── 为什么两条路都还有死线 ──
+ * 「换一条不会挂的路」和「这条路万一也挂了怎么办」是两件事。core 已经在内存里、
+ * `registerPlugin` 是同步的，但「理论上不会挂」在这条路上已经被现实打脸三次
+ * （变更 50/52/53）。所以照旧：每一步给死线，拿不到就明说拿不到，**绝不挂住调用方**。
+ */
+export async function acquireUpdater(): Promise<{ plugin: UpdaterPlugin | null; via: string }> {
+  if (updaterPlugin) return { plugin: updaterPlugin, via: 'cached' };
+
+  // 第一条路：core 造代理，不取任何新 chunk。
+  const core = await withDeadline(() => import('@capacitor/core'), PLUGIN_TIMEOUT_MS);
+  if (core) {
+    try {
+      // 造两次只会 warn 一句并回同一个代理（core 的 registeredPlugins），不是错误。
+      updaterPlugin = core.registerPlugin<UpdaterPlugin>('CapacitorUpdater');
+      return { plugin: updaterPlugin, via: 'core' };
+    } catch {
+      // core 的形状变了之类 —— 落到下面那条老路。
+    }
+  }
+
+  // 第二条路：老办法。core 拿不到时它多半也拿不到，但「多半」不是「一定」。
+  const mod = await withDeadline(() => import('@capgo/capacitor-updater'), PLUGIN_TIMEOUT_MS);
+  const fromPackage = mod?.CapacitorUpdater as UpdaterPlugin | undefined;
+  if (fromPackage) {
+    updaterPlugin = fromPackage;
+    return { plugin: updaterPlugin, via: 'import' };
+  }
+  return { plugin: null, via: core ? 'core-failed,import-failed' : 'core-timeout,import-failed' };
+}
+
+/** 拿不到插件就抛 —— 给 `askBridge` 那条路用，它会把抛出去的变成「问不出来」。 */
+async function updater(): Promise<UpdaterPlugin> {
+  const { plugin, via } = await acquireUpdater();
+  if (!plugin) throw new Error(`拿不到更新器插件（${via}）`);
+  return plugin;
 }
 
 /**
@@ -272,9 +376,21 @@ const COLD_BRIDGE_TIMEOUT_MS = 25_000;
 /** 这个会话里原生桥有没有回过话（resolve/reject 都算）。见 `COLD_BRIDGE_TIMEOUT_MS`。 */
 let bridgeEverAnswered = false;
 
-/** 测试用：把「桥回过话」的记号清掉，让下一次调用重新按冷启动算。 */
+/**
+ * 测试用：把这个模块所有的模块级状态清回出厂 —— 「桥回过话」的记号、缓存的插件代理、
+ * 内存里的那份查更新记录与存储失败原因。
+ *
+ * **每个用例都要调一次。** 这里每一项都是「上一个用例留下来会让下一个用例悄悄换个
+ * 行为」的那种状态：`bridgeEverAnswered` 会把冷启动的 25 秒窗口缩成 4 秒，
+ * `updaterPlugin` 会让「拿插件」那两条路根本不跑，`liveCheckLog` 会让
+ * `readLastCheckLog()` 读不到这个用例自己摆进 localStorage 的东西。
+ */
 export function resetBridgeWarmupForTests(): void {
   bridgeEverAnswered = false;
+  updaterPlugin = null;
+  liveCheckLog = null;
+  lastWriteError = null;
+  appReadyLog = null;
 }
 
 /**
@@ -382,6 +498,49 @@ function rememberQueuedBuildId(buildId: string): void {
 const FETCH_TIMEOUT_MS = 8000;
 
 /**
+ * `notifyAppReady()` 失手之后，隔多久再试一次（毫秒）。四次机会，最后一次在
+ * 启动后 43 秒左右。
+ *
+ * 这几个数是照着真机日志挑的：那次启动里插件的信号量**等满了 20 秒**才放开
+ * （`Semaphore wait timed out after 20000ms`），而 `checkAppReady` 的回滚倒计时
+ * 也是十几秒级。所以重试必须跨过那个二十秒的窗口，只隔一两秒地重试三次等于
+ * 在同一堵墙上撞三下。最后一次落在墙外，才有意义。
+ */
+const APP_READY_RETRY_MS = [3000, 10_000, 30_000];
+
+/** 「我起来了」这一趟的结果，给诊断看。 */
+export interface AppReadyLog {
+  at: number;
+  /** 试到第几次才有这个结果。 */
+  attempts: number;
+  outcome: string;
+}
+
+const APP_READY_KEY = 'ota.appReady';
+
+let appReadyLog: AppReadyLog | null = null;
+
+function writeAppReadyLog(entry: AppReadyLog): void {
+  appReadyLog = entry;
+  try {
+    localStorage.setItem(APP_READY_KEY, JSON.stringify(entry));
+  } catch (err) {
+    lastWriteError = errMessage(err);
+  }
+}
+
+/** 上一次「我起来了」的结果。内存优先，理由同 `readLastCheckLog()`。 */
+export function readAppReadyLog(): AppReadyLog | null {
+  if (appReadyLog) return appReadyLog;
+  try {
+    const raw = localStorage.getItem(APP_READY_KEY);
+    return raw ? (JSON.parse(raw) as AppReadyLog) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 一次「查更新」跑下来的完整记录，**不过桥**（localStorage），供设置页读。
  *
  * 这是回应「手机上到底发生了什么」的最后一道诊断：没有 Mac、看不到 Xcode 控制台，
@@ -401,12 +560,34 @@ export interface CheckLogEntry {
 
 const CHECK_LOG_KEY = 'ota.lastCheckLog';
 
+/**
+ * 这个会话里最新的那一份记录，**在内存里**。
+ *
+ * 为什么不能只有 localStorage 那一份（变更 59）：2026-09-23 那份真机诊断里，
+ * 「上次查更新」停在第一步，而当时有两种完全不同的成因能长成这个样子 ——
+ * 真的卡在那一步，或者**后面几步写不进 localStorage**（`writeCheckLog` 的 catch
+ * 是哑的，写失败和没走到这一步在文件里一模一样）。分不清这两种，就等于这份诊断
+ * 在最关键的那个问题上不可信。内存这一份不依赖任何存储，本次会话内它就是真相；
+ * 存储那一份只负责跨会话。两份都在，`lastWriteError` 把差异说出来。
+ */
+let liveCheckLog: CheckLogEntry | null = null;
+
+/** 最后一次写 localStorage 失败的原因；一直没失败过是 `null`。 */
+let lastWriteError: string | null = null;
+
 function writeCheckLog(entry: CheckLogEntry): void {
+  liveCheckLog = entry;
   try {
     localStorage.setItem(CHECK_LOG_KEY, JSON.stringify(entry));
-  } catch {
-    // 存不下就少一份诊断，不影响更新本身。
+  } catch (err) {
+    // 存不下就少一份跨会话的诊断，不影响更新本身 —— 但**要留下痕迹**，见 liveCheckLog。
+    lastWriteError = errMessage(err);
   }
+}
+
+/** localStorage 写失败过没有。诊断报告要带上 —— 见 `liveCheckLog`。 */
+export function readStorageWriteError(): string | null {
+  return lastWriteError;
 }
 
 /**
@@ -445,8 +626,14 @@ function startCheckLog() {
   };
 }
 
-/** 上一次 `checkNativeUpdate()` 跑下来的记录；从没跑过（或存不下）时是 `null`。给设置页用。 */
+/**
+ * 上一次 `checkNativeUpdate()` 跑下来的记录；从没跑过时是 `null`。给设置页和诊断用。
+ *
+ * **本次会话有记录就用内存里那一份**（见 `liveCheckLog`）：它不经过任何存储，
+ * 写不进 localStorage 也照样是完整的。只有跨会话（这次还没查过）才回去读存储。
+ */
 export function readLastCheckLog(): CheckLogEntry | null {
+  if (liveCheckLog) return liveCheckLog;
   try {
     const raw = localStorage.getItem(CHECK_LOG_KEY);
     return raw ? (JSON.parse(raw) as CheckLogEntry) : null;
@@ -464,12 +651,43 @@ export function readLastCheckLog(): CheckLogEntry | null {
  * **这一步本身也过桥，也可能挂住**（变更 52）—— 原来这里只吞了 reject，没有超时。
  * 不调用等于插件 20 秒后判定这个 bundle 起不来并回滚，是和 `checkNativeUpdate()`
  * 同一个坑的第三处：同一天已经在这里踩过两次（`runningBuild` 与它自己），不该再漏。
+ *
+ * ── 为什么它现在会重试，而且要留记录（变更 59）──
+ * 2026-09-23 那份真机诊断里，这一趟**整个没有发生**：原生日志里没有那句
+ * 「notifyAppReady was called」，只有回滚检查自己的定时器打出来的「Built-in bundle
+ * is active. We skip the check for notifyAppReady.」。也就是说它在启动最忙的那二十秒里
+ * 拿不到插件，然后就**永远地放弃了** —— 一次机会，失手即止，而且一个字都不留。
+ *
+ * 那次侥幸没事，因为当时跑的是随包那份 bundle（`isBuiltin()` 的分支直接跳过回滚检查）。
+ * 但热更一旦真的装上一个 bundle，同一个失手就是：新版起来了 → 没人说「我起来了」→
+ * 下次启动原生侧判定它起不来 → **回滚**。症状是「更新下下来了，可是永远不生效」，
+ * 而这正是这台手机从 0.4.0 起一直在表现的症状之一。所以这一步必须是
+ * 「**一直试到成功**」，不是「试一次算了」—— 它是整条热更链上唯一没有下一次机会的一步。
  */
 export async function notifyNativeAppReady(): Promise<void> {
   if ((await nativePlatform()) !== 'ios') return;
-  const CapacitorUpdater = await updater().catch(() => null);
-  if (!CapacitorUpdater) return; // 插件没装（比如还没出带热更的壳）—— 旧壳照常跑它自己那份 dist。
-  await askBridgeVerbose(() => CapacitorUpdater.notifyAppReady());
+  for (let attempt = 1; attempt <= APP_READY_RETRY_MS.length + 1; attempt++) {
+    const { plugin, via } = await acquireUpdater();
+    if (!plugin) {
+      // 插件没装（比如还没出带热更的壳）也走这里 —— 但那种情况下重试几次的代价是零，
+      // 而分辨「没装」和「这次没拿到」需要的正是下面那份记录。
+      writeAppReadyLog({ at: Date.now(), attempts: attempt, outcome: `拿不到插件（${via}）` });
+    } else {
+      const r = await askBridgeVerbose(() => plugin.notifyAppReady());
+      writeAppReadyLog({
+        at: Date.now(),
+        attempts: attempt,
+        outcome: r.ok ? `ok(${r.ms}ms, via ${via})` : `${r.reason}(${r.ms}ms, via ${via})${r.message ? ` ${r.message}` : ''}`,
+      });
+      // **只重试「没人回话」这一种。** 原生侧真的报了错（rejected）意味着它收到了、
+      // 也执行了 —— 比如旧壳里压根没有这个插件（`UNIMPLEMENTED`）。那种情况再试四次
+      // 只是把同一句错话再听四遍，而每一次都要等满一个超时窗口。
+      if (r.ok || r.reason === 'rejected') return;
+    }
+    const wait = APP_READY_RETRY_MS[attempt - 1];
+    if (wait === undefined) return;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+  }
 }
 
 /**
@@ -518,11 +736,15 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
   let outcome: UpdateDecision | null = null;
   let outcomeText = '（异常中断）';
   try {
-    const CapacitorUpdater = await updater().catch((err: unknown) => {
-      log.step(`plugin-import:threw:${errMessage(err)}`);
-      throw err;
-    });
-    log.step('plugin-import:ok');
+    // 拿插件。**这一步自己带死线**（见 acquireUpdater）—— 2026-09-23 那次真机
+    // 就是停在这里，而当时它是这条路上唯一一个没有死线的 await。
+    const { plugin: CapacitorUpdater, via } = await acquireUpdater();
+    log.step(`plugin:${via}`);
+    if (!CapacitorUpdater) {
+      outcome = { action: 'skip', reason: `拿不到更新器插件（${via}）——这次不查了，下次再试` };
+      outcomeText = outcome.reason;
+      return outcome;
+    }
 
     // cache: 'no-store' —— WKWebView 会缓存这个 JSON，缓存住了就等于热更停摆，
     // 而症状是「部署了但手机不更新」，和没接热更一模一样。

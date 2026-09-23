@@ -4,7 +4,9 @@ import {
   checkNativeUpdate,
   pendingUpdateVersion,
   probePlugins,
+  readAppReadyLog,
   readLastCheckLog,
+  readStorageWriteError,
   runningBuild,
   type CheckLogEntry,
   type RunningBuild,
@@ -211,6 +213,18 @@ function DeviceDiagnostics({ log }: { log: CheckLogEntry | null }) {
   // 注入的静态数据），不会在会话中途变化，读一次就够，不用像常亮那样定时重读。
   const pluginProbe = probePlugins();
 
+  // 「我起来了」那一趟会重试好几十秒才有结论（`APP_READY_RETRY_MS`），所以和常亮同理：
+  // 定时重读，不是读一次就定住 —— 打开这一页时它很可能还在重试的路上。
+  const [appReady, setAppReady] = useState(readAppReadyLog);
+  const [storageError, setStorageError] = useState(readStorageWriteError);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setAppReady(readAppReadyLog());
+      setStorageError(readStorageWriteError());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <Disclosure summary="这台设备的边距与常亮">
       {probe ? (
@@ -291,6 +305,22 @@ function DeviceDiagnostics({ log }: { log: CheckLogEntry | null }) {
         <Hint tone="warn">
           从来没有记下过一次查更新 —— 连「开始了」那一笔都没有。查更新现在是每一步
           立刻落盘的，所以这说明它连第一行都没跑到，或者这台设备写不了 localStorage。
+        </Hint>
+      )}
+      {/* 「我起来了」那一趟（变更 59）。**热更真的装上 bundle 之后，这一条比查更新还关键**：
+          它没成，新 bundle 下次启动就被原生侧回滚，症状是「下下来了、永远不生效」。
+          2026-09-23 的真机诊断里它整趟都没发生过，而当时界面上没有任何地方说得出这件事。 */}
+      {probe?.platform === 'ios' && (
+        <Hint tone={appReady?.outcome.startsWith('ok') ? 'neutral' : 'warn'}>
+          {appReady
+            ? `告诉原生侧「这一版起来了」：${appReady.outcome}（第 ${appReady.attempts} 次，${formatAgo(Date.now() - appReady.at)}前）`
+            : '还没告诉过原生侧「这一版起来了」—— 跑着内置 bundle 时无所谓，装上热更包之后这就是下次启动被回滚的成因。'}
+        </Hint>
+      )}
+      {storageError && (
+        <Hint tone="warn">
+          这台设备写 localStorage 失败过（{storageError}）—— 上面那两条「上次…」里跨会话的
+          那一半不可信，本次会话内的记录仍然是准的（它在内存里）。
         </Hint>
       )}
       {probe?.platform === 'ios' && <BridgeSelfTest />}

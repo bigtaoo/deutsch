@@ -20,18 +20,23 @@ const updater: Record<string, ReturnType<typeof vi.fn>> = {
   getNextBundle: vi.fn(),
   list: vi.fn(),
 };
-vi.mock('@capgo/capacitor-updater', () => ({
-  CapacitorUpdater: new Proxy(
+vi.mock('@capgo/capacitor-updater', () => ({ CapacitorUpdater: updaterProxy() }));
+
+// 生产代码优先从 core 造代理（变更 59，见 acquireUpdater），所以自检这一路也走它。
+const registerPlugin = vi.fn();
+vi.mock('@capacitor/core', () => ({ registerPlugin: (name: string) => registerPlugin(name) }));
+
+/** 一个只认识 READONLY_METHODS 那几个名字的假插件。 */
+function updaterProxy() {
+  return new Proxy(
     {},
     {
       get: (_t, name: string) =>
-        name in updater
-          ? () => (updater[name] as unknown as () => Promise<unknown>)()
-          : undefined,
+        name in updater ? () => (updater[name] as unknown as () => Promise<unknown>)() : undefined,
       has: (_t, name: string) => name in updater,
     },
-  ),
-}));
+  );
+}
 const getInfo = vi.fn();
 vi.mock('@capacitor/app', () => ({ App: { getInfo: () => getInfo() } }));
 
@@ -53,6 +58,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetBridgeWarmupForTests();
   resetConsoleTapForTests();
+  registerPlugin.mockReturnValue(updaterProxy());
   vi.stubGlobal('localStorage', memoryStorage());
   vi.mocked(nativePlatform).mockResolvedValue('ios');
   for (const fn of Object.values(updater)) fn.mockResolvedValue({ ok: true });
@@ -63,12 +69,16 @@ beforeEach(() => {
 describe('runUpdaterSelfTest', () => {
   it('把每个只读方法逐个调一遍，各自记结果和耗时', async () => {
     const results = await runUpdaterSelfTest();
-    // 七个只读方法 + 一个对照组（App.getInfo）。
-    expect(results).toHaveLength(8);
+    // 取插件 + 七个只读方法 + 一个对照组（App.getInfo）。
+    expect(results).toHaveLength(9);
     expect(results.every((r) => r.outcome === 'ok')).toBe(true);
     expect(results.map((r) => r.method)).toContain('App.getInfo');
-    expect(results[0].method).toBe('getPluginVersion');
-    expect(typeof results[0].ms).toBe('number');
+    // **取插件排在最前面**：变更 59 之前这一步不在报告里，而 2026-09-23 那次真机
+    // 卡住的恰恰就是它 —— 自检说方法全好、干活那条路却停在取插件上，两句话对不上。
+    expect(results[0].method).toBe('acquireUpdater');
+    expect(results[0].detail).toBe('core');
+    expect(results[1].method).toBe('getPluginVersion');
+    expect(typeof results[1].ms).toBe('number');
   });
 
   // 这是整份自检存在的理由：四种故障各有各的形状，而形状只有逐个调才看得出来。
@@ -104,9 +114,9 @@ describe('collectDeviceReport / reportToText', () => {
     installConsoleTap();
     console.info('🟢 Capacitor-updater : init for device abc');
     const report = await collectDeviceReport(await runUpdaterSelfTest());
-    expect(report.schema).toBe(1);
+    expect(report.schema).toBe(2);
     expect(report.platform).toBe('ios');
-    expect(report.selfTest).toHaveLength(8);
+    expect(report.selfTest).toHaveLength(9);
     expect(report.console.some((l) => l.text.includes('init for device abc'))).toBe(true);
   });
 

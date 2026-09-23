@@ -10,6 +10,50 @@
 附录 A 是 DW 接口的实测结果（A.6 是实现完成后用真实期次做的复验），附录 B 是 GitHub API 的实测结果——
 这些是真实探测出来的事实，不要重新假设，也不用重新验证（除非怀疑对方改版了）。
 
+## 现状（2026-09-23 最最晚，热更卡住的那一行找到了——变更 59）
+
+`ios-v0.6.5` 的真机诊断发到了服务器（`~/deutsch-sync/data/diag/<uid>/1790159360683-vmjl2f.json`，
+`ssh wnet-server` 直接 `cat`），**这是四天里第一份决定性的报告**。
+
+三条数摆在一起只指向一个地方：
+
+1. `probePlugins()` 名单里**有** `CapacitorUpdater`，56 个方法齐全；
+2. 自检七个只读方法 `getPluginVersion` 4ms / `current` 0ms / `list` 1ms，对照组
+   `App.getInfo` 2ms —— **桥、插件实例、每一个方法全是好的**，变更 57 那张「四种形状」
+   表里一种都对不上；
+3. 而「上次查更新」的步骤停在 `['platform:ios']`，下一步正是**取插件**。
+
+第三条还有独立印证：同一次启动里 `notifyAppReady()` 根本没到过原生侧（原生日志里没有
+插件那句 `Current bundle loaded successfully. [notifyAppReady was called]`，只有回滚检查
+自己的定时器打的 `Built-in bundle is active`），而它在平台判断之后的下一步也是取插件。
+**两条互不相干的路停在同一行**：`await import('@capgo/capacitor-updater')`。旁证在抄下来
+的原生日志里（变更 57 的 `consoleTap` 第一次派上用场）：`Semaphore wait timed out after
+20000ms` —— 插件 `load()` 正在主线程切 web 根，而那个 4KB 的 chunk 是同一个 WebView 去取的。
+
+**教训是同一条的第四次**：变更 50/52/53 把每个**过桥调用**都套上了超时，漏的是
+「过桥之前先把插件拿到手」—— 形状不是「过桥」是「取东西」，搜不到它。所以这次不是补一个
+超时了事，而是**把这条路上唯一要取的那个 chunk 整个去掉**：`acquireUpdater()` 首选用
+`@capacitor/core` 的 `registerPlugin('CapacitorUpdater')` 造代理（core 在这一步之前必然
+已经加载完了），插件包那个 import 降级成带 8 秒死线的退路。另外两件顺手补的：
+`notifyAppReady()` 改成重试 3/10/30 秒并留记录（它原来只有一次机会、失手即止、一个字
+不留 —— 热更真装上 bundle 之后，这就是「下下来了永远不生效」的成因）；查更新记录改成
+**内存优先**，localStorage 只管跨会话、写失败的原因单独上报（此前「停在第一步」有两种
+成因在文件里长得一模一样，这份诊断在最关键的问题上不可信）。
+
+前端 1046 → 1058，server 145 / e2e 44 不受影响，五条验证全绿。**已出 `ios-v0.6.6`** ——
+判据和变更 53 的 `0.6.3` 恰好相反：那次是「没动 Swift 就不该出包」，这次同样是纯 JS，
+却必须焊进 builtin bundle，因为**送 JS 过去的那条路正是坏的那条**。
+
+**下一步**：
+1. 装上 `0.6.6` 之后打开设置页看两行：「上次查更新」应该走完整条
+   （`plugin:core → fetch:ok → current:ok → getInfo:ok → decide:… → download:ok → next:ok`），
+   「我起来了」应该是 `ok`。**这两行同时对了，热更才算真的活了。**
+2. 然后杀进程重开一次 —— 前端那行版本号变成新的 buildId，就是第一次真正的热更生效。
+3. 要是仍然卡着：再发一份诊断。现在报告里多了 `appReady` 与 `storageWriteError` 两个
+   字段，**「停在第一步」和「写不进存储」从此分得开**，不会再有这一版之前那种歧义。
+
+---
+
 ## 现状（2026-09-23 最晚，通听的当前词在手机上看不见——变更 58）
 
 用户发来一张桌面截图（通听展开着，`verbindet` 被红圈圈出来）并问：**「在网页上播放的

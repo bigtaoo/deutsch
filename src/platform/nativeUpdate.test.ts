@@ -4,10 +4,13 @@ import {
   decideUpdate,
   notifyNativeAppReady,
   probePlugins,
+  readAppReadyLog,
   readLastCheckLog,
+  readStorageWriteError,
   resetBridgeWarmupForTests,
   runningBuild,
   versionAtLeast,
+  withDeadline,
   type OtaManifest,
 } from './nativeUpdate';
 import { nativePlatform } from './native';
@@ -22,14 +25,30 @@ const getInfo = vi.fn();
 const download = vi.fn();
 const next = vi.fn();
 const notifyAppReady = vi.fn();
+/** 插件包那条退路还在不在。`false` 模拟「chunk 取不到 / 包里没有这个导出」。 */
+let packageAvailable = true;
 vi.mock('@capgo/capacitor-updater', () => ({
-  CapacitorUpdater: {
+  get CapacitorUpdater() {
+    return packageAvailable ? fakeUpdater() : undefined;
+  },
+}));
+
+// 变更 59 之后，**生产代码优先从 `@capacitor/core` 的 `registerPlugin` 造代理**，
+// 插件包那个动态 import 只是退路（理由见 acquireUpdater：真机上停住的就是那个 import）。
+// 所以这里也得把 core 假掉 —— 不假的话 jsdom 里 `registerPlugin('CapacitorUpdater')`
+// 会造出一个「web 上没实现」的代理，每个方法都 reject，整组用例一起红。
+const registerPlugin = vi.fn();
+vi.mock('@capacitor/core', () => ({ registerPlugin: (name: string) => registerPlugin(name) }));
+
+/** 两条路（core 造的代理 / 插件包导出的对象）指向同一组假方法。 */
+function fakeUpdater() {
+  return {
     current: () => current(),
     download: (opts: unknown) => download(opts),
     next: (opts: unknown) => next(opts),
     notifyAppReady: () => notifyAppReady(),
-  },
-}));
+  };
+}
 vi.mock('@capacitor/app', () => ({ App: { getInfo: () => getInfo() } }));
 
 // 热更的全部判断都在 decideUpdate 里（原生侧只管下载和切换），所以这一组用例就是
@@ -64,6 +83,8 @@ const memoryStorage = () => {
 // 那一类泄漏，而且它会让「冷启动给足时间」这条用例在污染下**假装通过**。
 beforeEach(() => {
   resetBridgeWarmupForTests();
+  registerPlugin.mockReturnValue(fakeUpdater());
+  packageAvailable = true;
 });
 
 const manifest = (over: Partial<OtaManifest> = {}): OtaManifest => ({
@@ -487,7 +508,44 @@ describe('notifyNativeAppReady', () => {
     await vi.advanceTimersByTimeAsync(24_000);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(2000);
+    // 第一次超时了 —— 但它不再就此放弃（变更 59），还有三次重试在后面排着。
+    expect(settled).toBe(false);
+    expect(notifyAppReady).toHaveBeenCalledTimes(1);
+    // 25 秒窗口 × 4 次 + 3、10、30 秒的间隔，总共一百四十几秒。
+    await vi.advanceTimersByTimeAsync(150_000);
     expect(settled).toBe(true);
+    expect(notifyAppReady).toHaveBeenCalledTimes(4);
+  });
+
+  // ── 重试（变更 59）──────────────────────────────────────────────────
+  // 起因是 2026-09-23 那份真机诊断：这一趟**整个没有发生**（原生日志里没有
+  // 「notifyAppReady was called」），因为启动最忙的那二十秒里它拿不到插件，
+  // 而它当时只有一次机会。那次跑的是随包 bundle 所以侥幸没事；热更一旦真的装上
+  // 一个 bundle，同一个失手就是「下次启动回滚」——也就是「更新永远不生效」。
+  it('第一次没人回话，隔一会儿还会再说一遍', async () => {
+    vi.useFakeTimers();
+    notifyAppReady.mockReturnValueOnce(new Promise(() => {})).mockResolvedValue(undefined);
+    let settled = false;
+    void notifyNativeAppReady().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(29_000); // 25 秒冷启动窗口 + 3 秒间隔
+    expect(notifyAppReady).toHaveBeenCalledTimes(2);
+    expect(settled).toBe(true);
+  });
+
+  it('原生侧真的报了错就不再重试 —— 那不是「没人回话」', async () => {
+    notifyAppReady.mockRejectedValue(new Error('plugin not implemented'));
+    await notifyNativeAppReady();
+    expect(notifyAppReady).toHaveBeenCalledTimes(1);
+  });
+
+  // 「一次都没跑完」和「跑完了但失败了」在诊断里必须长得不一样 —— 真机上正是靠
+  // 「原生日志里没有那句话」才认出它根本没发生过，而那条线索来自插件、不来自我们。
+  it('结果落进诊断：成功几次、第几次成的，都要写下来', async () => {
+    await notifyNativeAppReady();
+    expect(readAppReadyLog()?.outcome).toContain('ok');
+    expect(readAppReadyLog()?.attempts).toBe(1);
   });
 });
 
@@ -660,7 +718,7 @@ describe('checkNativeUpdate 的诊断日志', () => {
     // 「等满 25 秒还没回」在日志里长得一模一样，而两者的下一步完全不同。
     expect(log?.steps.map((s) => s.replace(/\(\d+ms\)$/, ''))).toEqual([
       'platform:ios',
-      'plugin-import:ok',
+      'plugin:core',
       'fetch:ok',
       'current:ok',
       'getInfo:ok',
@@ -736,8 +794,8 @@ describe('checkNativeUpdate 的诊断日志', () => {
     await vi.advanceTimersByTimeAsync(0);
     const log = readLastCheckLog();
     expect(log).not.toBeNull();
-    // 停在 `plugin-import:ok` —— 下一步（拉 manifest）就是卡住的那一步。
-    expect(log?.steps).toEqual(['platform:ios', 'plugin-import:ok']);
+    // 停在 `plugin:core` —— 下一步（拉 manifest）就是卡住的那一步。
+    expect(log?.steps).toEqual(['platform:ios', 'plugin:core']);
     // 这句话留在那里本身就是答案。
     expect(log?.outcome).toContain('没有走到结束');
     vi.useRealTimers();
@@ -780,5 +838,120 @@ describe('checkNativeUpdate 的诊断日志', () => {
     await checkNativeUpdate();
     const log = readLastCheckLog();
     expect(log?.steps).toContainEqual(expect.stringMatching(/^current:threw\(/));
+  });
+});
+
+// ── 取插件这一步（变更 59）────────────────────────────────────────────
+//
+// 2026-09-23 那份真机诊断把故障钉死在了这里：`probePlugins()` 说插件注册成功、
+// 七个只读方法逐个调都是 0~5 毫秒，而「上次查更新」的步骤停在 `['platform:ios']`
+// —— 下一步正是取插件。同一次启动里 `notifyNativeAppReady()` 也没有到达原生侧。
+// 两条路停在同一行 `await import('@capgo/capacitor-updater')`，而那是这条路上
+// **当时唯一一个没有死线的 await**。这一组守的就是「它不会再挂住任何人」。
+
+describe('acquireUpdater', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('localStorage', memoryStorage());
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    registerPlugin.mockReturnValue(fakeUpdater());
+    current.mockResolvedValue({ bundle: { version: 'builtin' } });
+    getInfo.mockResolvedValue({ version: '0.6.0' });
+    download.mockResolvedValue({ id: 'bundle-1' });
+    next.mockResolvedValue(undefined);
+    packageAvailable = true;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('首选 core 造代理 —— 热更这条路上一个新 chunk 都不用取', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => manifest() }));
+    await checkNativeUpdate();
+    expect(registerPlugin).toHaveBeenCalledWith('CapacitorUpdater');
+    expect(readLastCheckLog()?.steps).toContain('plugin:core');
+  });
+
+  it('core 那条路塌了还有插件包这条退路，查更新照样走完', async () => {
+    registerPlugin.mockImplementation(() => {
+      throw new Error('core 变形了');
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => manifest() }));
+    await checkNativeUpdate();
+    expect(readLastCheckLog()?.steps).toContain('plugin:import');
+    expect(download).toHaveBeenCalled();
+  });
+
+  it('两条路都拿不到插件时是「这次不查了」，不是挂在那里', async () => {
+    registerPlugin.mockImplementation(() => {
+      throw new Error('core 变形了');
+    });
+    packageAvailable = false;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => manifest() }));
+    // 要点是它**返回**了：挂住的话这个 await 永远不会往下走，而那正是真机上的症状。
+    const decision = await checkNativeUpdate();
+    expect(decision).toEqual({ action: 'skip', reason: expect.stringContaining('拿不到更新器插件') });
+    expect(readLastCheckLog()?.outcome).toContain('拿不到更新器插件');
+    expect(download).not.toHaveBeenCalled();
+  });
+});
+
+// 这一条守的是「取东西」那一步也有死线。`acquireUpdater()` 里那两处的参数是动态
+// import，在 jsdom 里没法让它们真的永远吊着，所以直接测这支笔本身 —— 它是那句
+// 「这条路上的每一个 await 都有死线」在代码里的落点。
+describe('withDeadline', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('永不 settle 的东西也会在时限后回 null，而不是永远等下去', async () => {
+    vi.useFakeTimers();
+    let settled: unknown = 'pending';
+    void withDeadline(() => new Promise(() => {}), 8000).then((v) => {
+      settled = v;
+    });
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(settled).toBe('pending');
+    await vi.advanceTimersByTimeAsync(2);
+    expect(settled).toBeNull();
+  });
+
+  it('抛出来的也当「这条路走不通」，不把异常甩给调用方', async () => {
+    await expect(withDeadline(() => Promise.reject(new Error('没有这个 chunk')), 100)).resolves.toBeNull();
+  });
+});
+
+// ── 诊断本身不能依赖存储（变更 59）──────────────────────────────────
+//
+// 2026-09-23 那份真机报告里「上次查更新」停在第一步，而当时有两种完全不同的成因能
+// 长成这个样子：真的卡在那一步，或者**后面几步写不进 localStorage**——`writeCheckLog`
+// 的 catch 是哑的，两者在文件里一模一样。分不清它们，这份诊断在最关键的问题上不可信。
+describe('查更新记录与 localStorage 的关系', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    registerPlugin.mockReturnValue(fakeUpdater());
+    current.mockResolvedValue({ bundle: { version: 'builtin' } });
+    getInfo.mockResolvedValue({ version: '0.6.0' });
+    download.mockResolvedValue({ id: 'bundle-1' });
+    next.mockResolvedValue(undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => manifest() }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('存储写不进去时，这一趟的记录照样是完整的，并且把写失败的原因说出来', async () => {
+    const broken = memoryStorage();
+    broken.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    vi.stubGlobal('localStorage', broken);
+    await checkNativeUpdate();
+    // 内存那一份不经过任何存储 —— 它才是本次会话的真相。
+    expect(readLastCheckLog()?.steps).toContain('decide:download');
+    expect(readStorageWriteError()).toContain('QuotaExceededError');
   });
 });

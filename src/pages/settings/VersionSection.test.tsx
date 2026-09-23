@@ -17,7 +17,9 @@ import {
   checkNativeUpdate,
   pendingUpdateVersion,
   probePlugins,
+  readAppReadyLog,
   readLastCheckLog,
+  readStorageWriteError,
   runningBuild,
 } from '@/platform/nativeUpdate';
 import { nativePlatform } from '@/platform/native';
@@ -33,6 +35,8 @@ vi.mock('@/platform/nativeUpdate', () => ({
   checkNativeUpdate: vi.fn(),
   probePlugins: vi.fn(),
   readLastCheckLog: vi.fn(),
+  readAppReadyLog: vi.fn(),
+  readStorageWriteError: vi.fn(),
 }));
 
 vi.mock('@/platform/native', () => ({
@@ -70,6 +74,8 @@ const mockPlatform = vi.mocked(nativePlatform);
 const mockCheck = vi.mocked(checkNativeUpdate);
 const mockProbe = vi.mocked(probePlugins);
 const mockLog = vi.mocked(readLastCheckLog);
+const mockAppReady = vi.mocked(readAppReadyLog);
+const mockStorageError = vi.mocked(readStorageWriteError);
 const mockSelfTest = vi.mocked(runUpdaterSelfTest);
 const mockCollect = vi.mocked(collectDeviceReport);
 const mockSend = vi.mocked(sendDeviceReport);
@@ -87,6 +93,8 @@ beforeEach(() => {
     updaterMethods: null,
   });
   mockLog.mockReturnValue(null);
+  mockAppReady.mockReturnValue(null);
+  mockStorageError.mockReturnValue(null);
   mockSelfTest.mockResolvedValue([]);
   mockCollect.mockResolvedValue({} as never);
   mockSend.mockResolvedValue({ id: '1758600000000-abc123' });
@@ -311,6 +319,31 @@ describe('VersionSection', () => {
     render(<VersionSection />);
     await waitFor(() => expect(screen.getByText(/应用壳/)).toBeInTheDocument());
     expect(screen.getByText(/从来没有记下过一次查更新/)).toBeInTheDocument();
+  });
+
+  // ── 「我起来了」那一趟（变更 59）────────────────────────────────────
+  // 2026-09-23 那份真机诊断里它整趟都没发生过（原生日志里没有 notifyAppReady 那句），
+  // 而当时界面上没有任何一个地方说得出这件事。跑着内置 bundle 时它无所谓，
+  // 装上热更包之后它就是「下下来了、永远不生效」的成因。
+  it('「我起来了」成没成、第几次成的，要看得见', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.5', bundle: 'builtin' });
+    mockAppReady.mockReturnValue({ at: Date.now() - 2000, attempts: 2, outcome: 'ok(12ms, via core)' });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/这一版起来了/)).toBeInTheDocument());
+    expect(screen.getByText(/第 2 次/)).toBeInTheDocument();
+  });
+
+  it('一次都没跑完时明说 —— 它长得不能和「成了」一样', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.5', bundle: 'builtin' });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/还没告诉过原生侧/)).toBeInTheDocument());
+  });
+
+  it('localStorage 写失败过就说出来 —— 否则跨会话那几条记录在撒谎', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.5', bundle: 'builtin' });
+    mockStorageError.mockReturnValue('QuotaExceededError');
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/写 localStorage 失败过/)).toBeInTheDocument());
   });
 });
 

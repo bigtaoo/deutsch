@@ -73,6 +73,7 @@
 | 56 | **生词本里 AI 解释默认折叠（2026-09-23）**：`VocabPage.tsx` 的 `Row` 把 `entry.note` 包进 §12.14 同款 `Disclosure`（`defaultOpen=false`），摘要写死「AI 解释」；新增 `VocabPage.test.tsx`（3 条：默认收起、点开才出现、没有 `note` 时整块不出现），前端 1014 → 1017，server/e2e 不受影响，五条验证全绿 | 用户截图反馈：变更 55/49 让 AI 解释越攒越长，不折叠的话列表里全是长文本，「看词就很不方便」。直接复用 `Disclosure`（`ZhPanel`/`LessonNotes` 已在用），没有新写组件；`defaultOpen` 特意给 `false`——该组件在 FR-20 笔记那边默认展开是因为「有内容就该露出来」，这里恰恰相反，内容长到会盖住一整块列表，折叠是为了让人扫得完这一页，不是为了藏。用真实浏览器验证折叠/展开行为时确认了一处 jsdom 差异：`<details>` 未展开时子节点在 jsdom 里仍然在 DOM 树里（jsdom 不做布局层面的 `display:none`），组件测试因此不能按「文本在不在 DOM 里」断言，改成查 `<details>` 元素本身有没有 `open` 属性 |
 | 57 | **桥自检与诊断上报到服务器（2026-09-23）**：`§7.12` 新增「桥自检与诊断上报」一节、`§12.12` 新增三按钮那一组。`src/platform/nativeUpdate.ts`：新增 `COLD_BRIDGE_TIMEOUT_MS`（桥在这个会话里还没回过话时每个调用至少给 25 秒，回过一次话——resolve 或 reject 都算——就切回 4 秒）与 `resetBridgeWarmupForTests()`；`askBridgeVerbose` 导出、返回值多一个 `ms`、多一个 `allowCold` 参数（`askBridge` 传 `false`，**显示用的那条路不走放宽**）；步骤记录改成 `current:ok(37ms)` 这种带耗时的形式；顺手补了两处 `current.bundle.version` 的可选链（原生侧回一个没有 `bundle` 的对象就会抛，而这个返回值直接喂给 `void runningBuild().then(setBuild)`，抛出去就是没人接的 rejection、设置页永远停在「正在问原生侧版本号…」）。新增 `src/platform/consoleTap.ts`（环形缓冲抄 console，装在 `main.tsx` 最顶上）与 `src/platform/bridgeDiag.ts`（`runUpdaterSelfTest` 串行逐方法自检 + `collectDeviceReport` + `sendDeviceReport` + `reportToText`）。`VersionSection` 诊断区加三个按钮（跑一次桥自检 / 发到服务器 / 复制诊断）。服务端新增 `server/src/diag.ts`（文件收件箱，每用户 30 份上限）与 `POST/GET /v1/diag`、`GET /v1/diag/:id`（都要登录，2MB 上限）。**另加三条（用户在同一次对话里补了一句「没有『上次查更新』这个信息，也没有步骤的信息」）**：查更新的记录改成**每一步立刻落盘**（`startCheckLog()`，进门先写「开始了」，`nativePlatform()` 那一句也记一步）、`VersionSection` 在**一笔记录都没有时画一行 `warn` 明说**（推翻变更 52「不留空壳」那条约定）、「现在就查一次更新」加一道 150 秒总闸（`CHECK_HARD_TIMEOUT_MS`）。前端 1017 → 1043、server 133 → 145、e2e 44 不变，五条验证全绿 | 用户装上最新版之后症状没变：「一直显示查询中，提示版本号问不出来，原生桥没有回话」，并问「你有测试的办法吗，或者将错误日志汇报到 vps 上你进行分析」。<br>**读插件源码读出一个此前没考虑过的成因**：`@objc func current` 是纯同步的——拿到 `BundleInfo` 立刻 `call.resolve()`，**它不可能慢**。能让它慢的只有它前面那一步：Capacitor 的插件是懒加载的，第一次桥调用才 `loadPlugin()` → 跑 `load()`，而 Capgo 的 `load()` 在**主线程**上做一整套磁盘活 + 发一次统计到 capgo 的服务器 + `initialLoad()` 切 serverBasePath。所以「`current:timeout`」很可能不是桥哑了，是**我们在插件正初始化的当口就放弃等待了**——变更 50 起一路加的都是「别挂死」，这一版加的是反过来那一半：**别放弃得太早**。<br>**第二个发现改变了诊断的上限**：Capgo 的原生日志是 `webView.evaluateJavaScript("console.info(…)")` 打进 JS console 的（`Logger.swift`）——在 JS 侧抄下 console 等于**把 Xcode 控制台搬进了应用**，而这个项目从来没有过 Xcode 控制台可看（开发机是 Windows）。`load()` 里那几十行 `logger.info` 是回答「插件初始化到哪一步」的唯一证据。<br>**逐方法自检串行不并行**是刻意的：并行会让「第一次调用触发 `load()`」被后面的调用分摊掉，而分辨四种故障靠的正是「头一个特别慢、后面都快」这个形状。<br>**两条出口必须互不依赖**：发到服务器要求登录是好的，而诊断真正用得上的时候坏的可能正是登录——所以「复制诊断」是平行的一条，不是发送失败之后的兜底。<br>**写自检用例时撞出两件事**：一是 `runningBuild` 那个可选链缺口（上面已列，验证过「去掉可选链这条用例就红」）；二是「桥回过一次话就缩回 4 秒」是模块级状态，不在每个用例前清掉的话，前一个用例里一次成功的调用会让后一个用例的窗口悄悄从 25 秒变成 4 秒——那正是「单独跑绿、一起跑红」那一类泄漏，而且它会让「冷启动给足时间」这条用例在污染下**假装通过**（发现时确实是这样：那条用例推 5 秒就断言超时却绿着）。加了顶层 `beforeEach` 清记号之后，另有 7 条旧用例的假设当场露出来并改正。<br>**用户那句补充反馈本身就是一个证据**：「连『上次查更新』那一块都没有」= `checkNativeUpdate()` 从来没跑完过一次（记录写在 `finally` 里）。而这暴露了一个更根本的毛病——**诊断只在成功路径上落盘**。改成逐步落盘之后，「日志停在哪一步」直接就是「卡在哪一步」，不用再猜。按钮那道总闸同理：每一步都有超时 ≠ 整个函数一定会返回，而「按钮转个不停」是要报告的事实，不是一个能让人一直等下去的状态。 |
 | 58 | **通听的当前词在手机上看不见（2026-09-23）**：`ListenTab.tsx` 里当前词的样式从 `bg-warn-soft font-medium` 改成 `bg-warn text-surface font-medium`（反白），并加 `data-active` 便于测试定位；`§12.17` 记下这条形状；新增 `src/pages/lesson/ListenTab.test.tsx`（3 条：当前词底色不等于当前行底色、高亮跟着时间走且同一时刻只有一个、落在句间空档时不标任何词），前端 1043 → 1046，server 145 / e2e 44 不受影响，五条验证全绿 | 用户带着一张桌面截图来问：「在网页上播放的时候，会有当前词的高亮显示，但是在手机上就没有。」<br>**查下来是一个纯视觉的低级错误，而且它是确定成立的、不必先复现**：词级高亮**永远**发生在当前行上（`activeToken` 只在当前行有值），而当前行的底色正是 `bg-warn-soft` —— 当前词用的也是 `bg-warn-soft`，两者同一个令牌、同一个色值，叠上去等于没叠。于是「当前词」这件事在屏幕上唯一剩下的表达是 `font-medium`，**一档字重**。Windows 上 400/500 一眼可辨（用户自己截的图里 `verbindet` 确实看得出来），iPhone 的 SF Pro 在 19px 正文上差别细到可以忽略 —— 同一份代码，两台设备上一个有高亮一个没有。<br>**所以这不是「手机上的 bug」，是这个样式从第一天（变更 24）起就只在字体渲染够狠的平台上勉强成立**。修法不是去调字重，是给当前词一个**自己的底色**：`warn` 实底 + `surface` 字色，两个令牌都跟着深色翻转（浅色是深棕底白字，深色是亮金底黑字），任何设备、任何字体渲染下都看得见，也正是卡拉OK/Spotify 的通行做法。<br>**测试断言写成两个类之间的关系**（当前词的底色 ≠ 当前行的底色）而不是「等于某个类名」：换配色照样过，退回同色就红 —— 还原成旧写法验证过这条用例确实会红。<br>**留一条待验**：如果手机上连**整行**的浅黄底色都不跟着句子走，那就是另一回事（时间源没推进，而不是看不见），要另查。 |
+| 59 | **热更卡住的那一行找到了：取插件的那个 `import()`（2026-09-23）**：`§7.12` 新增「诊断给出了答案」一节。`nativeUpdate.ts` 新增 `withDeadline()`（给「取东西」那一步死线，和管过桥调用的 `askBridgeVerbose` 分工）、`acquireUpdater()`（**首选 `@capacitor/core` 的 `registerPlugin('CapacitorUpdater')` 造代理，一个新 chunk 都不取**；插件包那个动态 import 降级成 8 秒死线的退路；返回 `via` 说清是从哪条路拿到的）、手写 `UpdaterPlugin` 类型（不 `import type` 插件包，否则「这个包必须存在」又写回构建里）；`checkNativeUpdate` 的步骤从 `plugin-import:ok` 变成 `plugin:<via>`，拿不到插件时是 `skip` 而不是挂住；`notifyNativeAppReady` 改成**重试 3/10/30 秒**（跨过插件启动那个 20 秒窗口）、只重试「没人回话」这一种、结果落进新的 `AppReadyLog`；查更新记录与 appReady 记录各在内存里存一份（`readLastCheckLog()` 内存优先），localStorage 写失败的原因单独记进 `readStorageWriteError()`。`bridgeDiag` 改走同一个 `acquireUpdater()`（自检第一行就是 `acquireUpdater → ok(0ms) core`），报告 `schema` 1 → 2，多 `appReady` 与 `storageWriteError` 两个字段。`VersionSection` 多两行（「我起来了」成没成/第几次、存储写失败过）。前端 1046 → 1058，server 145 / e2e 44 不受影响，五条验证全绿。**出了 `ios-v0.6.6`** | `ios-v0.6.5` 的真机报告是四天里第一份决定性的证据。三条数摆在一起只指向一个地方：①`probePlugins()` 名单里**有** `CapacitorUpdater`、56 个方法齐全；②自检里七个只读方法 `getPluginVersion` 4ms / `current` 0ms / `list` 1ms，对照组 `App.getInfo` 2ms——**桥、插件实例、每一个方法全是好的**，变更 57 那张「四种形状」表里一种都对不上；③而「上次查更新」的步骤停在 `['platform:ios']`，下一步正是取插件。<br>**第三条还有一个独立印证**：同一次启动里 `notifyAppReady()` 根本没到过原生侧——原生日志里没有插件那句 `Current bundle loaded successfully. [notifyAppReady was called]`，只有回滚检查自己的定时器打的 `Built-in bundle is active. We skip the check`。而 `notifyNativeAppReady()` 在平台判断之后的下一步也是取插件。**两条互不相干的路停在同一行。**<br>**旁证在抄下来的原生日志里**（变更 57 那条 `consoleTap` 第一次派上用场）：那次启动打过 `Semaphore wait timed out after 20000ms`——插件 `load()` 正在主线程做磁盘活并 `setServerBasePath()` 切 web 根，而那个 4KB 的 chunk 是同一个 WebView 去取的。请求悬在那儿不成不败，`import()` 对此的表现就是 promise 永远不 settle。<br>**教训是同一条的第四次**：变更 50/52/53 一路把每个**过桥调用**都套上了超时，漏掉的是「过桥之前先把插件拿到手」——形状不是「过桥」而是「取东西」，于是搜「桥调用」的时候搜不到它。所以这次不是只补一个超时，而是**把这条路上唯一要取的那个 chunk 整个去掉**：插件包的 JS 层只是 `registerPlugin` 造的一层代理壳，而 core 在这一步之前必然已经加载完了（`platform:ios` 那一步就是证据）。<br>**`notifyAppReady` 那条是顺着这份报告捡到的第二个真缺口**：它原来只有一次机会、失手即止、一个字都不留。跑内置 bundle 时侥幸没事（`isBuiltin()` 直接跳过回滚检查），但热更一旦真的装上一个 bundle，同一个失手就是「新版起来了 → 没人说我起来了 → 下次启动回滚」，症状恰好是「下下来了、永远不生效」。<br>**诊断自己也补了一个盲点**：这一版之前，「记录停在第一步」有两种成因（真卡住 / 后面几步写不进 localStorage）在文件里长得**一模一样**——`writeCheckLog` 的 catch 是哑的。分不清它们，这份报告在最关键的问题上就不可信，所以记录改成内存优先、存储只管跨会话、写失败的原因单独上报。<br>**这次必须出包，判据和变更 53 的 `0.6.3` 恰好相反**：那次的结论是「没动 Swift 就不该出包，纯 JS 交给 OTA」，而这次改的同样是纯 JS，却**必须**焊进 builtin bundle——因为送 JS 过去的那条路正是坏的那条。判据不是「改了什么」，是「OTA 现在能不能把它送到」。 |
 
 ---
 
@@ -1755,6 +1756,71 @@ builtin bundle，不依赖任何桥调用就能生效。
 404/503，即路由在、sink 也真的装上了）。**剩下的只有真机那一段**：看「上次查更新」
 停在哪一步、跑一次自检看它是哪种形状。
 
+#### 诊断给出了答案：卡在取插件那个 `import()`（变更 59，2026-09-23）
+
+`ios-v0.6.5` 的真机报告（服务器上 `1790159360683-vmjl2f.json`）把这条查了四天的故障
+钉死在一行上。三条互相独立的证据：
+
+| 报告里的数 | 说明了什么 |
+|---|---|
+| `probePlugins()` 名单里有 `CapacitorUpdater`，56 个方法齐全 | 类链进去了、注册成功了 |
+| 自检：`getPluginVersion` 4ms、`current` 0ms、`list` 1ms、`App.getInfo` 2ms | 桥、插件实例、每一个方法**全是好的**——上面那张「四种形状」表里一种都不是 |
+| 「上次查更新」的步骤 = `['platform:ios']`，结论仍是「开始了，但没有走到结束」 | `checkNativeUpdate()` 走到**取插件**那一步就再也没回来 |
+
+第三条还有一个独立的印证：同一次启动里 **`notifyAppReady()` 根本没到过原生侧** ——
+原生日志里没有插件那句 `Current bundle loaded successfully. [notifyAppReady was called]`，
+只有回滚检查自己的定时器打的 `Built-in bundle is active. We skip the check`。而
+`notifyNativeAppReady()` 在平台判断之后的下一步，也正是取插件。**两条互不相干的路
+停在同一行**：`await import('@capgo/capacitor-updater')`。
+
+旁证在抄下来的原生日志里：那次启动打过一条 `Semaphore wait timed out after 20000ms`
+——插件 `load()` armed 的信号量等满 20 秒才放开，而这段时间它正在主线程做磁盘活并
+`setServerBasePath()` 切 WebView 的 web 根。**那个 4KB 的 chunk 是同一个 WebView 去取的**：
+根在切、handler 在忙，这次请求就悬在那儿，既不成功也不失败，而 `import()` 对
+「请求永远不回」的表现就是 promise 永远不 settle。
+
+**这是这条路上当时唯一一个没有死线的 `await`。** 变更 50/52/53 一路把每个**过桥调用**
+都套上了超时，而漏掉的是「过桥之前先把插件拿到手」这一步——[[诊断块不能自己消失]]那条
+教训（补超时要顺着调用形状全仓库搜一遍）第四次在同一个地方生效，只是这次的形状不是
+「过桥」而是「取东西」。
+
+**① 热更这条路从此不取任何新 chunk。** 插件包的 JS 层只是一层壳：
+`registerPlugin('CapacitorUpdater')` 造一个代理，代理的每个方法就是
+`Capacitor.nativePromise('CapacitorUpdater', 方法名, 参数)`（`@capacitor/core` 的
+`createPluginMethod`）。而 `registerPlugin` 在 `@capacitor/core` 里，**core 那个 chunk
+在走到这里之前必然已经加载完了**——`nativePlatform()` 用的就是它，日志里那句
+`platform:ios` 就是证据。所以 `acquireUpdater()` 首选用 core 造代理，插件包那个动态
+import 降级成退路。构建产物里对 capgo chunk 的 `import()` 从 2 处降到 1 处。
+跳过的是插件包 JS 层的副作用（它给 history 打的补丁，服务于 `keep_url_path_after_reload`）
+——本项目是 hash 路由、也没开那个选项，用不到。类型因此手写（`UpdaterPlugin`）：
+`import type` 不留运行时代码，但会把「这个包必须存在」写进构建，而这里的目的正是
+让热更不再依赖它。
+
+**② 两条路各自有死线**（`withDeadline`，8 秒）。「换一条不会挂的路」和「这条路万一
+也挂了怎么办」是两件事——core 已经在内存里、`registerPlugin` 是同步的，但
+「理论上不会挂」在这条路上已经被现实打脸三次。拿不到就记
+`plugin:core-timeout,import-failed` 并跳过这一轮，**绝不挂住调用方**。
+
+**③ `notifyAppReady()` 会重试，并且留记录。** 它原来只有**一次机会，失手即止，
+而且一个字都不留**。那次侥幸没事，因为跑的是随包 bundle（`isBuiltin()` 直接跳过回滚
+检查）；但热更一旦真的装上一个 bundle，同一个失手就是：新版起来了 → 没人说「我起来了」
+→ 下次启动原生侧判定它起不来 → **回滚**，症状正是「下下来了、永远不生效」。
+现在隔 3/10/30 秒重试三次（**必须跨过那个二十秒的窗口**，只隔一两秒地重试等于在同一堵
+墙上撞三下），结果写进 `AppReadyLog` 并在设置页显示。**只重试「没人回话」这一种**：
+原生侧真的 reject（旧壳里没有这个插件）意味着它收到了也执行了，再试四次只是把同一句
+错话再听四遍。
+
+**④ 诊断本身不再依赖 localStorage 写得进去。** 这一版之前，「记录停在第一步」有两种
+完全不同的成因能长成一模一样的样子：真的卡在那一步，或者**后面几步写不进存储**
+（`writeCheckLog` 的 catch 是哑的）。分不清这两种，这份诊断在最关键的问题上就不可信。
+现在记录在内存里各存一份（本次会话的真相，不经过任何存储），localStorage 只负责跨会话，
+写失败的原因单独记下来并上报（报告的 `storageWriteError`，`schema` 升到 2）。
+
+**这一版同样必须出新包**（`ios-v0.6.6`）：修复是纯 JS，而送 JS 过去的那条路正是坏的
+那条。**这和变更 53 的 `ios-v0.6.3` 恰好相反**——那次是「没动 Swift 就不该出包」，
+这次是「没动 Swift 也必须出包」，判据不是「改了什么」，而是**「OTA 这条路现在能不能
+把它送到」**。
+
 #### 真正的障碍：`/models/` 与 `/dict/`
 
 热更把 web 根整个切到 `Library/NoCloud/ionic_built_snapshots/<id>/`，而 `/models/`
@@ -2008,6 +2074,12 @@ Android 那条仍未跑过。
       发送失败说清原因、**剪贴板被拒时把全文摊开而不假装成功**；
       **走不完也留得下记录**（日志停在哪一步就是卡在哪一步）、一笔都没有时要说出来、
       查更新整个卡住时按钮也一定会放开并明说「它没有回来」（前端 +26、server +12）
+- [x] **取插件那一步（变更 59，2026-09-23）**：首选 core 造代理（步骤记 `plugin:core`）、
+      core 塌了退回插件包那条路照样走完、**两条都拿不到时是「这次不查了」而不是挂住**（真机症状的判据）；
+      `withDeadline` 对永不 settle 的东西也会在时限后回 `null`、抛出来的当「走不通」不甩给调用方；
+      `notifyAppReady` 没人回话会重试三次并最终 settle、**原生侧真报错就不重试**、结果落进诊断；
+      **存储写不进去时这一趟的记录照样完整**并把写失败的原因说出来（此前这两种成因在文件里长得一模一样）；
+      设置页多两行：「我起来了」成没成/第几次、localStorage 写失败过（前端 +12）
 - [ ] **仍然只能靠人**：iPhone 真机的安全区与 WKWebView 行为、真实对齐（要下权重）、真实 DW 抓取、真实 Google 登录与恢复演练
 
 **热更新（§7.12 / §12.12，2026-09-20 新增）**
@@ -2023,6 +2095,8 @@ Android 那条仍未跑过。
 - [ ] **iPhone 真机**：热更生效之后**对齐与查词仍然可用**（这一条验的是符号链接；断了的症状是对齐退回「从 HF 下载 200MB」、查词查不到）
 - [ ] **iPhone 真机**：装一个新 IPA（0.4.1）→ 热更 bundle 被丢掉、回到随包那份，且 `/models/` 没有变成断链
 - [ ] **回滚演练**：把 main 回退一个 commit 再 deploy → 手机下次启动退回旧版
+- [x] `ios-v0.6.5` 的真机诊断**指认出了卡住的那一行**（取插件的 `import()`）：插件注册成功 + 七个方法全是毫秒级 + 步骤停在 `platform:ios` + 原生日志里没有 `notifyAppReady was called`
+- [ ] **iPhone 真机（0.6.6 壳装上之后）**：「上次查更新」走完整条（`plugin:core → fetch:ok → current:ok → getInfo:ok → decide:… → download:ok → next:ok`），且「我起来了」那一行是 `ok`
 
 **查词（FR-9.5 ~ FR-9.10 / §12.11，2026-09-20 新增）**
 

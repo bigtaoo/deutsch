@@ -26,10 +26,14 @@
 
 import { nativePlatform, type NativePlatform } from './native';
 import {
+  acquireUpdater,
   askBridgeVerbose,
   probePlugins,
+  readAppReadyLog,
   readLastCheckLog,
+  readStorageWriteError,
   runningBuild,
+  type AppReadyLog,
   type CheckLogEntry,
   type PluginProbe,
 } from './nativeUpdate';
@@ -89,20 +93,21 @@ export async function runUpdaterSelfTest(): Promise<MethodOutcome[]> {
   if ((await nativePlatform()) === 'web') return [];
   const results: MethodOutcome[] = [];
 
-  let plugin: Record<string, unknown>;
-  try {
-    const mod = await import('@capgo/capacitor-updater');
-    plugin = mod.CapacitorUpdater as unknown as Record<string, unknown>;
-  } catch (err) {
-    return [
-      {
-        method: 'import(@capgo/capacitor-updater)',
-        outcome: 'threw',
-        ms: 0,
-        detail: err instanceof Error ? err.message : String(err),
-      },
-    ];
-  }
+  // 和热更那条路**走同一个取插件的函数**（变更 59）。原来这里自己 `await import()`，
+  // 于是出现过最坏的一种局面：自检这一路拿得到插件、干活那一路拿不到，两边指向不同的
+  // 结论，而报告里看不出它们根本不是同一条路。现在同一个 `acquireUpdater()`，
+  // `via` 直接写进结果 —— 自检说什么，干活那条路就会遇到什么。
+  const startedAcquire = Date.now();
+  const { plugin: acquired, via } = await acquireUpdater();
+  const acquireMs = Date.now() - startedAcquire;
+  results.push({
+    method: 'acquireUpdater',
+    outcome: acquired ? 'ok' : 'timeout',
+    ms: acquireMs,
+    detail: via,
+  });
+  if (!acquired) return results;
+  const plugin = acquired as unknown as Record<string, unknown>;
 
   for (const name of READONLY_METHODS) {
     const fn = plugin[name];
@@ -144,7 +149,7 @@ const MAX_REPORT_LINES = 300;
 export interface DeviceReport {
   at: number;
   /** 报告格式版本 —— 以后改了形状，服务器上那堆旧文件还认得出来是哪一代。 */
-  schema: 1;
+  schema: 2;
   platform: NativePlatform;
   userAgent: string;
   screen: string;
@@ -155,6 +160,12 @@ export interface DeviceReport {
   probe: PluginProbe;
   selfTest: MethodOutcome[];
   lastCheck: CheckLogEntry | null;
+  /** 「我起来了」那一趟（`notifyNativeAppReady`）的结果。**热更装上 bundle 之后，
+   *  这一条比查更新还关键**：它没成，新 bundle 下次启动就会被原生侧回滚。 */
+  appReady: AppReadyLog | null;
+  /** 诊断自己写 localStorage 失败过没有。`null` = 没失败过。
+   *  有值时上面那两份「上次…」里存储的那一半不可信，内存那一半才算数。 */
+  storageWriteError: string | null;
   console: ConsoleLine[];
 }
 
@@ -165,7 +176,7 @@ export async function collectDeviceReport(selfTest: MethodOutcome[]): Promise<De
   const build = await runningBuild();
   return {
     at: Date.now(),
-    schema: 1,
+    schema: 2,
     platform: await nativePlatform(),
     userAgent: typeof navigator === 'undefined' ? '' : navigator.userAgent,
     screen: typeof window === 'undefined' ? '' : `${window.screen?.width}×${window.screen?.height}`,
@@ -175,6 +186,8 @@ export async function collectDeviceReport(selfTest: MethodOutcome[]): Promise<De
     probe: probePlugins(),
     selfTest,
     lastCheck: readLastCheckLog(),
+    appReady: readAppReadyLog(),
+    storageWriteError: readStorageWriteError(),
     console: consoleLines().slice(-MAX_REPORT_LINES),
   };
 }
@@ -215,6 +228,13 @@ export function reportToText(report: DeviceReport): string {
     lines.push(`  步骤：${report.lastCheck.steps.join(' → ') || '（没走到任何一步）'}`);
     lines.push('');
   }
+  lines.push(
+    report.appReady
+      ? `我起来了（notifyAppReady）：${report.appReady.outcome} · 第 ${report.appReady.attempts} 次`
+      : '我起来了（notifyAppReady）：一次都没跑完 —— 热更装上 bundle 之后这就是回滚的成因',
+  );
+  if (report.storageWriteError) lines.push(`localStorage 写失败过：${report.storageWriteError}`);
+  lines.push('');
   lines.push(`原生日志（最近 ${report.console.length} 行）：`);
   for (const l of report.console) lines.push(`  [${l.level}] ${l.text}`);
   return lines.join('\n');
