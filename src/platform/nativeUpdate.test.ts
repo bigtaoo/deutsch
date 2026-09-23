@@ -8,6 +8,9 @@ import {
   readLastCheckLog,
   readStorageWriteError,
   resetBridgeWarmupForTests,
+  resetCheckInFlightForTests,
+  bundlesToDelete,
+  pendingUpdateVersion,
   runningBuild,
   versionAtLeast,
   withDeadline,
@@ -25,6 +28,9 @@ const getInfo = vi.fn();
 const download = vi.fn();
 const next = vi.fn();
 const notifyAppReady = vi.fn();
+const getNextBundle = vi.fn();
+const list = vi.fn();
+const del = vi.fn();
 /** 插件包那条退路还在不在。`false` 模拟「chunk 取不到 / 包里没有这个导出」。 */
 let packageAvailable = true;
 vi.mock('@capgo/capacitor-updater', () => ({
@@ -47,6 +53,9 @@ function fakeUpdater() {
     download: (opts: unknown) => download(opts),
     next: (opts: unknown) => next(opts),
     notifyAppReady: () => notifyAppReady(),
+    getNextBundle: () => getNextBundle(),
+    list: () => list(),
+    delete: (opts: unknown) => del(opts),
   };
 }
 vi.mock('@capacitor/app', () => ({ App: { getInfo: () => getInfo() } }));
@@ -83,6 +92,12 @@ const memoryStorage = () => {
 // 那一类泄漏，而且它会让「冷启动给足时间」这条用例在污染下**假装通过**。
 beforeEach(() => {
   resetBridgeWarmupForTests();
+  // 单飞锁同理：有的用例故意让那一趟永远不回来，不清的话后面所有用例拿到的都是它。
+  resetCheckInFlightForTests();
+  // 默认：没有登记下次用的包、手机上没有别的包 —— 清理这一步什么都不做。
+  getNextBundle.mockResolvedValue(undefined);
+  list.mockResolvedValue({ bundles: [] });
+  del.mockResolvedValue(undefined);
   registerPlugin.mockReturnValue(fakeUpdater());
   packageAvailable = true;
 });
@@ -722,6 +737,7 @@ describe('checkNativeUpdate 的诊断日志', () => {
       'fetch:ok',
       'current:ok',
       'getInfo:ok',
+      'nextBundle:ok',
       'decide:download',
       'download:ok',
       'next:ok',
@@ -994,5 +1010,185 @@ describe('查更新记录与 localStorage 的关系', () => {
     // 内存那一份不经过任何存储 —— 它才是本次会话的真相。
     expect(readLastCheckLog()?.steps).toContain('decide:download');
     expect(readStorageWriteError()).toContain('QuotaExceededError');
+  });
+});
+
+// ── 同一版只下一次 + 清理旧包（变更 61）─────────────────────────────────
+//
+// 2026-09-23 热更第一次在真机上走通时的报告：启动自动查（12:25:28）和设置页按钮（12:25:37）
+// 各下了一份 `0.6.6+4f04891`，多出来那个永远 pending，而代码里一个包都不删。
+// 三处修法各守一条：判断时看「已下好待生效」的那个、同一时间只跑一趟、每趟结束清掉没人要的。
+
+describe('decideUpdate 看「下次启动用」的那个包', () => {
+  it('已经下好、登记了同一版 —— 不再下', () => {
+    const d = decideUpdate(manifest(), { currentVersion: 'builtin', nativeVersion: '0.6.0', nextVersion: '0.4.0+a1b2c3d' });
+    expect(d).toEqual({ action: 'skip', reason: '这一版已经下好，等下次冷启动生效' });
+  });
+
+  it('登记的是别的版本（又发了新版）—— 照样下', () => {
+    const d = decideUpdate(manifest(), { currentVersion: 'builtin', nextVersion: '0.4.0+older11' });
+    expect(d.action).toBe('download');
+  });
+
+  it('问出来了「没有登记任何包」—— 照样下', () => {
+    expect(decideUpdate(manifest(), { currentVersion: 'builtin', nextVersion: null }).action).toBe('download');
+  });
+});
+
+describe('bundlesToDelete', () => {
+  it('内置、要留的、正在下载的都不删，其余的删', () => {
+    const bundles = [
+      { id: 'builtin', status: 'success' },
+      { id: 'CUR', status: 'success' },
+      { id: 'NEXT', status: 'pending' },
+      { id: 'DUP', status: 'pending' },
+      { id: 'OLD', status: 'success' },
+      { id: 'DL', status: 'downloading' },
+      { status: 'success' },
+    ];
+    expect(bundlesToDelete(bundles, ['CUR', 'NEXT'])).toEqual(['DUP', 'OLD']);
+  });
+});
+
+describe('checkNativeUpdate：单飞与清理', () => {
+  const body = {
+    buildId: 'e209c83',
+    version: '0.6.6+e209c83',
+    url: 'https://d.gamestao.com/ota/bundle-e209c83.zip',
+    minNative: '0.4.0',
+    bytes: 10_792_911,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('localStorage', memoryStorage());
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    current.mockResolvedValue({ bundle: { id: 'builtin', version: 'builtin' } });
+    getInfo.mockResolvedValue({ version: '0.6.6' });
+    getNextBundle.mockResolvedValue(undefined);
+    list.mockResolvedValue({ bundles: [] });
+    del.mockResolvedValue(undefined);
+    download.mockResolvedValue({ id: 'NEW' });
+    next.mockResolvedValue(undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('启动自动查与按钮同时触发：只下一次，两个调用拿到同一个结果', async () => {
+    // 下载给一点真实延迟：零延迟的话第一趟可能在第二个调用进门前就走完了，测不到并发。
+    download.mockImplementation(() => new Promise((r) => setTimeout(() => r({ id: 'NEW' }), 20)));
+    const [a, b] = await Promise.all([checkNativeUpdate(), checkNativeUpdate()]);
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+    expect(a?.action).toBe('download');
+  });
+
+  it('前一趟已经下好并登记：紧接着再查一次不会重下（真机上相隔 9 秒的那种）', async () => {
+    await checkNativeUpdate();
+    expect(download).toHaveBeenCalledTimes(1);
+    getNextBundle.mockResolvedValue({ id: 'NEW', version: body.version, status: 'pending' });
+    const second = await checkNativeUpdate();
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({ action: 'skip', reason: '这一版已经下好，等下次冷启动生效' });
+  });
+
+  it('前一趟挂住超过 3 分钟，后来的调用不再等它 —— 单飞锁不能把自己锁死', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    void checkNativeUpdate();
+    await vi.advanceTimersByTimeAsync(181_000);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => body });
+    vi.stubGlobal('fetch', fetchMock);
+    const fresh = checkNativeUpdate();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(fresh).resolves.toMatchObject({ action: 'download' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('已经是最新时顺手清掉没人要的包（真机上那个多出来的 pending）', async () => {
+    current.mockResolvedValue({ bundle: { id: 'CUR', version: body.version } });
+    list.mockResolvedValue({
+      bundles: [
+        { id: 'DUP', version: body.version, status: 'pending' },
+        { id: 'CUR', version: body.version, status: 'success' },
+      ],
+    });
+    await expect(checkNativeUpdate()).resolves.toEqual({ action: 'skip', reason: '已经是最新' });
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledWith({ id: 'DUP' });
+    const log = readLastCheckLog();
+    expect(log?.steps.at(-1)).toBe('cleanup:deleted-1/1');
+    // 结论不被清理盖掉。
+    expect(log?.outcome).toBe('已经是最新');
+  });
+
+  it('下了新版：原来登记的旧「下次用」删掉，刚下的这个留着', async () => {
+    getNextBundle.mockResolvedValue({ id: 'OLDNEXT', version: '0.6.6+old1234', status: 'pending' });
+    list.mockResolvedValue({
+      bundles: [
+        { id: 'OLDNEXT', status: 'pending' },
+        { id: 'NEW', status: 'pending' },
+      ],
+    });
+    await checkNativeUpdate();
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(del).toHaveBeenCalledWith({ id: 'OLDNEXT' });
+  });
+
+  it('「下次用」问不出来就不清 —— 问不出来的那个可能正是要留的', async () => {
+    getNextBundle.mockRejectedValue(new Error('boom'));
+    list.mockResolvedValue({ bundles: [{ id: 'X', status: 'pending' }] });
+    await checkNativeUpdate();
+    expect(list).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('跑着的是哪个问不出来也不清', async () => {
+    current.mockRejectedValue(new Error('boom'));
+    list.mockResolvedValue({ bundles: [{ id: 'X', status: 'pending' }] });
+    await checkNativeUpdate();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('next 没登记上：这一趟不清（原来那个「下次用」还在不在不知道了）', async () => {
+    next.mockRejectedValue(new Error('next failed'));
+    list.mockResolvedValue({ bundles: [{ id: 'X', status: 'pending' }] });
+    await checkNativeUpdate();
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('删失败只记一笔，不影响这一趟的结论', async () => {
+    current.mockResolvedValue({ bundle: { id: 'CUR', version: body.version } });
+    list.mockResolvedValue({ bundles: [{ id: 'DUP', status: 'pending' }] });
+    del.mockRejectedValue(new Error('cannot delete'));
+    await expect(checkNativeUpdate()).resolves.toEqual({ action: 'skip', reason: '已经是最新' });
+    const log = readLastCheckLog();
+    expect(log?.steps).toContainEqual(expect.stringMatching(/^cleanup:delete-rejected\(DUP\)$/));
+    expect(log?.steps.at(-1)).toBe('cleanup:deleted-0/1');
+    expect(log?.outcome).toBe('已经是最新');
+  });
+});
+
+describe('pendingUpdateVersion 也认上一趟下好的那个', () => {
+  it('这一趟没下，但原生侧登记着一个待生效的版本 —— 设置页照样看得见', async () => {
+    vi.stubGlobal('localStorage', memoryStorage());
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    current.mockResolvedValue({ bundle: { id: 'builtin', version: 'builtin' } });
+    getInfo.mockResolvedValue({ version: '0.6.6' });
+    getNextBundle.mockResolvedValue({ id: 'Q', version: '0.6.6+queued1', status: 'pending' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ buildId: 'queued1', version: '0.6.6+queued1', url: 'https://x/z.zip', minNative: '0.4.0', bytes: 1 }),
+      }),
+    );
+    await checkNativeUpdate();
+    expect(pendingUpdateVersion()).toBe('0.6.6+queued1');
+    vi.unstubAllGlobals();
   });
 });

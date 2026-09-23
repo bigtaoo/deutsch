@@ -88,6 +88,12 @@ export interface UpdateContext {
   nativeVersion?: string;
   /** 上次下好并登记为「下次启动用」的 buildId。**不过桥**（localStorage），所以桥死了它还在。 */
   queuedBuildId?: string;
+  /**
+   * 原生侧登记的「下次启动用」那个 bundle 的 version（`getNextBundle()`）。
+   * `null` = 问出来了、没有登记任何包；`undefined` = 过桥问不出来。
+   * 和 `queuedBuildId` 的区别：这是原生侧的真相，回滚过也会如实反映。
+   */
+  nextVersion?: string | null;
 }
 
 /** `0.3.0` → [0,3,0]。非法输入回 [0,0,0]，让它在比较里输给一切。 */
@@ -144,11 +150,16 @@ export function decideUpdate(manifest: OtaManifest, ctx: UpdateContext): UpdateD
   }
   // 内置 bundle 的 version 是 'builtin'，永远不等于 manifest.version，所以第一次
   // 启动就会下。这是对的：IPA 出包那一刻之后 main 上的改动全都在这个包里。
-  if (ctx.currentVersion !== undefined) {
-    if (ctx.currentVersion === manifest.version) {
-      return { action: 'skip', reason: '已经是最新' };
-    }
-  } else if (ctx.queuedBuildId === manifest.buildId) {
+  if (ctx.currentVersion !== undefined && ctx.currentVersion === manifest.version) {
+    return { action: 'skip', reason: '已经是最新' };
+  }
+  // 下好了、登记了、还没重启。原来这里只看 currentVersion，于是启动时自动查的那一趟
+  // 刚下完，紧接着点「现在就查一次更新」又下了一遍同一个包（2026-09-23 真机：
+  // `list` 里两个 `0.6.6+4f04891`，多出来那个永远 pending、没人删）。
+  if (ctx.nextVersion != null && ctx.nextVersion === manifest.version) {
+    return { action: 'skip', reason: '这一版已经下好，等下次冷启动生效' };
+  }
+  if (ctx.currentVersion === undefined && ctx.queuedBuildId === manifest.buildId) {
     // 跑着的是哪一版问不出来，但这一版我们自己下过、也登记过了。再下一遍只是把同一个
     // 10MB 重下一次（而且多半是流量），等下次冷启动生效就好。**这条路只在桥哑掉时走** ——
     // 桥好的时候 currentVersion 会直接告诉我们答案。
@@ -189,10 +200,22 @@ const PLUGIN_TIMEOUT_MS = 8000;
 
 /** 只用到这几个方法。**手写而不是 import 插件包的类型**，理由见 `acquireUpdater()`。 */
 export interface UpdaterPlugin {
-  current(): Promise<{ bundle?: { version?: string } }>;
+  current(): Promise<{ bundle?: BundleInfo }>;
   download(opts: { url: string; version: string }): Promise<{ id: string }>;
   next(opts: { id: string }): Promise<unknown>;
   notifyAppReady(): Promise<unknown>;
+  /** 没登记时回 `undefined`/`null`。 */
+  getNextBundle(): Promise<BundleInfo | null | undefined>;
+  list(): Promise<{ bundles?: BundleInfo[] }>;
+  delete(opts: { id: string }): Promise<unknown>;
+}
+
+/** 插件的 `BundleInfo`，只取用得到的字段。 */
+export interface BundleInfo {
+  id?: string;
+  version?: string;
+  /** `success` / `pending` / `downloading` / `error`。 */
+  status?: string;
 }
 
 /** 这个会话里已经拿到的插件代理。拿到过一次就不再重新取。 */
@@ -718,7 +741,7 @@ export async function notifyNativeAppReady(): Promise<void> {
  * 都要往 `CheckLogEntry` 里写一笔**——「更新器自己挂住」这类 bug 的本质就是「重启多少次
  * 都一样，且什么都不剩」，而诊断的价值恰恰是把「什么都不剩」变成「剩一份能看的记录」。
  */
-export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
+async function runCheck(): Promise<UpdateDecision | null> {
   // **进门第一件事就是落一笔。** 这一行之后无论卡在哪里，设置页都看得见「开始了、
   // 走到了第几步」——见 `startCheckLog()`。在这之前不能有任何 `await`：2026-09-23
   // 真机上「连『上次查更新』那一块都不存在」正是因为原来第一个 `await` 就在这上面。
@@ -735,6 +758,7 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
 
   let outcome: UpdateDecision | null = null;
   let outcomeText = '（异常中断）';
+  let cleanup: { plugin: UpdaterPlugin; keep: string[] } | null = null;
   try {
     // 拿插件。**这一步自己带死线**（见 acquireUpdater）—— 2026-09-23 那次真机
     // 就是停在这里，而当时它是这条路上唯一一个没有死线的 await。
@@ -771,12 +795,26 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
     log.step('fetch:ok');
     const manifest = (await res.json()) as OtaManifest;
 
-    const [current, info] = await Promise.all([
+    const [current, info, nextBundle] = await Promise.all([
       askBridgeVerbose(() => CapacitorUpdater.current()),
       askBridgeVerbose(async () => (await import('@capacitor/app')).App.getInfo()),
+      askBridgeVerbose(() => CapacitorUpdater.getNextBundle()),
     ]);
     log.step(step('current', current));
     log.step(step('getInfo', info));
+    log.step(step('nextBundle', nextBundle));
+    // 上一趟（可能是上一个会话）下好的、还没生效的那一版，设置页照样要说出来 ——
+    // 原来 `pending` 只在这一趟自己下了才有，于是「已下好」的那次跳过在界面上一个字都没有。
+    const queuedVersion = nextBundle.ok ? nextBundle.value?.version : undefined;
+    if (queuedVersion) pending = queuedVersion;
+
+    // 清理要留下的两个：跑着的、登记为下次用的。**两个都问出来了才清** ——
+    // 问不出来的那一个可能正是要留的，宁可这次不清。
+    const currentId = current.ok ? current.value?.bundle?.id : undefined;
+    if (currentId && nextBundle.ok) {
+      const nextId = nextBundle.value?.id;
+      cleanup = { plugin: CapacitorUpdater, keep: nextId ? [currentId, nextId] : [currentId] };
+    }
 
     const decision = decideUpdate(manifest, {
       // `?.` 一路到底：原生侧回的是什么形状不由我们说了算，而一个 `undefined.version`
@@ -784,6 +822,7 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
       currentVersion: current.ok ? (current.value?.bundle?.version ?? BUILTIN) : undefined,
       nativeVersion: info.ok ? info.value.version : undefined,
       queuedBuildId: readQueuedBuildId(),
+      nextVersion: nextBundle.ok ? (nextBundle.value?.version ?? null) : undefined,
     });
     log.step(`decide:${decision.action}`);
     if (decision.action === 'skip') {
@@ -797,6 +836,11 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
       DOWNLOAD_TIMEOUT_MS,
     );
     log.step(step('download', downloaded));
+    // 刚下的这个这一趟不许清掉它；next 成了它就是新的「下次用」，原来登记的那个
+    // 自然就没人要了 —— 所以是**替换**而不是追加。
+    if (cleanup && downloaded.ok) {
+      cleanup = { plugin: cleanup.plugin, keep: [cleanup.keep[0], downloaded.value.id] };
+    }
     if (!downloaded.ok) {
       // 45 秒还没回应，十有八九是桥没回话，不是文件大——不值得再等，留到下次
       // 冷启动或下次手动点「现在就查一次更新」再试。**绝不能卡在这里不返回**：
@@ -813,6 +857,8 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
     );
     log.step(step('next', registered));
     if (!registered.ok) {
+      // next 没登记上：原来那个「下次用」还在不在就不知道了，这次不清。
+      cleanup = null;
       // 包已经下好了，但没能登记成「下次启动用它」——不能假装这一趟成功了
       // （那样设置页会显示「已下好，下次打开生效」，而原生侧其实什么都没登记）。
       outcome = { action: 'skip', reason: `下好了但没能登记为下次启动用（${registered.reason}）——这次白下了，下次再试` };
@@ -833,7 +879,89 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
     // 每一步其实都已经写过了；这里只是把结论补上去。**走不到这里也没关系** ——
     // 那正是改成逐步落盘要解决的情况，日志会停在最后一步并保留「没有走到结束」那句话。
     log.finish(outcomeText);
+    // 结论先落地再清理：清理是顺手的事，它慢或失败都不该让「上次查更新」停在半路。
+    // 但它必须在这一趟**之内**跑完（单飞的锁还没放）—— 否则下一趟刚下完、还没 next 的
+    // 那个包，在这里看来就是「既不是跑着的也不是下次用的」，会被当场删掉。
+    if (cleanup) await cleanupBundles(cleanup.plugin, cleanup.keep, log.step);
   }
+}
+
+/** 一趟清理最多删几个。正常情况下只有一个（上一版），多了说明哪里在反复下。 */
+const CLEANUP_MAX = 5;
+
+/**
+ * 哪些 bundle 可以删：不是内置、不在 `keep` 里、不是正在下载的。**纯函数**。
+ *
+ * 原来一个都不删：每次热更留下一个 10MB 的旧包，外加 2026-09-23 真机上看到的
+ * 重复下载那一份（永远 pending）。插件的 `delete` 自己会拒绝删跑着的那个，
+ * 但「下次启动用」的那个它不一定拦 —— 所以 keep 必须由我们给全。
+ */
+export function bundlesToDelete(bundles: BundleInfo[], keep: string[]): string[] {
+  return bundles
+    .filter((b) => b.id && b.id !== BUILTIN && !keep.includes(b.id) && b.status !== 'downloading')
+    .map((b) => b.id as string);
+}
+
+async function cleanupBundles(plugin: UpdaterPlugin, keep: string[], step: (s: string) => void): Promise<void> {
+  try {
+    const listed = await askBridgeVerbose(() => plugin.list());
+    if (!listed.ok) {
+      step(`cleanup:list-${listed.reason}`);
+      return;
+    }
+    const doomed = bundlesToDelete(listed.value?.bundles ?? [], keep);
+    if (doomed.length === 0) {
+      step('cleanup:none');
+      return;
+    }
+    let deleted = 0;
+    for (const id of doomed.slice(0, CLEANUP_MAX)) {
+      const r = await askBridgeVerbose(() => plugin.delete({ id }));
+      if (r.ok) deleted++;
+      else step(`cleanup:delete-${r.reason}(${id})`);
+    }
+    step(`cleanup:deleted-${deleted}/${doomed.length}`);
+  } catch (err) {
+    // 清理失败绝不影响更新本身。
+    step(`cleanup:threw:${errMessage(err)}`);
+  }
+}
+
+/**
+ * 正在跑的那一趟。**同一时间只跑一趟**：启动时自动查和设置页的按钮同时触发时，
+ * 第二个调用拿到的就是第一趟的结果，而不是再下一遍（2026-09-23 真机上两趟相隔 9 秒，
+ * 各下了一份同样的包）。
+ */
+let inFlight: { promise: Promise<UpdateDecision | null>; startedAt: number } | null = null;
+
+/**
+ * 一趟超过这么久还没回来，就不再让后来的调用等它。每一步都有死线，最坏约两分钟
+ * （见 VersionSection 的总闸）；这里给得更宽，只防一件事：**万一哪一步又漏了死线**，
+ * 单飞锁不能变成「这个会话里再也查不了更新」—— 那又是一条会把自己锁死的路。
+ */
+const IN_FLIGHT_STALE_MS = 180_000;
+
+/**
+ * 查一次热更新：拉 manifest → 判断 → 下载 → 登记下次启动用 → 清理旧包。
+ * 同一时间只跑一趟，见 `inFlight`。
+ */
+export function checkNativeUpdate(): Promise<UpdateDecision | null> {
+  const now = Date.now();
+  if (inFlight && now - inFlight.startedAt < IN_FLIGHT_STALE_MS) return inFlight.promise;
+  const entry: { promise: Promise<UpdateDecision | null>; startedAt: number } = {
+    promise: Promise.resolve(null),
+    startedAt: now,
+  };
+  entry.promise = runCheck().finally(() => {
+    if (inFlight === entry) inFlight = null;
+  });
+  inFlight = entry;
+  return entry.promise;
+}
+
+/** 测试用：丢掉上一个用例留下的那一趟（有的用例故意让它永远不回来）。 */
+export function resetCheckInFlightForTests(): void {
+  inFlight = null;
 }
 
 /** 这次会话里下好、等着下次启动生效的版本。给设置页用（§12.12）。 */

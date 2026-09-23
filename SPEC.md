@@ -75,6 +75,7 @@
 | 58 | **通听的当前词在手机上看不见（2026-09-23）**：`ListenTab.tsx` 里当前词的样式从 `bg-warn-soft font-medium` 改成 `bg-warn text-surface font-medium`（反白），并加 `data-active` 便于测试定位；`§12.17` 记下这条形状；新增 `src/pages/lesson/ListenTab.test.tsx`（3 条：当前词底色不等于当前行底色、高亮跟着时间走且同一时刻只有一个、落在句间空档时不标任何词），前端 1043 → 1046，server 145 / e2e 44 不受影响，五条验证全绿 | 用户带着一张桌面截图来问：「在网页上播放的时候，会有当前词的高亮显示，但是在手机上就没有。」<br>**查下来是一个纯视觉的低级错误，而且它是确定成立的、不必先复现**：词级高亮**永远**发生在当前行上（`activeToken` 只在当前行有值），而当前行的底色正是 `bg-warn-soft` —— 当前词用的也是 `bg-warn-soft`，两者同一个令牌、同一个色值，叠上去等于没叠。于是「当前词」这件事在屏幕上唯一剩下的表达是 `font-medium`，**一档字重**。Windows 上 400/500 一眼可辨（用户自己截的图里 `verbindet` 确实看得出来），iPhone 的 SF Pro 在 19px 正文上差别细到可以忽略 —— 同一份代码，两台设备上一个有高亮一个没有。<br>**所以这不是「手机上的 bug」，是这个样式从第一天（变更 24）起就只在字体渲染够狠的平台上勉强成立**。修法不是去调字重，是给当前词一个**自己的底色**：`warn` 实底 + `surface` 字色，两个令牌都跟着深色翻转（浅色是深棕底白字，深色是亮金底黑字），任何设备、任何字体渲染下都看得见，也正是卡拉OK/Spotify 的通行做法。<br>**测试断言写成两个类之间的关系**（当前词的底色 ≠ 当前行的底色）而不是「等于某个类名」：换配色照样过，退回同色就红 —— 还原成旧写法验证过这条用例确实会红。<br>**留一条待验**：如果手机上连**整行**的浅黄底色都不跟着句子走，那就是另一回事（时间源没推进，而不是看不见），要另查。<br>**随后他问「有测试可以加吗」，补了 6 条组件测试 + 3 条 E2E**（新文件 `e2e/listen.spec.ts`，e2e 44 → 47）。E2E 那条才是这次 bug 的**对口**判据：组件测试只断言得了 class 名，**断言不了这两个类最终算出来的颜色是不是同一个** —— 那要真的 CSS、真的层叠、真的令牌。还原成旧写法跑过一次，它报的是 `Expected: not "rgb(251, 241, 224)"`，正是 `--color-warn-soft` 的色值。<br>**为了让 E2E 能种出一课「既有音频又有词级时间戳」的课，`fixtures.ts` 多了 `timedLessonBackup(lessonId)`**：这两样东西分属两层（音频在缓存层，只能靠 `<input type=file>` 进来；词级时间戳在标注层，只能靠备份进来），所以先 `importLesson` 带 WAV 拿到 id，再用一份 `updatedAt` 更新的备份把时间戳盖上去。**另一条路（导 `sampleBackup` 再在课程页选本地音频）走不通得很安静**：绑音频会顺手 `enqueueAlign()`，而 E2E 里没有对齐服务器。fixture 里一句给 10 秒（真实素材远快于此）也是刻意的——断言要在「当前词还亮着」的窗口里跑完，句子短了用例就会随机掉进句间空档变红。 |
 | 59 | **热更卡住的那一行找到了：取插件的那个 `import()`（2026-09-23）**：`§7.12` 新增「诊断给出了答案」一节。`nativeUpdate.ts` 新增 `withDeadline()`（给「取东西」那一步死线，和管过桥调用的 `askBridgeVerbose` 分工）、`acquireUpdater()`（**首选 `@capacitor/core` 的 `registerPlugin('CapacitorUpdater')` 造代理，一个新 chunk 都不取**；插件包那个动态 import 降级成 8 秒死线的退路；返回 `via` 说清是从哪条路拿到的）、手写 `UpdaterPlugin` 类型（不 `import type` 插件包，否则「这个包必须存在」又写回构建里）；`checkNativeUpdate` 的步骤从 `plugin-import:ok` 变成 `plugin:<via>`，拿不到插件时是 `skip` 而不是挂住；`notifyNativeAppReady` 改成**重试 3/10/30 秒**（跨过插件启动那个 20 秒窗口）、只重试「没人回话」这一种、结果落进新的 `AppReadyLog`；查更新记录与 appReady 记录各在内存里存一份（`readLastCheckLog()` 内存优先），localStorage 写失败的原因单独记进 `readStorageWriteError()`。`bridgeDiag` 改走同一个 `acquireUpdater()`（自检第一行就是 `acquireUpdater → ok(0ms) core`），报告 `schema` 1 → 2，多 `appReady` 与 `storageWriteError` 两个字段。`VersionSection` 多两行（「我起来了」成没成/第几次、存储写失败过）。前端 1046 → 1058，server 145 / e2e 44 不受影响，五条验证全绿。**已上线 `5cc8cea`，`ios-v0.6.6` 已出包上传 ASC**（构建号 17，6m44s；线上 manifest 是 `0.6.6+be58199`，正是这个 IPA 的那份代码） | `ios-v0.6.5` 的真机报告是四天里第一份决定性的证据。三条数摆在一起只指向一个地方：①`probePlugins()` 名单里**有** `CapacitorUpdater`、56 个方法齐全；②自检里七个只读方法 `getPluginVersion` 4ms / `current` 0ms / `list` 1ms，对照组 `App.getInfo` 2ms——**桥、插件实例、每一个方法全是好的**，变更 57 那张「四种形状」表里一种都对不上；③而「上次查更新」的步骤停在 `['platform:ios']`，下一步正是取插件。<br>**第三条还有一个独立印证**：同一次启动里 `notifyAppReady()` 根本没到过原生侧——原生日志里没有插件那句 `Current bundle loaded successfully. [notifyAppReady was called]`，只有回滚检查自己的定时器打的 `Built-in bundle is active. We skip the check`。而 `notifyNativeAppReady()` 在平台判断之后的下一步也是取插件。**两条互不相干的路停在同一行。**<br>**旁证在抄下来的原生日志里**（变更 57 那条 `consoleTap` 第一次派上用场）：那次启动打过 `Semaphore wait timed out after 20000ms`——插件 `load()` 正在主线程做磁盘活并 `setServerBasePath()` 切 web 根，而那个 4KB 的 chunk 是同一个 WebView 去取的。请求悬在那儿不成不败，`import()` 对此的表现就是 promise 永远不 settle。<br>**教训是同一条的第四次**：变更 50/52/53 一路把每个**过桥调用**都套上了超时，漏掉的是「过桥之前先把插件拿到手」——形状不是「过桥」而是「取东西」，于是搜「桥调用」的时候搜不到它。所以这次不是只补一个超时，而是**把这条路上唯一要取的那个 chunk 整个去掉**：插件包的 JS 层只是 `registerPlugin` 造的一层代理壳，而 core 在这一步之前必然已经加载完了（`platform:ios` 那一步就是证据）。<br>**`notifyAppReady` 那条是顺着这份报告捡到的第二个真缺口**：它原来只有一次机会、失手即止、一个字都不留。跑内置 bundle 时侥幸没事（`isBuiltin()` 直接跳过回滚检查），但热更一旦真的装上一个 bundle，同一个失手就是「新版起来了 → 没人说我起来了 → 下次启动回滚」，症状恰好是「下下来了、永远不生效」。<br>**诊断自己也补了一个盲点**：这一版之前，「记录停在第一步」有两种成因（真卡住 / 后面几步写不进 localStorage）在文件里长得**一模一样**——`writeCheckLog` 的 catch 是哑的。分不清它们，这份报告在最关键的问题上就不可信，所以记录改成内存优先、存储只管跨会话、写失败的原因单独上报。<br>**这次必须出包，判据和变更 53 的 `0.6.3` 恰好相反**：那次的结论是「没动 Swift 就不该出包，纯 JS 交给 OTA」，而这次改的同样是纯 JS，却**必须**焊进 builtin bundle——因为送 JS 过去的那条路正是坏的那条。判据不是「改了什么」，是「OTA 现在能不能把它送到」。 |
 | 60 | **热更停在取 manifest：CORS（2026-09-23）**：新增 `public/_headers`，`/ota/*` 加 `Access-Control-Allow-Origin: *`；`build-ota.mjs` 把 `_headers` 排除出热更包；`deploy.yml` 发布后带 `Origin: capacitor://localhost` 线上检查放行头。本地用同一版 wrangler（4.104.0）`dev` 验过规则生效。`§7.12` 新增「走过了取插件，停在取 manifest」一节。**不必出包**。随后补测试：前端 1064 → 1071（`otaHeaders.test.ts` 守 `_headers` 规则 + `nativeUpdate` 三条取 manifest 的形状）；顺带修掉两处 CI 抖动——`diag.test.ts` 同一毫秒顺序不定（server 145 → 146），以及 `npm ci` 时 onnxruntime-node 的 postinstall 去 NuGet 下 CUDA EP 超时（今早 deploy 因此红过一次；五处 `npm ci` 都加 `ONNXRUNTIME_NODE_INSTALL=skip`，与 `server/Dockerfile` 的 `--ignore-scripts` 同理） | `ios-v0.6.6` 的真机报告：步骤 `platform:ios → plugin:cached → fetch:threw:Load failed`，`notifyAppReady` `ok(4ms, via core)`——变更 59 修对了，链条第一次走到网络那一步。壳的 origin 是 `capacitor://localhost`，取 manifest 是跨域，而线上响应没有任何放行头；网页版同源所以从没暴露。这条路从变更 41 起就是断的，只是此前每次都卡死在更前面。 |
+| 61 | **热更走通；同一版只下一次、旧包要清（2026-09-23）**：`decideUpdate` 多一个 `nextVersion`（`getNextBundle()`），已下好待生效就跳过；`checkNativeUpdate()` 单飞（3 分钟过期防自锁），原函数改名 `runCheck`；新增 `bundlesToDelete()` + 每趟结束清理（两个 keep 都问出来才清、`next` 失败不清、最多 5 个）；`pendingUpdateVersion()` 认上一趟下好的那个；`UpdaterPlugin` 补 `getNextBundle`/`list`/`delete`。前端 1071 → 1085，四处修法各做了「去掉就红」的反证。§7.12 新增「走通了」一节 | 变更 60 上线后的真机报告是热更**第一次端到端走通**：download 770ms、next ok，冷启动后 `current()` 是新包、`notifyAppReady` 落在新包上。同一份报告里 `list` 有两个 `0.6.6+4f04891`：启动自动查与 9 秒后的按钮各下了一份，而代码从不删包。 |
 
 ---
 
@@ -1847,6 +1848,31 @@ zip 由插件的 `download()` 走原生 URLSession 下载，不受 CORS 管。`_
 下一个要看的判据是步骤走到 `download` / `next`，以及下一次冷启动之后 `current()` 的
 `bundle.id` 不再是 `builtin`。
 
+#### 走通了：同一版只下一次、旧包要清（变更 61，2026-09-23）
+
+变更 60 上线后的两份真机报告是热更**第一次端到端走通**：按钮那一趟
+`fetch:ok → decide:download → download:ok(770ms) → next:ok`；冷启动之后 `current()` 是
+`vUUWJo6hmG / 0.6.6+4f04891 / success`，原生日志 `[notifyAppReady was called]` 落在新包上，没有回滚。
+
+同一份报告露出一个缺口：**同一版下了两次**。启动自动查（12:25:28）刚下完、登记好，9 秒后
+按钮那一趟又下了一遍 —— `decideUpdate` 只和「跑着的那版」比，不看「已下好待生效」的那个；
+而代码里**一个包都不删**，多出来那份永远 pending，每次热更再留一个约 10MB 的旧包。三处修法：
+
+1. **判断时看 `getNextBundle()`**（`UpdateContext.nextVersion`，`null` = 问出来了没有、`undefined`
+   = 问不出来）：登记的正是 manifest 那一版就跳过「已下好，等下次冷启动生效」。它是原生侧的
+   真相（回滚会如实反映），所以和 `queuedBuildId` 那条「桥好时记号不参与判断」的约定不冲突。
+   设置页的 `pendingUpdateVersion()` 也认它 —— 原来只有这一趟自己下了才有。
+2. **单飞**：`checkNativeUpdate()` 同一时间只跑一趟，后来的调用拿同一个 promise。**锁 3 分钟过期**
+   （每一步都有死线，最坏约两分钟）：万一哪一步又漏了死线，单飞锁不能变成「这个会话里再也查不了」
+   —— [[别留会把自己锁死的路]]。
+3. **每趟结束清理**：`bundlesToDelete()` 删掉不是内置、不是跑着的、不是下次用的、不在下载中的包，
+   一趟最多 5 个，每个删都过 `askBridgeVerbose`。**跑着的和下次用的两个都问出来了才清**（问不出来
+   的那个可能正是要留的）；`next` 没登记上的那一趟不清。清理在结论落地**之后**、单飞锁放开**之前**
+   —— 放在锁外的话，下一趟刚下完、还没 `next` 的那个包会被当成没人要的删掉。步骤记
+   `nextBundle:ok(..)`、`cleanup:none` / `cleanup:deleted-N/M` / `cleanup:delete-rejected(id)`。
+
+纯 JS，走热更下发即可。手机上那个多出来的 `73AgXfHfNw` 会在拿到这一版后的下一次查更新时被清掉。
+
 #### 真正的障碍：`/models/` 与 `/dict/`
 
 热更把 web 根整个切到 `Library/NoCloud/ionic_built_snapshots/<id>/`，而 `/models/`
@@ -2113,6 +2139,9 @@ Android 那条仍未跑过。
       （`fetch:threw:Load failed`，后面几步一步不走）、非 2xx 跳过，以及**取 manifest 保持简单请求**
       （绝对 URL、不带凭据、不加请求头——`*` 只对简单请求成立，改成带凭据或加头都会让手机重新停在这一步）。
       两条都做过「改坏就红」的反证
+- [x] **同一版只下一次 + 清理旧包（变更 61，2026-09-23）**：已下好待生效（`getNextBundle`）就不再下；
+      两个调用同时进来只下一次、结果相同；**前一趟挂住 3 分钟后新调用不再等它**；已是最新时清掉多出来的 pending；
+      下了新版时删旧「下次用」、留刚下的；跑着的或下次用的问不出来、`next` 失败时都不清；删失败只记一笔不改结论（前端 +14）
 - [ ] **仍然只能靠人**：iPhone 真机的安全区与 WKWebView 行为、真实对齐（要下权重）、真实 DW 抓取、真实 Google 登录与恢复演练
 
 **热更新（§7.12 / §12.12，2026-09-20 新增）**
