@@ -21,7 +21,7 @@
 // 长得一样的话，每次进读卡都要先愣一秒等声音。所以卡顶那行题干是必需的，
 // 它同时说清了这一关考什么。
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_LESSON_TAB, navigate } from '@/app/router';
 import { audioPlayer } from '@/audio/player';
 import { playSfx, preloadSfx } from '@/audio/sfx';
@@ -276,10 +276,19 @@ function QuizCard({
   const isRead = deck === 'read';
   const audioStatus = cardAudioStatus(entry, hasMaterial);
   const sentence = entry.sentenceIndex === undefined ? undefined : lesson?.sentences[entry.sentenceIndex];
-  const range = sentence && lesson ? resolveRange(lesson.sentences, sentence.index, lesson.audioDuration) : null;
+  // **必须 useMemo**：resolveRange 每次调用都 `return { ... }` 一个新对象。
+  // 不钉住的话下面那个自动播放 effect 把它当依赖，每次渲染都判定“变了”重跑一遍——
+  // 而它的清理函数会 `pause()` 掉刚起播的那一句，于是 load → playRange → pause 循环，
+  // 句子播几毫秒就被自己掐断，症状是“挖空题音频根本放不出来”（变更 53，真机与用户实测）。
+  const range = useMemo(
+    () => (sentence && lesson ? resolveRange(lesson.sentences, sentence.index, lesson.audioDuration) : null),
+    [sentence, lesson],
+  );
 
   const [question, setQuestion] = useState<Question | null>(null);
   const [playable, setPlayable] = useState(false);
+  /** FR-10.5：hasMaterial 说有、`audioBlobs` 里实际取不到，或取到了解不了码——两种都不能悄悄变成灰按钮。 */
+  const [sentenceAudioError, setSentenceAudioError] = useState<'missing-blob' | 'decode-failed' | null>(null);
   const [wordSource, setWordSource] = useState<WordAudioSource | 'loading'>('loading');
   /** 例句只在答错时用，所以也只在那时去查（它在词典里，不在卡上 —— §2.3）。 */
   const [examples, setExamples] = useState<string[] | null>(null);
@@ -307,11 +316,23 @@ function QuizCard({
   useEffect(() => {
     let cancelled = false;
     setPlayable(false);
+    setSentenceAudioError(null);
     if (isRead || audioStatus !== 'ok' || !range || !lesson) return;
     void (async () => {
       const blob = await getAudioBlob(lesson.id);
-      if (!blob || cancelled) return;
-      await audioPlayer.load(lesson.id, blob);
+      if (cancelled) return;
+      if (!blob) {
+        // FR-10.5：`hasMaterial` 与 `audioBlobs` 分属两个 store（LessonCache 元数据 /
+        // IndexedDB 里真正的字节），会分叉——不能让这里的失败表现成永久变灰的播放键。
+        setSentenceAudioError('missing-blob');
+        return;
+      }
+      try {
+        await audioPlayer.load(lesson.id, blob);
+      } catch {
+        if (!cancelled) setSentenceAudioError('decode-failed');
+        return;
+      }
       if (cancelled) return;
       setPlayable(true);
       startedAt.current = Date.now();
@@ -332,16 +353,25 @@ function QuizCard({
   const playWord = useCallback(async () => {
     const blob = await ensureWordAudio(entry.surface).catch(() => undefined);
     if (blob) {
-      await audioPlayer.load(`word:${entry.surface}`, blob);
-      await audioPlayer.play(0).catch(() => {});
-      return;
+      try {
+        await audioPlayer.load(`word:${entry.surface}`, blob);
+        await audioPlayer.play(0).catch(() => {});
+        return;
+      } catch {
+        // 解码失败：退合成音，好过按下去什么反应都没有
+      }
     }
     speak(entry.surface);
   }, [entry.surface]);
 
   useEffect(() => {
     let cancelled = false;
-    if (isRead || audioStatus !== 'word-only') return;
+    // 听卡只在 word-only 那一档需要孤立词音源；**读卡除了 audioStatus === 'ok'
+    // 都需要**——那些情形卡背「念一遍」没有原句可放，只能靠这份孤立词兜底，
+    // 而它必须在点击前就问好（见下面 playCardBackAudio 顶上的注释：晚了会撞
+    // iOS 的手势链）。读卡这里只判定音源，不自动播——FR-21.5。
+    const needsWordSource = isRead ? audioStatus !== 'ok' : audioStatus === 'word-only';
+    if (!needsWordSource) return;
     setWordSource('loading');
     void (async () => {
       // 先只判**有没有**音源再播：把「查」和「播」并成一步的话，
@@ -350,10 +380,15 @@ function QuizCard({
       if (cancelled) return;
       const source: WordAudioSource = blob ? 'human' : germanVoice() ? 'tts' : 'none';
       setWordSource(source);
+      if (isRead) return; // 读卡到这里只是把音源缓存备好，播放留给「念一遍」按钮
       startedAt.current = Date.now();
       if (blob) {
-        await audioPlayer.load(`word:${entry.surface}`, blob);
-        if (!cancelled) await audioPlayer.play(0).catch(() => {});
+        try {
+          await audioPlayer.load(`word:${entry.surface}`, blob);
+          if (!cancelled) await audioPlayer.play(0).catch(() => {});
+        } catch {
+          // 解码失败：wordSource 已经算出来了，noAudio 走原有判断
+        }
       } else if (source === 'tts' && !cancelled) {
         speak(entry.surface);
       }
@@ -364,6 +399,32 @@ function QuizCard({
       if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
     };
   }, [entry.id, entry.surface, audioStatus, isRead]);
+
+  /**
+   * §12.13：读卡卡背「念一遍」。
+   *
+   * **课程卡优先播原句**：那一句本来就在本机、也正是挖空题面用的那句——
+   * 念它比念孤立词形更有用，练的是连读（用户 2026-09-23 反馈后定的形状，变更 53）。
+   * 没有原句（预置卡/查词卡）、或这一次原句音频确实取不到，才退孤立词。
+   */
+  const playCardBackAudio = useCallback(async () => {
+    if (audioStatus === 'ok' && range && lesson) {
+      try {
+        const blob = await getAudioBlob(lesson.id);
+        if (blob) {
+          await audioPlayer.load(lesson.id, blob);
+          await audioPlayer.playRange(range.start, range.end);
+          return;
+        }
+      } catch {
+        // 取不到就退孤立词，走下面 playWord
+      }
+    }
+    await playWord();
+  }, [audioStatus, range, lesson, playWord]);
+
+  /** 读卡卡背的「念一遍」按钮要不要给：原句可放，或者孤立词有真人音/合成音。 */
+  const canPlayCardBack = audioStatus === 'ok' || wordSource === 'human' || wordSource === 'tts';
 
   // 答错时才取例句。`word-only` 这一档就是「没有原句的卡」——
   // 预置词库与查词加进来的词都在里面，两者都只能靠词典里的例句撑起卡背。
@@ -442,10 +503,26 @@ function QuizCard({
         {isRead ? (
           <ReadPrompt question={question} />
         ) : audioStatus === 'ok' ? (
-          <div className="flex flex-col items-center gap-2">
-            <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
-            <p className="text-note text-faint">听这一句，选出挖掉的那个词</p>
-          </div>
+          sentenceAudioError ? (
+            // FR-10.5：hasMaterial 说有、这一次实际取不到/解不了码，不能表现成
+            // 永久变灰的播放键——两条记录分属两个 store，会分叉（变更 53）。
+            <Banner
+              tone="warn"
+              title={
+                sentenceAudioError === 'missing-blob'
+                  ? '这张卡没有音频：本机的音频文件找不到了'
+                  : '这张卡没有音频：音频文件解码失败'
+              }
+              action={<Button onClick={() => navigate({ name: 'sources' })}>去重新下载素材</Button>}
+            >
+              <p>《{lesson?.title ?? '这一课'}》—— 一键可解。</p>
+            </Banner>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
+              <p className="text-note text-faint">听这一句，选出挖掉的那个词</p>
+            </div>
+          )
         ) : audioStatus === 'word-only' ? (
           <div className="flex flex-col items-center gap-2">
             <PlayButton disabled={wordSource === 'loading' || wordSource === 'none'} onClick={() => void playWord()} />
@@ -503,7 +580,7 @@ function QuizCard({
             entry={entry}
             sentence={sentence?.text}
             examples={examples}
-            onPlayWord={isRead ? () => void playWord() : undefined}
+            onPlayWord={isRead && canPlayCardBack ? () => void playCardBackAudio() : undefined}
           />
         )}
       </Card>

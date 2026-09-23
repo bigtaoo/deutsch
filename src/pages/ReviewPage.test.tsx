@@ -18,8 +18,11 @@ import { useSettingsStore } from '@/state/useSettingsStore';
 import { DEFAULT_SETTINGS } from '@/db/meta';
 import { newCard } from '@/srs/fsrs';
 import { playSfx, preloadSfx } from '@/audio/sfx';
+import { audioPlayer } from '@/audio/player';
+import { getAudioBlob } from '@/db/cache';
+import { ensureWordAudio, germanVoice } from '@/dict/audio';
 import type { DictDeck } from '@/dict/types';
-import type { FSRSCard, VocabEntry } from '@/types/models';
+import type { FSRSCard, Lesson, VocabEntry } from '@/types/models';
 
 const DECK: DictDeck = {
   id: 4,
@@ -47,7 +50,16 @@ vi.mock('@/dict/audio', () => ({
 }));
 
 vi.mock('@/audio/player', () => ({
-  audioPlayer: { load: vi.fn(), play: vi.fn(), playRange: vi.fn(), pause: vi.fn() },
+  // load/play/playRange 在真代码里都是 async（会被 `.catch()`），mock 也得回一个
+  // Promise——早先的用例都在 getAudioBlob 早退那条路上，从没真的调用到这几个方法，
+  // 直到变更 53 补的用例第一次走到这里，才发现同步 `vi.fn()` 的返回值上 `.catch`
+  // 是 `undefined.catch`，一个未处理的 rejection。
+  audioPlayer: {
+    load: vi.fn(async () => {}),
+    play: vi.fn(async () => {}),
+    playRange: vi.fn(async () => {}),
+    pause: vi.fn(),
+  },
 }));
 
 vi.mock('@/db/cache', () => ({ getAudioBlob: vi.fn(async () => undefined) }));
@@ -346,6 +358,157 @@ describe('ReviewPage：识词卡（FR-21）', () => {
     await waitFor(() => expect(screen.getByLabelText('播放')).toBeInTheDocument());
     expect(screen.queryByText('哪个词填得进这个空')).not.toBeInTheDocument();
     expect(screen.getByText('1 / 1')).toBeInTheDocument();
+  });
+});
+
+// ── 变更 53：课程听卡「挖空题音频放不出来」+ 三处静默失败 ────────────────
+//
+// 根因：自动播放那个 effect 把 `resolveRange()` 每次渲染新建的对象当依赖——
+// 一变就重跑，清理函数又把刚起播的那句 `pause()` 掉，句子播几毫秒就被自己掐断。
+// 用户实测就是「挖空的题，音频根本无法正常播放」。这里钉住的是「不再自己重放自己」，
+// 以及顺手一起修的三处 FR-10.5 静默出口：blob 取不到、blob 解不了码、
+// 读卡卡背「念一遍」没音源还给一个按下去没反应的键。
+describe('ReviewPage：课程听卡的原句音频（变更 53）', () => {
+  const DAY = 86_400_000;
+
+  function lessonWith(sentences: Array<{ index: number; text: string; startTime?: number }>): Lesson {
+    return {
+      id: 'L1',
+      title: '课程',
+      source: { type: 'manual' },
+      audioDuration: 60,
+      sentences: sentences.map((s) => ({
+        charStart: 0,
+        charEnd: s.text.length,
+        endTimeExplicit: false,
+        blanks: [],
+        markedDifficult: false,
+        excluded: false,
+        ...s,
+      })),
+      createdAt: NOW.getTime(),
+      updatedAt: NOW.getTime(),
+    };
+  }
+
+  /** 一张课程听卡：有 `lessonId` + `sentenceIndex` + `hasTimestamp`，本机也有素材。 */
+  function seedLessonListenCard(extra: Partial<VocabEntry> = {}) {
+    useVocabStore.setState({
+      entries: [
+        entry('Vorhang', {
+          gender: 'm',
+          preset: undefined,
+          lessonId: 'L1',
+          sentenceIndex: 0,
+          hasTimestamp: true,
+          ...extra,
+        }),
+      ],
+      loaded: true,
+    });
+    useLessonStore.setState({
+      lessons: [
+        lessonWith([
+          { index: 0, text: 'Der Vorhang fällt.', startTime: 1 },
+          { index: 1, text: 'Zweiter Satz.', startTime: 5 },
+        ]),
+      ],
+      caches: { L1: { lessonId: 'L1', hasAudio: true, audioBytes: 1000, fetchedAt: NOW.getTime() } },
+    });
+    useSettingsStore.setState({ settings: { ...DEFAULT_SETTINGS }, loaded: true });
+  }
+
+  it('只自动播一次，不会自己把自己掐掉', async () => {
+    seedLessonListenCard();
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(new Blob(['x']));
+
+    render(<ReviewPage />);
+    await waitFor(() => expect(audioPlayer.playRange).toHaveBeenCalledTimes(1));
+    // 清账的基准点卡在「自动播那一次已经发生之后」——而不是 t=0：mount 的第一个
+    // act() 会顺带把上一条用例卸载组件时还没落地的 cleanup 一起冲掉（RTL 的
+    // unmount 本身是异步的，pause() 可能晚到下一条用例的渲染里才触发），
+    // 那不是这条用例要盯的东西。这里要盯的是**这之后**还会不会再来一轮。
+    vi.mocked(audioPlayer.playRange).mockClear();
+    vi.mocked(audioPlayer.pause).mockClear();
+
+    // 真等一段真实时间：bug 需要渲染发生的空间才会露出来，立刻断言等于没测——
+    // 复现时同样的窗口里，坏代码已经能看到 pause → playRange 一轮又一轮。
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(audioPlayer.playRange).not.toHaveBeenCalled();
+    expect(audioPlayer.pause).not.toHaveBeenCalled();
+  });
+
+  it('hasMaterial 说有、audioBlobs 里实际取不到：明说，不是永久变灰的播放键（FR-10.5）', async () => {
+    seedLessonListenCard();
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(undefined);
+
+    render(<ReviewPage />);
+    await waitFor(() =>
+      expect(screen.getByText('这张卡没有音频：本机的音频文件找不到了')).toBeInTheDocument(),
+    );
+    expect(screen.getByRole('button', { name: '去重新下载素材' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('播放')).not.toBeInTheDocument();
+  });
+
+  it('blob 取到了但解码失败：同样明说，不是一个未处理的 rejection（FR-10.5）', async () => {
+    seedLessonListenCard();
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(new Blob(['x']));
+    vi.mocked(audioPlayer.load).mockRejectedValueOnce(new Error('音频解码失败'));
+
+    render(<ReviewPage />);
+    await waitFor(() =>
+      expect(screen.getByText('这张卡没有音频：音频文件解码失败')).toBeInTheDocument(),
+    );
+  });
+
+  it('课程卡开成读卡后，卡背「念一遍」放的是原句，不是孤立词形（用户选定的形状）', async () => {
+    const listenNotDue: FSRSCard = {
+      ...newCard(NOW),
+      state: 2,
+      reps: 4,
+      due: NOW.getTime() + 7 * DAY,
+      last_review: NOW.getTime() - 3 * DAY,
+    };
+    seedLessonListenCard({ fsrs: listenNotDue, fsrsRead: { ...newCard(NOW), due: NOW.getTime() - 1000 } });
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(new Blob(['x']));
+
+    render(<ReviewPage />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '不认识' })).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: '不认识' }).click());
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /念一遍/ })).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: /念一遍/ }).click());
+
+    await waitFor(() => expect(audioPlayer.playRange).toHaveBeenCalledWith(1, 5));
+    expect(ensureWordAudio).not.toHaveBeenCalled();
+  });
+
+  it('预置卡开成读卡、没有真人音也没有系统嗓音：卡背不给「念一遍」——不是给一个按下去没反应的键', async () => {
+    vi.mocked(germanVoice).mockReturnValueOnce(null);
+    const listenNotDue: FSRSCard = {
+      ...newCard(NOW),
+      state: 2,
+      reps: 4,
+      due: NOW.getTime() + 7 * 86_400_000,
+      last_review: NOW.getTime() - 3 * 86_400_000,
+    };
+    seed([
+      entry('Zuversicht', { fsrs: listenNotDue, fsrsRead: { ...newCard(NOW), due: NOW.getTime() - 1000 } }),
+      entry('Erholung', { id: 'Erholung' }),
+      entry('Ansammlung', { id: 'Ansammlung' }),
+      entry('Gelassenheit', { id: 'Gelassenheit' }),
+    ]);
+
+    render(<ReviewPage />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '不认识' })).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: '不认识' }).click());
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /继续/ })).toBeInTheDocument());
+    // 音源判定是异步的（ensureWordAudio + germanVoice），给它落定的时间
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(screen.queryByRole('button', { name: /念一遍/ })).not.toBeInTheDocument();
   });
 });
 

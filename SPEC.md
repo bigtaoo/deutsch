@@ -68,6 +68,7 @@
 | 52 | **热更诊断到根、常亮改走原生（2026-09-23）**：`§7.12`「查更新」一段重写，新增 `§12.12` 的诊断子段。`src/platform/nativeUpdate.ts` 新增 `probePlugins()`（同步读 `window.Capacitor.PluginHeaders`，不过桥，回答「这台设备上 `CapacitorUpdater` 到底注册没注册」）、`askBridgeVerbose()`（`askBridge` 的诊断版，`timeout`/`rejected`/`threw` 三态分开）、`CheckLogEntry` + `readLastCheckLog()`（`checkNativeUpdate()` 每一步都落 localStorage，`finally` 里无条件写，含 `probePlugins()` 那一刻的快照）；`checkNativeUpdate()` 补齐两个还没盖到的自锁点：`fetch` 本身没有超时（手写 `AbortController`，不用 `AbortSignal.timeout()`——那是 Safari 16.4 才有，部署目标是 iOS 15）、`notifyNativeAppReady()` 自己过桥也没超时。`VersionSection` 新增「现在就查一次更新」按钮（iOS 上才有）与两块新诊断（插件注册名单 + 上次查更新的逐步记录）。`ios/App/CapApp-SPM/Sources/CapApp-SPM/CapApp-SPM.swift` 新增对 `CapacitorUpdaterPlugin` / `SocialLoginPlugin` 的显式引用（防 SwiftPM 静态库死代码剥离）；`.github/workflows/release-ios.yml` 的 `cap sync ios` 之后新增一步，校验 `CapacitorUpdater` 确实进了这次构建。`SceneDelegate.swift` 新增 `sceneDidBecomeActive`/`sceneWillResignActive`，直接拨 `UIApplication.isIdleTimerDisabled`——FR-18.7 常亮从此有两道防线，Web Wake Lock 不再是唯一防线。`src/platform/wakeLock.ts`：被拒时记下 `err.name`/`err.message`（不能拿 `instanceof Error` 判——真机抛的是 `DOMException`，不一定是 `Error` 子类）；新增「下一次用户手势（`pointerdown`）自动重试一次」（`armGestureRetry`，一次被拒只挂一个监听器）；成功时清掉上一次的错误残留。前端 +42 单测（982），无 server/e2e 改动，五条验证全绿；**用户随后问「有测试可以加吗」，又补了 9 条**（991）：`probePlugins` 吃到畸形原生数据不炸（数组里混非对象元素、`methods` 字段形状不对）、`checkNativeUpdate` 日志分清 `rejected`（原生侧真报错）与 `threw`（过桥调用同步抛，两者都不同于 `timeout`）、`readLastCheckLog` 面对损坏的 JSON 回 `null` 不抛错、`wakeLock` 被拒的值不是 `Error`/`DOMException` 时不炸、`resetWakeLockForTests` 真的摘掉了手势重试监听器（用 `addEventListener`/`removeEventListener` 的函数引用断言，不是间接数调用次数——那条路会被 `requesting` 那道闸掩盖掉）；**这一轮顺带在 `VersionSection.tsx` 抓到一个真缺口**：`runCheckNow` 里 `await checkNativeUpdate()` 没有 `catch`，虽然生产实现自己已经把所有失败收进 try/catch/finally、正常不会 `reject`，但按钮不该依赖这个前提——补了一条防御性用例（mock 成 reject）当场证实会产生未处理的 rejection，顺手补了 `.catch(() => null)` | 用户带着上一轮（变更 50）的真机结果回来，指出两件事没解：**①** `App.getInfo()` 好、`CapacitorUpdater.current()` 哑，两者同一条桥队列，「慢」解释不通——更像是插件类没被链进二进制，桥找不到就直接丢调用（`CapacitorBridge.handleJSCall` 的 `guard ... else { return }`，读了 `@capacitor/ios` 源码验证）；**②** 「常亮申请被拒，且不是省电模式」是新暴露的问题，原来的 `catch {}` 连拒绝原因都没留。<br>**这次没法在真机上验**——没有 Mac，只能把「查不出来」变成「代码里有地方能查」：`probePlugins()` 分开「类没注册」和「调用超时」这两种成因（前者要发新包，后者可能下一版自己就好），`CapApp-SPM.swift` 那处显式引用是「最像的成因」的最低代价赌注（不引入新依赖，猜错了也不会更坏），CI 那道校验挡的是「配置里漏列」这一档最便宜就能查的错。常亮换成 `SceneDelegate` 接管是因为这份工程有 `UIApplicationSceneManifest`——**`AppDelegate.applicationDidBecomeActive` 根本不会被调用**，原来的实现如果试图挂在那里会是又一个「挂了个不响的钩子」。**这一整条都要等下一次出包装机才算数**：`probePlugins()` 的名单里有没有 `CapacitorUpdater`、`isIdleTimerDisabled` 接管之后屏幕真的不灭、以及最关键的——这次的赌注到底压中没压中 |
 
 | 53 | **真机验出了插件确实注册成功、但 `download()`/`next()` 还是会卡死（2026-09-23）**：`checkNativeUpdate()` 里那两下裸 `await` 改成套 `askBridgeVerbose`——`download()` 45 秒超时、`next()` 10 秒超时（`§7.12` 补一段）；任何一步失败都不再假装成功：`download` 超时/报错直接 `skip`，`next` 超时/报错**不写** `queuedBuildId`、也不设 `pending`（否则设置页会显示「已下好等生效」但原生侧其实什么都没登记）；+3 条回归用例（51）。已发 `ios-v0.6.4`（这次没有依赖 OTA，直接把修复焊进 builtin bundle） | 用户装上 `ios-v0.6.2` 发来真机诊断截图：**`probePlugins()` 确认 `CapacitorUpdater` 注册成功**（12 个插件、`current` 在方法列表里）——变更 52 那个「类没链进二进制」的假设被这份数据**推翻**了；**常亮这次通过 Web API 直接就成功了**（「锁拿着」），FR-18.7 基本验过。但「现在就查一次更新」的按钮点下去**连着几分钟没有反应**——用户追问之后查代码发现：`current()`/`getInfo()` 早就套了超时保护，**唯独 `download()`/`next()` 这两下还是原来的裸 `await`**，是这次自己漏掉的。真机上大概率是 `current()` 4 秒超时后 `decideUpdate` 落进 `download` 分支，然后卡死在没有任何保护的 `download()` 调用上——和变更 50 那次死锁**一模一样的坏法，只是换了个调用**。<br>**这次没有让它走 OTA**：既然还不确定「热更这条通路本身通不通」，把修复只推到 OTA 等于赌「OTA 是好的」，而这正是要验证的东西；所以直接出了 `ios-v0.6.4`，把修好的版本焊进 builtin bundle，不依赖任何桥调用就能生效。<br>**教训**：给一类调用加了超时保护之后，要把"这一整条调用链上还有没有没保护到的兄弟"过一遍，不能只补眼前报错的那一个——`current()`/`getInfo()` 挂了会被立刻发现（症状明显），而 `download()`/`next()` 只在 `decideUpdate` 真的判定要下载时才会触发，不是每次查更新都会走到，所以更容易被漏掉、也更晚暴露 |
+| 54 | **挖空题的音频放不出来（2026-09-23）**：`ReviewPage.tsx` 课程听卡自动播那个 effect 依赖数组从 `resolveRange()` 每次渲染新建的对象改成 `useMemo` 钉住的稳定引用；`FR-10.5` 补第四种静默失败（`hasMaterial` 说有、`audioBlobs` 里这一次真取不到 / 取到了解不了码，各给一条 Banner + 「去重新下载素材」）；读卡卡背「念一遍」三处修复：没有任何音源时按钮不出现（原来无条件渲染，按下去没反应）、`speak()`/`audioPlayer.load()` 的失败不再静默吞掉、**课程卡改成念原句而不是孤立词形**（用户当场选定的形状，§12.13 同步改写）。+5 条回归用例（999），server/e2e 不受影响，五条验证全绿 | 用户报「复习时遇到挖空的题，音频根本无法正常播放」。定位过程：写了个临时组件测试给 `getAudioBlob`/`audioPlayer.load` 配上贴近真实的延迟（不是零延迟的同步 mock），跑出真实调用序列是 `load → playRange → pause → load → playRange → pause → …`——**每次 `playRange` 后面紧跟一次 `pause`，不收敛**。根因定位到变更 45（FR-21）：那次为了在依赖数组里加 `isRead`，顺手把原来的 `[entry.id, audioStatus, lesson?.id, range?.start, range?.end]`（全是原始值）改成了 `[entry.id, audioStatus, isRead, lesson, range]`，而 `range` 是 `resolveRange()` 每次调用都 `return { ... }` 的新对象——effect 因此每渲染必重跑，清理函数把刚起播的那句音频掐掉，句子播几毫秒就被自己掐断。**为什么 847+ 条既有单测没抓到**：现有 mock 把 `getAudioBlob` 设成永远返回 `undefined`，代码走的是「取不到 blob」那条早退分支，根本进不了这段循环；写回归用例时特意钉住「延迟不能省，去掉延迟这条 bug 就自己收敛，测不出问题」。<br>顺手一起修的三处 FR-10.5 静默出口：`hasMaterial` 与 `audioBlobs` 分属两个 store 会分叉，原来取不到/解不了码都是无提示的永久灰按钮或未处理的 rejection；读卡卡背「念一遍」原来无条件渲染，没有真人音也没系统嗓音时点下去毫无反应，与变更 46 「原样收下」按钮那次是同一种坏法（[[report-symptom-not-cause]]）。课程卡卡背播放原句而不是孤立词形是问用户确认过的形状决定（§12.13 当场改写，[[spec-decisions-same-session]]）——那一句本来就在本机、也正是挖空题面用的那句，练它才练得到连读 |
 
 ---
 
@@ -511,7 +512,7 @@ ShareablePackage = f(Lesson)   // 纯函数，白名单式构造
 | FR-10.2 | **听卡**（这一节讲的都是听卡）**正面只有声音**：进入时自动播一次，点播放键可重播，**不给任何文字** | 课程卡放句子音频，预置卡放孤立词发音（FR-17.7）。音频里包含答案是**设计意图**：目标是训练「听到 /ˈtsuːfɐˌzɪçt/ 能反应过来是 Zuversicht 且知道意思」，不是遮蔽听觉线索。而给了文字，这张卡考的就不再是听觉识别了。**原文这里写着「那是生产方向的卡」，那句是错的**（§7.5 同样，已一并改）：看词选意思是**视觉识别**，不要求产出任何德语。它值得练，但要练成**另一张卡** —— 见 FR-21 |
 | FR-10.3 | **答错**时展开完整卡背：词 + 性/复数 + IPA + 完整德语释义 + 例句（预置卡，FR-16.9）或完整原句（课程卡） | 答对不展开卡背 —— 见 FR-10.11 那 600ms 的补偿 |
 | FR-10.4 | **评分由系统算，不让用户选**（`gradeFromAnswer()`）：选错或「不认识」→ `Again`；答对且 ≥4s → `Hard`；答对 <4s → `Good`；答对 <1.5s 且这张卡历史无错 → `Easy` | 原文那条「评分四档 `Again/Hard/Good/Easy`、键盘 `1234`、四个大按钮」**已废除**（变更 29）。两条理由：① 手评要求用户在每张卡上判断一次自己的记忆强度，那是元认知任务、不是学习任务；② 手评与自动评分喂给 FSRS 的分布不同，**两条路径不能并存**，混着用会让调度参数失真 —— 所以旧按钮是删掉，而不是留一个高级入口。界面上**不给可选间隔**，只在答对时如实告知「下次 X 后再见」（那是信息，不是选择） |
-| FR-10.5 | 无真语料音频的卡要**区分三种原因**，给不同出口：`hasTimestamp=false` → 「去补标注」；有时间戳但本机无缓存 → 「下载素材」（FR-3.5）；**`preset` 卡 → 用孤立词发音，并在卡面说明**（FR-17.7） | 三者都不能静默降级成纯文本卡。第二种是一键可解的，混为一谈会让人以为卡片废了。第三种是 FR-17 加的：它**有**声音，但那是孤立词发音、练不到连读，不说清会让人以为自己在练真语料 |
+| FR-10.5 | 无真语料音频的卡要**区分三种原因**，给不同出口：`hasTimestamp=false` → 「去补标注」；有时间戳但本机无缓存 → 「下载素材」（FR-3.5）；**`preset` 卡 → 用孤立词发音，并在卡面说明**（FR-17.7）。**第四种（变更 53）**：`hasTimestamp` 与本机缓存都说「有」，但这一次 `getAudioBlob()` 真取不到、或取到了 `audioPlayer.load()` 解不了码 → 分别给「音频文件找不到了」/「音频文件解码失败」，同一个「去重新下载素材」出口 | 三者都不能静默降级成纯文本卡。第二种是一键可解的，混为一谈会让人以为卡片废了。第三种是 FR-17 加的：它**有**声音，但那是孤立词发音、练不到连读，不说清会让人以为自己在练真语料。第四种是变更 53 补的：`hasMaterial`（`LessonCache` 元数据）与 `audioBlobs`（IndexedDB 里真正的字节）分属两个 store，会分叉——原来这两条失败直接 `return`/未接的 rejection，症状是播放键**永久变灰、没有任何解释** |
 | FR-10.6 | 队列受 `newPerDay` / `reviewPerDay` 限制；今日无卡时显示下次到期时间 | — |
 | FR-10.7 | 手机端复习界面单手可用，按钮在拇指可达区 | **列数按题型分**：辨形题（短词）在手机上也是 **2×2**，按起来省手；辨义题在窄屏上是**单列**（截到 80 字符的释义挤进半个屏宽会折成四五行，那时单列才读得下去），宽屏才 2×2。实测过：一套响应式断点走到底的话 430px 下两种题都成单列。选项卡片**高度固定、不随释义长短浮动**，否则每张卡的按钮位置都在跳 |
 | FR-10.8 | 作答形式是**四选一**：2×2 网格 + 一个「**没听清 / 不认识**」 | 「不认识」这个出口**不能省**：四选一有 25% 瞎猜命中率，没有它，猜对会被记成 `Good`，FSRS 的稳定度被系统性喂高 —— 卡越来越晚才回来，而用户其实没记住。点它等于 `Again`，并直接展开卡背 |
@@ -2313,6 +2314,23 @@ Android 那条仍未跑过。
 - [ ] `isIdleTimerDisabled` 接管之后屏幕放五分钟不碰真的不灭（上一条真机结果里 Web
       Wake Lock 直接成功了，没触发到这道防线，仍需单独验）
 
+**挖空题的音频放不出来 + 三处静默失败（变更 54，2026-09-23）**
+
+*自动化测试（不用人再走一遍）*
+
+- [x] **课程听卡的自动播放只播一次，不会自己把自己掐掉**（`ReviewPage.test.tsx`）：
+      根因是那个 effect 把 `resolveRange()` 每次渲染新建的对象当依赖，一变就重跑，
+      清理函数又把刚起播的那句 `pause()` 掉——句子播几毫秒就被自己掐断，症状正是
+      用户报的「挖空的题，音频根本无法正常播放」。修法是 `useMemo` 钉住 `range`；
+      用真的还原过一次 bug（临时去掉 `useMemo`）确认这条用例会红，再改回来确认绿
+- [x] **FR-10.5 补的第四种静默失败**：`hasMaterial` 说有、`audioBlobs` 里这一次
+      真取不到 → 「音频文件找不到了」；取到了但 `audioPlayer.load()` 解不了码 →
+      「音频文件解码失败」，两条都不再是永久变灰的播放键
+- [x] **读卡卡背「念一遍」三处修复**：没有任何音源（无真人音、无系统嗓音）时按钮
+      不出现，不是给一个按下去没反应的键；课程卡（有原句）念的是原句而不是孤立词
+      形（用户当场选定的形状）；`speak()`/`audioPlayer.load()` 的失败不再静默吞掉
+- [x] 前端 999 / server 133 / e2e 43，五条验证全绿，无 server/e2e 改动
+
 ---
 
 ## 11. 待决问题
@@ -2686,6 +2704,12 @@ tab 名旁边那个点是**前提状态**，不是「做完了」：
 **答错展开的卡背两张卡是同一块**（FR-10.3）：词 + 性/复数 + IPA + 完整释义 + 例句/原句。
 读卡的卡背上**多一个「念一遍」按钮** —— 这是这张卡唯一出现声音的地方，
 而「我认得这个词但从没听过它」正是它该被补上的时候。卡面上不给（FR-21「不做的」那一条）。
+
+**「念一遍」念的是什么，按卡的来源分（变更 53，2026-09-23 定形）**：课程卡（有原句、
+`audioStatus === 'ok'`）念**原句**，不念孤立词形 —— 那句本来就在本机、也正是挖空题面
+用的那句，念它才练得到连读；预置卡/查词卡没有原句，仍然退孤立词。**没有任何音源时
+按钮不出现**，不给一个按下去没反应的键（原来的实现无条件渲染这个按钮，点了没反应，
+是变更 53 顺手一起修的三处静默失败之一）。
 
 **记录页（FR-18）按卡分别计数**：听 / 读两条曲线，不合成一条。
 合成一条就看不出「最近一周只在练读」这种事，而那恰恰是同日互斥会造成的正常漂移。
