@@ -304,11 +304,18 @@ const Line = memo(function Line({
       <div className="min-w-0 flex-1">
         {line.tokens.map((token, i) =>
           token.time ? (
+            // 当前词必须是**反白**（warn 实底 + surface 字），不能是 warn-soft：
+            // 词高亮永远发生在当前行上，而当前行的底色正是 warn-soft ——
+            // 两者同色时唯一剩下的差别只有 font-medium，也就是一档字重。
+            // Windows 上 400/500 一眼可辨，iPhone 上（SF Pro，19px）几乎看不出来，
+            // 于是「网页上有高亮、手机上没有」（变更 58）。两个令牌都跟着深色翻转：
+            // 浅色是深棕底白字，深色是亮金底黑字，两边都不靠字重说话。
             <span
               key={token.start}
+              data-active={i === activeToken ? '' : undefined}
               onClick={() => onSeek(token.time!.start)}
               className={`cursor-pointer rounded-ctl hover:bg-sunken ${
-                i === activeToken ? 'bg-warn-soft font-medium' : ''
+                i === activeToken ? 'bg-warn font-medium text-surface' : ''
               }`}
             >
               {token.text}
