@@ -143,26 +143,32 @@ export function sampleBackup(now = Date.now()): BackupFile {
     exportedAt: now,
     lessons: [lesson],
     vocab,
-    // 设置留在默认值附近，但把「导入后自动对齐」关掉 —— E2E 里没有权重服务器，
-    // 让它排队只会在底部挂一条永远失败的进度。
-    settings: {
-      newPerDay: 10,
-      reviewPerDay: 60,
-      shadowingGapRatio: 1.2,
-      shadowingRepeat: 2,
-      playbackRate: 1,
-      dictationStrictCase: true,
-      autoAlignOnImport: false,
-      presetBand: 4,
-      enrolledBands: [],
-      onlineDictFallback: false,
-      showTranslation: false,
-      // 音效关掉：E2E 跑的是真浏览器，开着会去 fetch + decodeAudioData 三个文件，
-      // 而它对任何一条用例的判据都没有贡献（FR-10.12 由单测守）。
-      soundEffects: false,
-      updatedAt: now,
-    },
+    settings: testSettings(now),
     studyLog: { days: {}, updatedAt: 0 },
+  };
+}
+
+/**
+ * 备份里那份设置。留在默认值附近，但有两项是**为 E2E 刻意关掉的**：
+ * `autoAlignOnImport` —— 这里没有权重服务器，让它排队只会在底部挂一条永远失败的进度；
+ * `soundEffects` —— 开着会去 fetch + decodeAudioData 三个文件，而它对任何一条用例的
+ * 判据都没有贡献（FR-10.12 由单测守）。
+ */
+function testSettings(now: number) {
+  return {
+    newPerDay: 10,
+    reviewPerDay: 60,
+    shadowingGapRatio: 1.2,
+    shadowingRepeat: 2,
+    playbackRate: 1,
+    dictationStrictCase: true,
+    autoAlignOnImport: false,
+    presetBand: 4,
+    enrolledBands: [],
+    onlineDictFallback: false,
+    showTranslation: false,
+    soundEffects: false,
+    updatedAt: now,
   };
 }
 
@@ -248,5 +254,87 @@ export function readCardBackup(): BackupFile {
       updatedAt: now,
     },
     studyLog: { days: {}, updatedAt: 0 },
+  };
+}
+
+/**
+ * FR-5.3：一份**带词级时间戳**的备份，覆盖到指定的那一课上。
+ *
+ * 为什么是「覆盖已有的一课」而不是像 `sampleBackup` 那样自带一课：
+ * 逐词高亮要同时具备**音频**和**词级时间戳**，而备份里从来没有音频（缓存层不进备份）。
+ * 所以先用 `importLesson` 带着 WAV 导入一课（拿到它的 id），再用这份备份把时间戳
+ * 盖上去 —— 合并规则是「`updatedAt` 较新者整体胜出」，音频在缓存层不受影响。
+ *
+ * 另一条路（导 `sampleBackup` 再在课程页选本地音频）走不通得很安静：
+ * 绑音频会顺手 `enqueueAlign()`，而 E2E 里没有对齐服务器。
+ *
+ * 时间戳是手写的：每句按空格分词、在句子的时间范围里均分，够回答
+ * 「这一刻哪个词该亮」。真实的那份由对齐器产出，有它自己的 9 个单测文件。
+ */
+export function timedLessonBackup(lessonId: string, now = Date.now() + 60_000): BackupFile {
+  const texts = [
+    'Der deutsche Wald ist mehr als nur eine Ansammlung von Bäumen.',
+    'Für viele Menschen ist er ein Ort der Ruhe und der Erholung.',
+    'Im Herbst färben sich die Blätter rot, gelb und braun.',
+  ];
+
+  let charStart = 0;
+  const sentences: Sentence[] = texts.map((text, index) => {
+    // 一句 10 秒（比真实素材慢得多）是**刻意的**：断言要在「当前词还亮着」的窗口里跑完，
+    // 而 CI 上点一下按钮慢半秒很正常。句子短了，用例就会随机掉进句间空档里变红。
+    const startTime = index * 10;
+    const endTime = startTime + 9.5;
+
+    // 按空格切，逐词均分这一句的时间范围。charStart/charEnd 是**句内** offset。
+    const words: { charStart: number; charEnd: number; start: number; end: number }[] = [];
+    let at = 0;
+    const parts = text.split(' ');
+    const step = (endTime - startTime) / parts.length;
+    for (const [i, part] of parts.entries()) {
+      const bare = part.replace(/[.,]$/, '');
+      words.push({
+        charStart: at,
+        charEnd: at + bare.length,
+        start: startTime + i * step,
+        end: startTime + (i + 1) * step,
+      });
+      at += part.length + 1;
+    }
+
+    const sentence: Sentence = {
+      index,
+      text,
+      charStart,
+      charEnd: charStart + text.length,
+      startTime,
+      endTime,
+      endTimeExplicit: true,
+      timingSource: 'auto',
+      blanks: [],
+      markedDifficult: false,
+      excluded: false,
+      words,
+    };
+    charStart += text.length + 1;
+    return sentence;
+  });
+
+  return {
+    _warning: 'Contains copyrighted text. Local backup only. Do not share.',
+    formatVersion: 1,
+    exportedAt: now,
+    lessons: [
+      {
+        id: lessonId,
+        title: 'Alltagsdeutsch: Der deutsche Wald',
+        source: { type: 'manual', audioFileName: 'wald.wav' },
+        audioDuration: 30,
+        sentences,
+        createdAt: now - 86_400_000,
+        updatedAt: now,
+      },
+    ],
+    vocab: [],
+    settings: testSettings(now),
   };
 }

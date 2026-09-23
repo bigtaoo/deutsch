@@ -9,8 +9,9 @@
 // 当前词的底色不许是当前行的底色。换别的配色照样过，退回同色就红。
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { ListenTab } from './ListenTab';
+import { audioPlayer } from '@/audio/player';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { DEFAULT_SETTINGS } from '@/db/meta';
@@ -66,6 +67,18 @@ function sentence(index: number, text: string, start: number, end: number, words
   };
 }
 
+function lessonWith(sentences: Sentence[]): Lesson {
+  return {
+    id: 'l1',
+    title: 'Auch Polizisten brauchen mal Hilfe',
+    source: { type: 'manual' },
+    audioDuration: 30,
+    sentences,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
 const LESSON: Lesson = {
   id: 'l1',
   title: 'Auch Polizisten brauchen mal Hilfe',
@@ -90,6 +103,9 @@ const LESSON: Lesson = {
 };
 
 beforeEach(() => {
+  // 只清调用记录，不动上面那些 mock 的实现（`resetAllMocks` 才会清实现，
+  // 那会让 `audioPlayer.play` 变成返回 undefined 的空壳，`void play()` 当场炸）。
+  vi.clearAllMocks();
   // jsdom 没有 Element.scrollTo（自动滚动那条 effect 每次高亮换行都会调它）
   Element.prototype.scrollTo = vi.fn();
   tick = null;
@@ -141,5 +157,120 @@ describe('ListenTab — 逐词高亮', () => {
       tick?.(12); // 两句都结束了
     });
     expect(document.querySelectorAll('[data-active]')).toHaveLength(0);
+  });
+});
+
+describe('ListenTab — 点词与行号', () => {
+  it('点一个词就从那个词开始播（FR-5.3）', async () => {
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+
+    await act(async () => {
+      screen.getByText('jeder').click();
+    });
+
+    expect(audioPlayer.play).toHaveBeenCalledWith(3);
+  });
+
+  it('整句没有时间戳时点它不播 —— 不知道该跳到哪儿，就别假装能跳', async () => {
+    const untimed: Sentence = {
+      ...sentence(0, 'Ein Satz ohne Zeitstempel', 0, 1, []),
+      startTime: undefined,
+      endTime: undefined,
+      timingSource: undefined,
+      words: undefined,
+    };
+    const lesson = lessonWith([untimed]);
+    useLessonStore.setState({ lessons: [lesson] });
+
+    render(<ListenTab lesson={lesson} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+
+    await act(async () => {
+      screen.getByText('Zeitstempel').click();
+    });
+
+    expect(audioPlayer.play).not.toHaveBeenCalled();
+    // 而且这一课该明说为什么展开了也不会亮
+    expect(screen.getByText(/这一课还没有时间戳/)).toBeTruthy();
+  });
+
+  it('低置信句的行号带 ?，点一下把这一句标成「人耳确认过」（FR-15.19）', async () => {
+    const lesson = lessonWith([
+      { ...sentence(0, 'Ein guter Satz', 0, 5, [['Ein', 0, 1]]), timingConfidence: -0.02 },
+      { ...sentence(1, 'Ein zweifelhafter Satz', 5, 10, [['Ein', 5, 6]]), timingConfidence: -1.5 },
+    ]);
+    const patchLesson = vi.fn();
+    useLessonStore.setState({ lessons: [lesson], patchLesson });
+
+    render(<ListenTab lesson={lesson} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+
+    const gutter = screen.getByLabelText('第 2 句：确认对齐无误');
+    expect(gutter.textContent).toBe('2?');
+
+    await act(async () => {
+      gutter.click();
+    });
+
+    expect(patchLesson).toHaveBeenCalledWith('l1', expect.any(Function));
+    // 那个更新函数真的把 timingChecked 打上了 —— 接上线了但写错字段，界面上看不出来
+    const update = patchLesson.mock.calls[0][1] as (l: Lesson) => Lesson;
+    expect(update(lesson).sentences[1].timingChecked).toBe(true);
+  });
+});
+
+describe('ListenTab — 三条提示的出现条件', () => {
+  it('只有句级时间戳时说清楚为什么不逐词亮（老数据）', async () => {
+    const lesson = lessonWith([
+      { ...sentence(0, 'Nur auf Satzebene', 0, 5, []), words: undefined },
+    ]);
+    useLessonStore.setState({ lessons: [lesson] });
+
+    render(<ListenTab lesson={lesson} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+
+    expect(screen.getByText(/只有句级时间戳/)).toBeTruthy();
+  });
+
+  it('词级时间戳齐全时这三条一条都不出现（§12.3：一切正常就静默）', async () => {
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+
+    expect(screen.queryByText(/这一课还没有时间戳/)).toBeNull();
+    expect(screen.queryByText(/只有句级时间戳/)).toBeNull();
+    expect(screen.queryByText(/对齐置信度偏低/)).toBeNull();
+  });
+
+  it('没贴过译文的课不摆「显示中文」那个按钮（FR-19.4）', async () => {
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+    expect(screen.queryByText(/显示中文|不显示中文/)).toBeNull();
+
+    const translated = lessonWith([
+      { ...LESSON.sentences[0], translation: '在任何情况下都展现出强大' },
+      LESSON.sentences[1],
+    ]);
+    // 卸掉上一份再渲染：同一个 document 里叠两份的话，「展开文本」会有两个
+    cleanup();
+    useLessonStore.setState({ lessons: [translated] });
+    render(<ListenTab lesson={translated} cache={undefined} />);
+    await act(async () => {
+      screen.getByText('展开文本').click();
+    });
+
+    expect(screen.getByText('不显示中文')).toBeTruthy();
   });
 });
