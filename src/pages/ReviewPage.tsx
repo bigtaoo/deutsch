@@ -33,6 +33,7 @@ import { articled, gradeFromAnswer } from '@/srs/grade';
 import { buildQuestion, buildReadQuestion } from '@/srs/questionSource';
 import { choicesAreWords } from '@/srs/choices';
 import { syncVocabNow } from '@/sync/trigger';
+import { aiAvailable, explainWithAi, getCachedAiNote } from '@/ai/explain';
 import { loadDeck, lookupDict } from '@/dict/lookup';
 import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dict/audio';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -179,6 +180,20 @@ export function ReviewPage() {
     [current, deck, phase, settings.soundEffects, updateEntry],
   );
 
+  /**
+   * FR-10.14：把卡背上问到的中文解释落到词条上（变更 55）。
+   *
+   * 写进 `note` 而不是只留在组件状态里：它是不可重建的数据（FR-11.6），
+   * 而且写回之后这张卡下次再答错就不会再问一遍模型。
+   */
+  const fillAiNote = useCallback(
+    async (target: VocabEntry, note: string) => {
+      await updateEntry({ ...target, note, updatedAt: Date.now() });
+      void syncVocabNow();
+    },
+    [updateEntry],
+  );
+
   // 答对之后自动进下一张。计时器要能被清掉 —— 否则连点两次会跳两张。
   useEffect(() => {
     if (phase !== 'flash') return;
@@ -241,6 +256,7 @@ export function ReviewPage() {
         nextDue={nextDue}
         onAnswer={answer}
         onContinue={advance}
+        onAiNote={fillAiNote}
       />
     </div>
   );
@@ -258,6 +274,7 @@ function QuizCard({
   nextDue,
   onAnswer,
   onContinue,
+  onAiNote,
 }: {
   deck: Deck;
   entry: VocabEntry;
@@ -270,6 +287,8 @@ function QuizCard({
   nextDue: Date | null;
   onAnswer: (choiceId: string | null, correct: boolean, elapsedMs: number) => void;
   onContinue: () => void;
+  /** FR-10.14：问到中文解释之后把它落到词条上。 */
+  onAiNote: (entry: VocabEntry, note: string) => void | Promise<void>;
 }) {
   // FR-21.5：读卡正面是文字、不放声音，所以下面所有跟音频有关的分支都绕开它。
   // audioStatus 仍然算出来 —— 卡背上要不要显示「孤立词发音」那行还看它。
@@ -448,6 +467,80 @@ function QuizCard({
   }, [phase, audioStatus, isRead, entry.surface, entry.examples, examples]);
 
   /**
+   * FR-10.14（变更 55）：卡背上缺中文时，自动问一次 AI。
+   *
+   * ── 判据是「一个中文字都没有」 ──
+   * `meaningZh`（FR-21.9 粘回来的一句话中译）或 `note`（AI 的详细解释）有任何一个
+   * 就不问：中文已经在卡背上了，再问一次只是重复花钱。词典的中译只覆盖约 60%，
+   * 预置词库里像 `erschlagen` 这样只有德语释义的词正是这条要救的那一批。
+   *
+   * ── 只在 revealed 触发 ──
+   * 答对走 `flash` 直接进下一张、根本不露卡背（见 answer 里的分支），
+   * 那时候问等于给「已经会了的词」花钱。
+   *
+   * ── 先查缓存 ──
+   * 变更 49 那份跨设备同步的答案缓存：这一课查词时问过、或者别的设备上问过的词
+   * 直接拿来用。这同时补上了一个一直存在的缺口 —— 查词面板问到的答案只写进缓存、
+   * 不写进 `entry.note`，在此之前复习卡背看不到它。
+   *
+   * ── 不做取消 ──
+   * 组件卸载（翻到下一张）时不撤销这次请求：答案已经付过钱了，落库比丢掉划算，
+   * 而 `onAiNote` 写的是 store，跟这个组件还在不在没关系。
+   */
+  const [aiState, setAiState] = useState<'idle' | 'loading' | 'failed' | 'off'>('idle');
+  /** 这张卡已经问过了 —— revealed 期间的任何一次重渲染都不该再问一遍。 */
+  const askedRef = useRef(false);
+
+  const askAiForNote = useCallback(() => {
+    if (askedRef.current) return;
+    askedRef.current = true;
+    setAiState('loading');
+    void (async () => {
+      const word = entry.lemma ?? entry.surface;
+      try {
+        // 缓存读坏了**不该把「问一次」一起拖下水**：它只是一条省钱的近路，
+        // 单独 catch 掉之后照旧往下走去问模型。写测试时才发现原来这一句在
+        // 外层的 try 里 —— IndexedDB 出一次问题，卡背上就只剩「不可用」了。
+        const cached = await getCachedAiNote(word).catch(() => undefined);
+        if (cached !== undefined) {
+          await onAiNote(entry, cached);
+          setAiState('idle');
+          return;
+        }
+        // 压根没配 AI（没登录 / 服务器没 key）：**什么都不显示**。
+        // 这里没有任何下一步动作可做，而卡背每答错一次就唠叨一行「不可用」
+        // 是纯粹的噪音 —— 登录状态在设置页，不在这张卡上。
+        if (!(await aiAvailable())) {
+          setAiState('off');
+          return;
+        }
+        const note = await explainWithAi({
+          word,
+          // 原句优先于例句：这张卡就是从那一句里摘出来的，语境对得最准。
+          context: sentence?.text ?? entry.contextSentence ?? entry.examples?.[0],
+          existing: entry.meaning,
+        });
+        await onAiNote(entry, note);
+        setAiState('idle');
+      } catch {
+        setAiState('failed');
+      }
+    })();
+  }, [entry, onAiNote, sentence]);
+
+  useEffect(() => {
+    if (phase !== 'revealed') return;
+    if (entry.note || entry.meaningZh) return;
+    askAiForNote();
+  }, [phase, entry.note, entry.meaningZh, askAiForNote]);
+
+  /** 失败之后的重试：把「已经问过」这道闸放掉再走一遍。 */
+  const retryAi = useCallback(() => {
+    askedRef.current = false;
+    askAiForNote();
+  }, [askAiForNote]);
+
+  /**
    * FR-10.12：点击音。**在这里响、不在 ChoiceGrid 里响** —— 它同时要盖住
    * 键盘那条路（1–4 选项），而那条路也走这个函数。
    *
@@ -581,6 +674,8 @@ function QuizCard({
             sentence={sentence?.text}
             examples={examples}
             onPlayWord={isRead && canPlayCardBack ? () => void playCardBackAudio() : undefined}
+            aiState={aiState}
+            onRetryAi={retryAi}
           />
         )}
       </Card>
@@ -736,11 +831,19 @@ function CardBack({
   entry,
   sentence,
   examples,
+  aiState,
+  onRetryAi,
   onPlayWord,
 }: {
   entry: VocabEntry;
   sentence: string | undefined;
   examples: string[] | null;
+  /**
+   * FR-10.14：自动补中文解释这件事进行到哪一步了。
+   * `idle` = 没在做（要么不需要，要么已经填好）；`off` = 压根没配 AI，卡背上不提这回事。
+   */
+  aiState: 'idle' | 'loading' | 'failed' | 'off';
+  onRetryAi: () => void;
   /**
    * §12.13：读卡的卡背上多一个「念一遍」。**这是读卡唯一出现声音的地方** ——
    * 卡面上不给（给了两张卡又变回一张），而「我认得这个词但从没听过它」
@@ -773,6 +876,21 @@ function CardBack({
       {entry.note && (
         <p className="whitespace-pre-line border-l-2 border-line pl-3 text-ui text-muted">
           {entry.note}
+        </p>
+      )}
+      {/* FR-10.14：这张卡一个中文字都没有，正在问 / 问不到。**卡背不等它** ——
+          词形、德语释义、例句立刻就在上面，中文回来了再填进来。 */}
+      {aiState === 'loading' && <p className="text-note text-faint">AI 解释中…</p>}
+      {aiState === 'failed' && (
+        <p className="text-note text-faint">
+          AI 服务暂时不可用
+          <button
+            type="button"
+            onClick={onRetryAi}
+            className="ml-2 rounded-box border border-line px-2 py-0.5 align-middle text-note text-muted active:scale-95"
+          >
+            重试
+          </button>
         </p>
       )}
       {sentence ? (

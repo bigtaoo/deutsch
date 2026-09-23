@@ -21,6 +21,7 @@ import { playSfx, preloadSfx } from '@/audio/sfx';
 import { audioPlayer } from '@/audio/player';
 import { getAudioBlob } from '@/db/cache';
 import { ensureWordAudio, germanVoice } from '@/dict/audio';
+import { aiAvailable, explainWithAi, getCachedAiNote } from '@/ai/explain';
 import type { DictDeck } from '@/dict/types';
 import type { FSRSCard, Lesson, VocabEntry } from '@/types/models';
 
@@ -65,6 +66,13 @@ vi.mock('@/audio/player', () => ({
 vi.mock('@/db/cache', () => ({ getAudioBlob: vi.fn(async () => undefined) }));
 vi.mock('@/sync/trigger', () => ({ syncVocabNow: vi.fn() }));
 vi.mock('@/audio/sfx', () => ({ playSfx: vi.fn(), preloadSfx: vi.fn(async () => {}) }));
+// FR-10.14：卡背自动补中文解释。默认「没配 AI」—— 已有的用例一条都不该
+// 因为多了这个功能就去发网络请求，它们测的是别的东西。
+vi.mock('@/ai/explain', () => ({
+  aiAvailable: vi.fn(async () => false),
+  explainWithAi: vi.fn(async () => ''),
+  getCachedAiNote: vi.fn(async () => undefined),
+}));
 
 const NOW = new Date('2026-09-02T12:00:00Z');
 
@@ -591,5 +599,351 @@ describe('ReviewPage：音效（FR-10.12）', () => {
     await new Promise((r) => setTimeout(r, 250));
     expect(playSfx).not.toHaveBeenCalled();
     expect(preloadSfx).not.toHaveBeenCalled();
+  });
+});
+
+// ── FR-10.14：卡背上的中文（变更 55）─────────────────────────────────────────
+//
+// 起因是一张预置卡的卡背上一个中文字都没有：词典的中译只覆盖约 60%，
+// 而德语释义 99.9%。于是「答错之后缺中文就自动问一次 AI」。
+//
+// 这里最值得测的是**什么时候不问** —— 每一次多余的调用都是真的花钱，
+// 而「少问了一次」在界面上看得见，「多问了一次」看不见。
+describe('ReviewPage：卡背缺中文时自动问 AI（FR-10.14）', () => {
+  // **每条用例都把三个 mock 归位**：`vi.clearAllMocks()` 只清调用记录，不清
+  // `mockResolvedValue` 设下的实现 —— 漏掉这一步的话「缓存命中」那条会把答案
+  // 留给后面的用例，于是后面那两条永远等不到「AI 服务暂时不可用」。
+  beforeEach(() => {
+    vi.mocked(aiAvailable).mockResolvedValue(false);
+    vi.mocked(getCachedAiNote).mockResolvedValue(undefined);
+    vi.mocked(explainWithAi).mockReset();
+  });
+
+  /**
+   * 一个由用例自己决定什么时候回答的 AI。
+   *
+   * **不能用零延迟的同步 mock**：那样「解释中…」这一档在任何一次渲染里都不存在，
+   * 这条用例就退化成只测了结果（见 mock-delays-for-regression-tests 那次教训）。
+   * 也不用 setTimeout —— `waitFor` 自己要轮询几十毫秒，定时器会和它赛跑。
+   */
+  function deferredAi() {
+    let settle!: (note: string) => void;
+    vi.mocked(aiAvailable).mockResolvedValue(true);
+    vi.mocked(explainWithAi).mockImplementation(() => new Promise<string>((r) => (settle = r)));
+    return (note: string) => act(async () => settle(note));
+  }
+
+  /** 「这条用例里 AI 是通的，但一次都不该被叫到」。 */
+  function aiIsReadyButMustNotBeCalled() {
+    vi.mocked(aiAvailable).mockResolvedValue(true);
+    vi.mocked(explainWithAi).mockResolvedValue('不该出现');
+  }
+
+  /** 答错第一张卡，露出卡背。 */
+  async function answerWrong() {
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    const wrong = choiceButtons().find((b) => !b.textContent?.includes('Vorhang'))!;
+    await act(async () => wrong.click());
+    await waitFor(() => expect(screen.getByRole('button', { name: /继续/ })).toBeInTheDocument());
+  }
+
+  it('既没有中译也没有 AI 解释 → 自动问一次，答案显示在卡背上并落进词条', async () => {
+    const answer = deferredAi();
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    // 卡背不等 AI：德语释义此刻已经在上面了
+    expect(screen.getByText('Sinn: gnahroV')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('AI 解释中…')).toBeInTheDocument());
+
+    await answer('打死、击毙。也可以是被动的「被…压垮」。');
+    await waitFor(() =>
+      expect(screen.getByText('打死、击毙。也可以是被动的「被…压垮」。')).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('AI 解释中…')).not.toBeInTheDocument();
+
+    // 不可重建的数据要落库（FR-11.6）—— 下次再答错这张卡就不用再问一遍
+    await waitFor(() =>
+      expect(useVocabStore.getState().entries[0].note).toBe('打死、击毙。也可以是被动的「被…压垮」。'),
+    );
+    // 带上语境与词典已有的释义，让模型别重复
+    expect(vi.mocked(explainWithAi).mock.calls[0][0]).toMatchObject({
+      word: 'Vorhang',
+      existing: 'Sinn: gnahroV',
+    });
+  });
+
+  it('已经有中译就不问 —— 中文已经在卡背上了，再问一次只是重复花钱', async () => {
+    aiIsReadyButMustNotBeCalled();
+    seed([entry('Vorhang', { meaningZh: '窗帘' })]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    expect(screen.getByText('窗帘')).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(explainWithAi).not.toHaveBeenCalled();
+    expect(getCachedAiNote).not.toHaveBeenCalled();
+  });
+
+  it('已经有 AI 解释也不问', async () => {
+    aiIsReadyButMustNotBeCalled();
+    seed([entry('Vorhang', { note: '上一次问到的解释' })]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    expect(screen.getByText('上一次问到的解释')).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(explainWithAi).not.toHaveBeenCalled();
+  });
+
+  it('答对不问 —— 那条路根本不露卡背，问了等于给「已经会了的词」花钱', async () => {
+    aiIsReadyButMustNotBeCalled();
+    seed([entry('Vorhang', { gender: 'm' }), entry('heilen', { id: 'heilen' })]);
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    const correct = choiceButtons().find((b) => b.textContent?.includes('Vorhang'))!;
+    await act(async () => correct.click());
+    await waitFor(() => expect(screen.getByText(/✓ der Vorhang/)).toBeInTheDocument());
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(explainWithAi).not.toHaveBeenCalled();
+  });
+
+  it('缓存里有就直接用，不再问一次模型 —— 这同时补上了「查词时问过、复习卡背看不到」', async () => {
+    aiIsReadyButMustNotBeCalled();
+    vi.mocked(getCachedAiNote).mockResolvedValue('查词面板里问过的那份答案');
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(screen.getByText('查词面板里问过的那份答案')).toBeInTheDocument());
+    expect(explainWithAi).not.toHaveBeenCalled();
+    await waitFor(() => expect(useVocabStore.getState().entries[0].note).toBe('查词面板里问过的那份答案'));
+  });
+
+  it('问不到就说问不到，并且给一个重试 —— 卡背的其余部分照常在上面', async () => {
+    vi.mocked(aiAvailable).mockResolvedValue(true);
+    vi.mocked(explainWithAi).mockRejectedValueOnce(new Error('网络错误'));
+    seed([entry('Vorhang', { ipa: 'ˈfoːɐ̯ˌhaŋ' })]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(screen.getByText(/AI 服务暂时不可用/)).toBeInTheDocument());
+    // 卡背没有因此空掉
+    expect(screen.getByText('[ˈfoːɐ̯ˌhaŋ]')).toBeInTheDocument();
+
+    vi.mocked(explainWithAi).mockResolvedValue('重试之后问到的解释');
+    await act(async () => screen.getByRole('button', { name: '重试' }).click());
+    await waitFor(() => expect(screen.getByText('重试之后问到的解释')).toBeInTheDocument());
+    expect(screen.queryByText(/AI 服务暂时不可用/)).not.toBeInTheDocument();
+  });
+
+  it('同一张卡只问一次 —— revealed 期间的重渲染不该各发一次请求', async () => {
+    const answer = deferredAi();
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(explainWithAi).toHaveBeenCalledTimes(1));
+    await answer('第一次也是唯一一次');
+
+    // 卡背在 revealed 期间会被重渲染好几次（例句异步回来、评分写库后 store 更新、
+    // 音源状态落定）。**多问一次在界面上完全看不出来** —— 答案一样、闪都不闪一下，
+    // 只有账单知道。所以这条钉的是 `askedRef`，它被删掉的症状是静默的。
+    await waitFor(() => expect(screen.getByText('第一次也是唯一一次')).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 80));
+    expect(explainWithAi).toHaveBeenCalledTimes(1);
+  });
+
+  it('答案在翻页之后才回来，照样落到那个词条上 —— 已经付过钱了，丢掉才是亏', async () => {
+    const answer = deferredAi();
+    seed([entry('Vorhang'), entry('heilen', { id: 'heilen' })]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(explainWithAi).toHaveBeenCalledTimes(1));
+
+    // 不等答案就翻到下一张（真实节奏里这太常见了：答错、扫一眼卡背、继续）
+    await act(async () => screen.getByRole('button', { name: /继续/ }).click());
+    await waitFor(() => expect(screen.getByText(/^2 \/ 2/)).toBeInTheDocument());
+
+    await answer('迟到的解释');
+
+    // 写的是 store，跟那个组件还在不在没关系。**这条如果有人「顺手」加上取消逻辑，
+    // 症状是钱照花、答案没了**，而界面上一个字都不会变。
+    await waitFor(() =>
+      expect(useVocabStore.getState().entries.find((e) => e.id === 'Vorhang')!.note).toBe('迟到的解释'),
+    );
+    // 而且没有串到当前这张卡上
+    expect(useVocabStore.getState().entries.find((e) => e.id === 'heilen')!.note).toBeUndefined();
+  });
+
+  it('两张卡各问各的，答案不会串到别的词条上', async () => {
+    vi.mocked(aiAvailable).mockResolvedValue(true);
+    vi.mocked(explainWithAi).mockImplementation(async ({ word }) => `关于 ${word} 的解释`);
+    seed([entry('Vorhang'), entry('heilen', { id: 'heilen' })]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(screen.getByText('关于 Vorhang 的解释')).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: /继续/ }).click());
+
+    await waitFor(() => expect(screen.getByText(/^2 \/ 2/)).toBeInTheDocument());
+    const wrong = choiceButtons().find((b) => !b.textContent?.includes('heilen'))!;
+    await act(async () => wrong.click());
+
+    await waitFor(() => expect(screen.getByText('关于 heilen 的解释')).toBeInTheDocument());
+    await waitFor(() => {
+      const byId = Object.fromEntries(useVocabStore.getState().entries.map((e) => [e.id, e.note]));
+      expect(byId).toEqual({ Vorhang: '关于 Vorhang 的解释', heilen: '关于 heilen 的解释' });
+    });
+  });
+
+  it('问的是词元，不是卡上那个变位形式', async () => {
+    const answer = deferredAi();
+    // `gelaufen` 的卡要问 `laufen` —— 问变位形式，回来的解释十有八九在讲
+    // 「这是 laufen 的第二分词」，而那正是这张卡上唯一不缺的信息。
+    seed([entry('gelaufen', { lemma: 'laufen' })]);
+    render(<ReviewPage />);
+
+    // 牌组里只有 Vorhang / heilen，`gelaufen` 凑不满四个干扰项 —— 这条用例不关心选项数
+    await waitFor(() => expect(screen.getByRole('button', { name: /没听清/ })).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: /没听清/ }).click());
+    await waitFor(() => expect(screen.getByRole('button', { name: /继续/ })).toBeInTheDocument());
+
+    await waitFor(() => expect(getCachedAiNote).toHaveBeenCalledWith('laufen'));
+    expect(vi.mocked(explainWithAi).mock.calls[0][0].word).toBe('laufen');
+    // 收尾要等这次写真的落完：`deferredAi` 的答案是在用例结束之后才写进 store 的，
+    // 不等的话它会落到**下一条用例**刚 seed 好的库上，把那条弄红（前面「缓存命中」
+    // 那条留下的 mock 实现是同一类坑，只是换了个载体）。
+    await answer('随便什么');
+    await waitFor(() => expect(screen.getByText('随便什么')).toBeInTheDocument());
+  });
+
+  it('缓存读坏了不该把「问一次」一起拖下水 —— 它只是一条省钱的近路', async () => {
+    vi.mocked(aiAvailable).mockResolvedValue(true);
+    vi.mocked(getCachedAiNote).mockRejectedValue(new Error('IndexedDB 出问题了'));
+    vi.mocked(explainWithAi).mockResolvedValue('照样问到了');
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(screen.getByText('照样问到了')).toBeInTheDocument());
+  });
+
+  it('重试还能再失败一次，然后再重试 —— 那道闸是可以反复放开的', async () => {
+    vi.mocked(aiAvailable).mockResolvedValue(true);
+    vi.mocked(explainWithAi).mockRejectedValue(new Error('网络错误'));
+    seed([entry('Vorhang')]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    await waitFor(() => expect(screen.getByText(/AI 服务暂时不可用/)).toBeInTheDocument());
+
+    await act(async () => screen.getByRole('button', { name: '重试' }).click());
+    await waitFor(() => expect(explainWithAi).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/AI 服务暂时不可用/)).toBeInTheDocument();
+
+    vi.mocked(explainWithAi).mockResolvedValue('第三次成了');
+    await act(async () => screen.getByRole('button', { name: '重试' }).click());
+    await waitFor(() => expect(screen.getByText('第三次成了')).toBeInTheDocument());
+  });
+
+  // ── 课程卡：语境是原句 ──────────────────────────────────────────────────
+  //
+  // 这一段单独 seed 一门课，因为「传哪一句给 AI」只有课程卡才问得出来。
+  // 预置卡与查词卡都没有原句，走的是 `examples[0]`。
+  const LESSON_DAY = 86_400_000;
+
+  function seedLessonCard(extra: Partial<VocabEntry> = {}) {
+    useVocabStore.setState({
+      entries: [
+        entry('Vorhang', {
+          preset: undefined,
+          lessonId: 'L1',
+          sentenceIndex: 0,
+          hasTimestamp: true,
+          examples: ['一句不该被选中的例句。'],
+          ...extra,
+        }),
+      ],
+      loaded: true,
+    });
+    useLessonStore.setState({
+      lessons: [
+        {
+          id: 'L1',
+          title: '课程',
+          source: { type: 'manual' },
+          audioDuration: 60,
+          sentences: [
+            {
+              index: 0,
+              text: 'Der Vorhang fällt.',
+              startTime: 1,
+              charStart: 0,
+              charEnd: 18,
+              endTimeExplicit: false,
+              blanks: [],
+              markedDifficult: false,
+              excluded: false,
+            },
+          ],
+          createdAt: NOW.getTime(),
+          updatedAt: NOW.getTime(),
+        },
+      ],
+      caches: { L1: { lessonId: 'L1', hasAudio: true, audioBytes: 1000, fetchedAt: NOW.getTime() } },
+    });
+    useSettingsStore.setState({ settings: { ...DEFAULT_SETTINGS }, loaded: true });
+  }
+
+  it('课程卡问的时候带上原句，而不是词典里的例句 —— `Zug` 是火车还是一步棋全看这个', async () => {
+    const answer = deferredAi();
+    seedLessonCard();
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(new Blob(['x']));
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /没听清/ })).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: /没听清/ }).click());
+    await waitFor(() => expect(screen.getByRole('button', { name: /继续/ })).toBeInTheDocument());
+
+    await waitFor(() => expect(explainWithAi).toHaveBeenCalled());
+    expect(vi.mocked(explainWithAi).mock.calls[0][0].context).toBe('Der Vorhang fällt.');
+    await answer('随便什么');
+    await waitFor(() => expect(screen.getByText('随便什么')).toBeInTheDocument());
+  });
+
+  it('读卡的卡背同样会补中文 —— 它和听卡共用这一块，不该只有一半有', async () => {
+    const answer = deferredAi();
+    seedLessonCard({
+      fsrs: { ...newCard(NOW), state: 2, reps: 4, due: NOW.getTime() + 7 * LESSON_DAY },
+      fsrsRead: { ...newCard(NOW), due: NOW.getTime() - 1000 },
+    });
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '不认识' })).toBeInTheDocument());
+    await act(async () => screen.getByRole('button', { name: '不认识' }).click());
+    await waitFor(() => expect(screen.getByRole('button', { name: /继续/ })).toBeInTheDocument());
+
+    await waitFor(() => expect(screen.getByText('AI 解释中…')).toBeInTheDocument());
+    await answer('读卡上也给中文');
+    await waitFor(() => expect(screen.getByText('读卡上也给中文')).toBeInTheDocument());
+  });
+
+  it('压根没配 AI（没登录 / 服务器没 key）：不发请求，卡背上也不提这回事', async () => {
+    vi.mocked(aiAvailable).mockResolvedValue(false);
+    seed([entry('Vorhang', { ipa: 'ˈfoːɐ̯ˌhaŋ' })]);
+    render(<ReviewPage />);
+
+    await answerWrong();
+    // 卡背照常，只是没有中文 —— 这里没有任何下一步动作，唠叨一行「不可用」是噪音
+    expect(screen.getByText('[ˈfoːɐ̯ˌhaŋ]')).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(explainWithAi).not.toHaveBeenCalled();
+    expect(screen.queryByText(/AI 服务暂时不可用/)).not.toBeInTheDocument();
+    expect(screen.queryByText('AI 解释中…')).not.toBeInTheDocument();
   });
 });

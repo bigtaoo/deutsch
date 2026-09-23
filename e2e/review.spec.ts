@@ -225,3 +225,25 @@ test('查到的词也有「问 AI」入口，不是只有查不到才能问（�
   await lookupSection.getByRole('button', { name: '问 AI' }).click();
   await expect(lookupSection.getByText(/AI 服务暂时不可用/)).toBeVisible();
 });
+
+// FR-10.14（变更 55）：卡背缺中文时自动问 AI。
+//
+// 组件测试把「什么时候问、什么时候不问」全钉过一遍了，但那里 `aiAvailable()`
+// 是 mock 的 —— **它真实的返回值（读同步配置 + 本地会话 token）从来没有在这条路上
+// 跑过**。而这个功能每答错一张卡就会走一次，判错的代价是一行每天都看得见的噪音。
+// 构建产物里没有登录会话，所以真实答案就是「没配 AI」，卡背上该一个字都不多说。
+test('卡背上没有 AI 那一块的噪音 —— 没登录时它整块不出现（FR-10.14）', async ({ page }) => {
+  await seed(page);
+  await page.goto('/#/review');
+  await expect(page.getByText('1 / 2')).toBeVisible();
+
+  await page.getByRole('button', { name: '没听清 / 不认识' }).click();
+  await expect(page.getByRole('button', { name: /继续/ })).toBeVisible();
+
+  // 上面那个「继续」就是卡背真的展开了的证据（它只在 revealed 出现），
+  // 所以下面三条「不出现」不是因为整块卡背没渲染出来才空的。
+  // 而 AI 那一块三种形态一个都不该出现：没人点过任何东西，这里也没有下一步动作可做
+  await expect(page.getByText('AI 解释中…')).toHaveCount(0);
+  await expect(page.getByText(/AI 服务暂时不可用/)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '重试' })).toHaveCount(0);
+});
