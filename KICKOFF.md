@@ -17,9 +17,16 @@
 新的停点是 `fetch:threw:Load failed`：壳的 origin 是 `capacitor://localhost`，取
 `https://d.gamestao.com/ota/manifest.json` 是跨域，而线上响应**没有 CORS 放行头**。
 加了 `public/_headers`（`/ota/*` → `Access-Control-Allow-Origin: *`）+ `deploy.yml` 发布后线上检查。
-**纯服务器响应头，不必出包。**
+**纯服务器响应头，不必出包。已上线**（`b0472b5` → `88cb184` → `4f04891`，CI 与 deploy 全绿，
+线上带 `Origin: capacitor://localhost` 取 manifest 已回 `access-control-allow-origin: *`）。
 
-**下一步**：推上线后在手机上点「现在就查一次更新」，看步骤是否走到 `download`/`next`；
+随后补的测试与 CI 修复（`4f04891`）：`otaHeaders.test.ts` 在推之前守 `_headers` 规则，
+`nativeUpdate.test.ts` 补「立刻失败 / 非 2xx / 保持简单请求」三条，前端 1064 → 1071；
+server `diag.test.ts` 同一毫秒顺序不定的抖动修掉（145 → 146）；五处 `npm ci` 加
+`ONNXRUNTIME_NODE_INSTALL=skip`——今早 deploy 红过一次就是 onnxruntime-node 的 postinstall
+去 NuGet 下 CUDA EP 超时。**CI 近期所有红都已有归因并修掉，没有遗留。**
+
+**下一步**：在手机上点「现在就查一次更新」，看步骤是否走到 `download`/`next`；
 再冷启动一次，`current()` 的 `bundle.id` 不再是 `builtin` 才算热更真的通了。
 如果 `download` 那一步又失败，看它是不是原生 URLSession 取 zip（10MB）出的问题。
 
