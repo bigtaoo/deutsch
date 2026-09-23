@@ -37,6 +37,19 @@
 // `notifyAppReady()` 必须在应用真正起来之后调，否则插件下次启动自动回滚到上一个 bundle。
 // 挂在「四张 IndexedDB 表读完」那一刻（App.tsx），而不是模块加载完 —— 后者证明不了
 // 什么，一个连库都读不出来的构建照样能执行到 import。
+//
+// ── 诊断：插件到底注册没注册（变更 52，2026-09-23）──
+// 变更 50 修的是「桥调用挂住」，但没回答**为什么**挂住。真机上后来确认 `App.getInfo()`
+// 是好的、只有 `CapacitorUpdater.current()` 哑 —— 而两者走的是同一条桥队列
+// （`CapacitorBridge.dispatchQueue`，单条串行），队列要是真堵了，`getInfo()` 不可能先回来。
+// 所以更像的成因不是「慢」，是 `CapacitorBridge.handleJSCall` 那句
+// `guard let plugin = plugins[call.pluginId] ?? load() else { ...; return }`——
+// 插件类没注册上，桥直接丢掉这次调用，Promise 永远不会有人 resolve/reject 它。
+// `probePlugins()` 不过桥、不等待，同步读 `window.Capacitor.PluginHeaders`
+// （原生侧在 document start 就注入了每个**成功注册**的插件的方法表，见
+// `JSExport.exportJS`）—— 插件真注册了它就在，真没注册它就不在，据此能把
+// 「类没链进二进制/没被发现」和「调用本身超时」这两种成因分开，而这两种成因的下一步
+// 完全不同：前者要动 Swift（见 CapApp-SPM.swift），后者纯粹是等或重试。
 
 import { nativePlatform } from './native';
 
@@ -150,34 +163,115 @@ async function updater() {
   return CapacitorUpdater;
 }
 
+/**
+ * 这台设备上原生侧**真的注册成功**的插件有哪些。同步、不过桥 —— 读的是
+ * `window.Capacitor.PluginHeaders`，那是 `JSExport.exportJS` 在插件注册成功时
+ * （`CapacitorBridge.loadPlugin` 里 `type.init()` 真的造出了实例）一次性注入的静态
+ * 数据，跟调用挂不挂没有关系。见文件头「诊断」那段。
+ */
+export interface PluginProbe {
+  /** `window.Capacitor` 存不存在。false 只可能出在浏览器里（原生壳上这个全局必然有）。 */
+  bridgePresent: boolean;
+  /** 所有注册成功的插件名（`jsName`），比如 `['App', 'SplashScreen', 'CapacitorUpdater', ...]`。 */
+  registered: string[];
+  /** `CapacitorUpdater` 在不在这份名单里 —— 不在就是「类没链进二进制 / 没被发现」，
+   *  不是调用超时，JS 这边什么都做不了。 */
+  updaterRegistered: boolean;
+  /** `CapacitorUpdater` 注册成功时它对外的方法名（比如有没有 `current`）；没注册就是 `null`。 */
+  updaterMethods: string[] | null;
+}
+
+/** 没有 `window.Capacitor`（浏览器）或格式不认识时的兜底。 */
+const EMPTY_PROBE: PluginProbe = {
+  bridgePresent: false,
+  registered: [],
+  updaterRegistered: false,
+  updaterMethods: null,
+};
+
+export function probePlugins(): PluginProbe {
+  try {
+    const cap = (window as unknown as { Capacitor?: { PluginHeaders?: unknown } }).Capacitor;
+    if (!cap) return EMPTY_PROBE;
+    const headers = cap.PluginHeaders;
+    if (!Array.isArray(headers)) return { ...EMPTY_PROBE, bridgePresent: true };
+    const names: string[] = [];
+    let updaterMethods: string[] | null = null;
+    for (const h of headers) {
+      if (!h || typeof h !== 'object') continue;
+      const name = (h as { name?: unknown }).name;
+      if (typeof name !== 'string') continue;
+      names.push(name);
+      if (name === 'CapacitorUpdater') {
+        const methods = (h as { methods?: unknown }).methods;
+        updaterMethods = Array.isArray(methods)
+          ? methods
+              .map((m) => (m && typeof m === 'object' ? (m as { name?: unknown }).name : undefined))
+              .filter((n): n is string => typeof n === 'string')
+          : [];
+      }
+    }
+    return {
+      bridgePresent: true,
+      registered: names,
+      updaterRegistered: names.includes('CapacitorUpdater'),
+      updaterMethods,
+    };
+  } catch {
+    return EMPTY_PROBE;
+  }
+}
+
 /** 过桥问一个数最多等多久。要么给出答案，要么给出「问不出来」，不能两者都不给。 */
 const BRIDGE_TIMEOUT_MS = 4000;
 
+/** 一个字符串化的错误消息，不管抛出来的是不是 `Error`。 */
+function errMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return String(err);
+  } catch {
+    return '（无法转成字符串的错误）';
+  }
+}
+
+/** `askBridgeVerbose` 的结果 —— 比 `T | undefined` 多说一句「问不出来是因为什么」。 */
+export type BridgeOutcome<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: 'timeout' | 'rejected' | 'threw'; message?: string };
+
 /**
- * 过桥问一个数，**问不出来就是 `undefined`，绝不把调用方挂住**。
+ * 过桥问一个数，**问不出来也要说清楚是哪一种问不出来**，绝不把调用方挂住。
  *
- * 桥调用失败的方式不只是 reject —— 插件没注册、原生侧不回调，那个 Promise 就永远不
- * settle。两种失败在这里合并成同一个 `undefined`，因为调用方能做的事一样：这个数没有，
- * 照常往下走。**每个数各问各的**，不要拿 `Promise.all` 把它们绑在一起 —— 那样一个挂住
- * 的调用会把另一个本来问得出来的也一起拖死。
+ * 三种失败：`timeout`（插件没注册、原生侧不回调 —— Promise 永远不 settle，见文件头
+ * 「诊断」那段）、`rejected`（原生侧真的报了错）、`threw`（`make()` 自己同步抛，比如
+ * 插件的 JS chunk 都没 import 成功）。**每个数各问各的**，不要拿 `Promise.all` 把它们
+ * 绑在一起 —— 那样一个挂住的调用会把另一个本来问得出来的也一起拖死。
  */
-async function askBridge<T>(make: () => Promise<T>): Promise<T | undefined> {
+async function askBridgeVerbose<T>(make: () => Promise<T>): Promise<BridgeOutcome<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       // catch 挂在这里而不是外面：超时之后它才 reject 的话，外面的 try 早就走完了，
       // 那个 rejection 会变成没人接的 unhandledrejection。
-      make().catch(() => undefined),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), BRIDGE_TIMEOUT_MS);
+      make()
+        .then((value) => ({ ok: true, value }) as const)
+        .catch((err: unknown) => ({ ok: false, reason: 'rejected', message: errMessage(err) }) as const),
+      new Promise<BridgeOutcome<T>>((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), BRIDGE_TIMEOUT_MS);
       }),
     ]);
-  } catch {
-    // make() 自己同步抛（比如插件根本没装，import 之后取不到方法）。
-    return undefined;
+  } catch (err) {
+    return { ok: false, reason: 'threw', message: errMessage(err) };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** 只要答案、不要诊断时的简化版 —— `runningBuild()` 用这个。 */
+async function askBridge<T>(make: () => Promise<T>): Promise<T | undefined> {
+  const r = await askBridgeVerbose(make);
+  return r.ok ? r.value : undefined;
 }
 
 /**
@@ -205,28 +299,72 @@ function rememberQueuedBuildId(buildId: string): void {
   }
 }
 
+/** `fetch` 最多等多久。要么拿到 manifest，要么明确失败，不能悬在那里。 */
+const FETCH_TIMEOUT_MS = 8000;
+
+/**
+ * 一次「查更新」跑下来的完整记录，**不过桥**（localStorage），供设置页读。
+ *
+ * 这是回应「手机上到底发生了什么」的最后一道诊断：没有 Mac、看不到 Xcode 控制台，
+ * `checkNativeUpdate()` 原来失败就是 `catch { return null }`，重启一次什么都不剩。
+ * 现在每一步都记，**无论最终成功、跳过还是异常都要落地**（见下面的 finally）。
+ */
+export interface CheckLogEntry {
+  /** `Date.now()`。 */
+  at: number;
+  /** 跑到了哪一步，按顺序 append，比如 `['fetch:ok', 'current:timeout', 'getInfo:ok', 'decide:download']`。 */
+  steps: string[];
+  /** 最终结果的人话摘要。 */
+  outcome: string;
+  /** 那一刻的插件注册情况 —— 见 `probePlugins()`。 */
+  probe: PluginProbe;
+}
+
+const CHECK_LOG_KEY = 'ota.lastCheckLog';
+
+function writeCheckLog(entry: CheckLogEntry): void {
+  try {
+    localStorage.setItem(CHECK_LOG_KEY, JSON.stringify(entry));
+  } catch {
+    // 存不下就少一份诊断，不影响更新本身。
+  }
+}
+
+/** 上一次 `checkNativeUpdate()` 跑下来的记录；从没跑过（或存不下）时是 `null`。给设置页用。 */
+export function readLastCheckLog(): CheckLogEntry | null {
+  try {
+    const raw = localStorage.getItem(CHECK_LOG_KEY);
+    return raw ? (JSON.parse(raw) as CheckLogEntry) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 告诉原生侧「这一版真的起来了」，取消回滚倒计时。
  *
  * 幂等，浏览器里是空操作。**必须调** —— 不调的话下次启动会退回上一个 bundle，
  * 而那看起来就是「热更根本没生效」。
+ *
+ * **这一步本身也过桥，也可能挂住**（变更 52）—— 原来这里只吞了 reject，没有超时。
+ * 不调用等于插件 20 秒后判定这个 bundle 起不来并回滚，是和 `checkNativeUpdate()`
+ * 同一个坑的第三处：同一天已经在这里踩过两次（`runningBuild` 与它自己），不该再漏。
  */
 export async function notifyNativeAppReady(): Promise<void> {
   if ((await nativePlatform()) !== 'ios') return;
-  try {
-    await (await updater()).notifyAppReady();
-  } catch {
-    // 插件没装（比如还没出带热更的壳）就什么也不做。旧壳照常跑它自己那份 dist。
-  }
+  const CapacitorUpdater = await updater().catch(() => null);
+  if (!CapacitorUpdater) return; // 插件没装（比如还没出带热更的壳）—— 旧壳照常跑它自己那份 dist。
+  await askBridgeVerbose(() => CapacitorUpdater.notifyAppReady());
 }
 
 /**
  * 查一次更新，有就下载并登记为「下次启动用」。
  *
  * 失败一律吞掉：热更拿不到新版是**退化不是故障**，手上这份照样能用，而弹一个
- * 「更新失败」除了打断练习什么也做不了。真要查就去设置页看当前 bundle（§12.12）。
+ * 「更新失败」除了打断练习什么也做不了。真要查就去设置页看当前 bundle（§12.12），
+ * 那里现在会显示 `readLastCheckLog()` 的完整过程，不再是「查了但不知道发生了什么」。
  *
- * ── 这里踩过的那个坑：更新器自己挂在原生桥上（2026-09-22）──
+ * ── 这里踩过的那个坑：更新器自己挂在原生桥上（2026-09-22，变更 50）──
  * 原来这两行是
  *     `const [current, info] = await Promise.all([CapacitorUpdater.current(), App.getInfo()]);`
  * —— **没有超时**。而同一天早些时候（600fdb5）已经在真机上查实：这两个调用在 iPhone 上
@@ -240,42 +378,90 @@ export async function notifyNativeAppReady(): Promise<void> {
  *
  * 所以现在：每个数各问各的、各自超时，问不出来就当「未知」继续往下走（decideUpdate 里
  * 那段「未知不许否决更新」）。**更新器宁可多下一次包，也不能有一条会把自己锁死的路。**
+ *
+ * ── 这次多了什么（变更 52）──
+ * 补了两个还没盖到的自锁点：`fetch` 本身没有超时（连接吊住就永远吊住），`updater()`
+ * 的 import 失败没有和「超时」分开记。以及最重要的一条：**不管走到哪一步、怎么失败，
+ * 都要往 `CheckLogEntry` 里写一笔**——「更新器自己挂住」这类 bug 的本质就是「重启多少次
+ * 都一样，且什么都不剩」，而诊断的价值恰恰是把「什么都不剩」变成「剩一份能看的记录」。
  */
 export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
-  if ((await nativePlatform()) !== 'ios') return null;
+  const steps: string[] = [];
+  const probe = probePlugins();
+  if ((await nativePlatform()) !== 'ios') return null; // 浏览器：不记日志，那边这个函数本来就不该被调用。
+
+  let outcome: UpdateDecision | null = null;
+  let outcomeText = '（异常中断）';
   try {
-    const CapacitorUpdater = await updater();
+    const CapacitorUpdater = await updater().catch((err: unknown) => {
+      steps.push(`plugin-import:threw:${errMessage(err)}`);
+      throw err;
+    });
+    steps.push('plugin-import:ok');
 
     // cache: 'no-store' —— WKWebView 会缓存这个 JSON，缓存住了就等于热更停摆，
     // 而症状是「部署了但手机不更新」，和没接热更一模一样。
-    const res = await fetch(`${OTA_BASE}/ota/manifest.json`, { cache: 'no-store' });
-    if (!res.ok) return { action: 'skip', reason: `manifest ${res.status}` };
+    // 手写 setTimeout + AbortController 而不是 `AbortSignal.timeout()`：后者
+    // Safari 16.4 才有，而 `Package.swift` 的部署目标是 iOS 15 ——老设备上它会直接
+    // 同步抛 TypeError，等于给一个「治超时」的东西自己引入一种新的失败方式。
+    const fetchController = new AbortController();
+    const fetchTimer = setTimeout(() => fetchController.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(`${OTA_BASE}/ota/manifest.json`, {
+      cache: 'no-store',
+      signal: fetchController.signal,
+    })
+      .catch((err: unknown) => {
+        steps.push(`fetch:threw:${errMessage(err)}`);
+        throw err;
+      })
+      .finally(() => clearTimeout(fetchTimer));
+    if (!res.ok) {
+      steps.push(`fetch:http-${res.status}`);
+      outcome = { action: 'skip', reason: `manifest ${res.status}` };
+      outcomeText = outcome.reason;
+      return outcome;
+    }
+    steps.push('fetch:ok');
     const manifest = (await res.json()) as OtaManifest;
 
     const [current, info] = await Promise.all([
-      askBridge(() => CapacitorUpdater.current()),
-      askBridge(async () => (await import('@capacitor/app')).App.getInfo()),
+      askBridgeVerbose(() => CapacitorUpdater.current()),
+      askBridgeVerbose(async () => (await import('@capacitor/app')).App.getInfo()),
     ]);
+    steps.push(`current:${current.ok ? 'ok' : current.reason}`);
+    steps.push(`getInfo:${info.ok ? 'ok' : info.reason}`);
 
     const decision = decideUpdate(manifest, {
-      currentVersion: current ? (current.bundle.version ?? BUILTIN) : undefined,
-      nativeVersion: info?.version,
+      currentVersion: current.ok ? (current.value.bundle.version ?? BUILTIN) : undefined,
+      nativeVersion: info.ok ? info.value.version : undefined,
       queuedBuildId: readQueuedBuildId(),
     });
-    if (decision.action === 'skip') return decision;
+    steps.push(`decide:${decision.action}`);
+    if (decision.action === 'skip') {
+      outcome = decision;
+      outcomeText = decision.reason;
+      return outcome;
+    }
 
     const bundle = await CapacitorUpdater.download({
       url: decision.url,
       version: decision.version,
     });
+    steps.push('download:ok');
     // next 而不是 set：只登记，不重载。见文件顶部「更新时机」。
     await CapacitorUpdater.next({ id: bundle.id });
+    steps.push('next:ok');
     // 先落地再记内存：下次启动桥要是又哑了，就靠这一条判断「这一版不用重下」。
     rememberQueuedBuildId(manifest.buildId);
     pending = decision.version;
-    return decision;
-  } catch {
+    outcome = decision;
+    outcomeText = `下载并登记 ${decision.version}`;
+    return outcome;
+  } catch (err) {
+    outcomeText = `异常：${errMessage(err)}`;
     return null;
+  } finally {
+    writeCheckLog({ at: Date.now(), steps, outcome: outcomeText, probe });
   }
 }
 

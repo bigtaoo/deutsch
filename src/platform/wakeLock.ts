@@ -26,6 +26,18 @@
 // 页面一不可见就自动释放，代价有上界；而一个「要不要让屏幕在我用这个应用时保持亮着」
 // 的开关，没有人有信息去回答它。真要关，把手机的自动锁屏调回来就是 ——
 // 那本来就是系统给的那个开关。
+//
+// ── iOS 上这条 Web API 不够用（变更 52，2026-09-23）──
+// 用户在非省电模式下报过「申请被拒」。Web Wake Lock 是浏览器标准，WKWebView 认不认、
+// 什么时候放行，不由这个应用控制；而这里原来 `catch {}` 把异常整个吞了，连「拒绝的
+// 是哪一种」都没留下。现在改成记下 `err.name`/`err.message`（诊断行需要它才能分清
+// 「策略拒绝」和别的坏法），并在下一次用户手势（`pointerdown`）上自动再申请一次——
+// 这条路对 web 版本身也有意义：不少浏览器要求锁的申请发生在一次用户激活里，
+// 应用挂载那一刻不算数，等一次真实点击/触摸就有了。
+// **iOS 上更可靠的路径已经移到原生侧**：`SceneDelegate.sceneDidBecomeActive` 直接
+// 拨 `UIApplication.isIdleTimerDisabled`，不经过这层 Web API、也就不受它认不认的影响。
+// 这份文件因此从「唯一防线」降级成「web 版的防线 + iOS 上的诊断来源」，两者并存，
+// 互不依赖 —— 原生那边坏了不影响这边继续申请，这边被拒也不代表原生那边没接管。
 
 interface Sentinel {
   released: boolean;
@@ -51,6 +63,12 @@ let requesting = false;
  */
 let lastResult: 'ok' | 'rejected' | null = null;
 let lastAt = 0;
+/** 被拒时的 `err.name`（比如 `NotAllowedError`）；不是被拒或问不出名字时是 `undefined`。 */
+let lastErrorName: string | undefined;
+/** 被拒时的 `err.message`，人话原文。 */
+let lastErrorMessage: string | undefined;
+/** 已经挂了「下次用户手势重试」的监听器时，存着它的引用，好在重置/卸载时能摘掉。 */
+let gestureRetryHandler: (() => void) | null = null;
 
 function api(): WakeLockNavigator['wakeLock'] | undefined {
   if (typeof navigator === 'undefined') return undefined;
@@ -79,6 +97,10 @@ export interface WakeLockState {
   lastResult: 'ok' | 'rejected' | null;
   /** 距最近一次申请过了多少毫秒；没试过时是 0。 */
   lastAgoMs: number;
+  /** 被拒时具体是哪一种（`err.name`）；不是被拒时是 `undefined`。 */
+  lastErrorName?: string;
+  /** 被拒时的原文消息。 */
+  lastErrorMessage?: string;
 }
 
 export function wakeLockState(): WakeLockState {
@@ -88,6 +110,8 @@ export function wakeLockState(): WakeLockState {
     held: Boolean(sentinel),
     lastResult,
     lastAgoMs: lastAt ? Date.now() - lastAt : 0,
+    lastErrorName,
+    lastErrorMessage,
   };
 }
 
@@ -101,6 +125,10 @@ async function acquire(): Promise<void> {
     const next = await wakeLock.request('screen');
     lastResult = 'ok';
     lastAt = Date.now();
+    // 清掉上一次被拒的残留 —— 不清的话诊断行会在「刚成功了」的同时还挂着一条
+    // 已经过时的错误信息，看着像是又被拒了一次。
+    lastErrorName = undefined;
+    lastErrorMessage = undefined;
     // 等这一趟回来的时候可能已经不想要了（切出了练习界面）——那就立刻还回去。
     if (!wanted) {
       void next.release().catch(() => {});
@@ -110,15 +138,47 @@ async function acquire(): Promise<void> {
         if (sentinel === next) sentinel = null;
       });
     }
-  } catch {
+  } catch (err) {
     // 省电模式、权限策略、或者这一版 WebView 不认 —— 屏幕照旧会灭，仅此而已。
     // 但要记一笔：这一档和「这台设备根本没有这个 API」要分得开，
     // 而它们的下一步完全不同（见 wakeLockState 的注释）。
     lastResult = 'rejected';
     lastAt = Date.now();
+    // 不用 `err instanceof Error`：浏览器真正抛出来的是 `DOMException`
+    // （比如 `NotAllowedError`），它不一定是 `Error` 的子类 —— 只按「有没有
+    // `name`/`message` 这两个字符串字段」来认，Error 和 DOMException 都满足。
+    lastErrorName =
+      err && typeof err === 'object' && typeof (err as { name?: unknown }).name === 'string'
+        ? (err as { name: string }).name
+        : undefined;
+    lastErrorMessage =
+      err && typeof err === 'object' && typeof (err as { message?: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : String(err);
+    armGestureRetry();
   } finally {
     requesting = false;
   }
+}
+
+/**
+ * 被拒之后，等下一次真实的用户手势（`pointerdown`）再试一次。
+ *
+ * 有的浏览器要求 Wake Lock 的申请发生在一次「用户激活」里 —— 应用挂载那一刻
+ * 不算数，而这个应用主场景恰恰是「挂载之后很久都不碰屏幕」，所以光等
+ * visibilitychange 不够：那条路只在切后台再回来时触发，第一次被拒之后
+ * 如果用户一直不碰屏幕，就再也没有重试的机会。**只挂一次**（`gestureRetryArmed`
+ * 挡重复），避免每被拒一次就叠加一个监听器。
+ */
+function armGestureRetry(): void {
+  if (gestureRetryHandler || typeof document === 'undefined') return;
+  const onGesture = () => {
+    gestureRetryHandler = null;
+    document.removeEventListener('pointerdown', onGesture);
+    void acquire();
+  };
+  gestureRetryHandler = onGesture;
+  document.addEventListener('pointerdown', onGesture, { once: true });
 }
 
 function releaseNow(): void {
@@ -160,4 +220,10 @@ export function resetWakeLockForTests(): void {
   requesting = false;
   lastResult = null;
   lastAt = 0;
+  lastErrorName = undefined;
+  lastErrorMessage = undefined;
+  if (gestureRetryHandler && typeof document !== 'undefined') {
+    document.removeEventListener('pointerdown', gestureRetryHandler);
+  }
+  gestureRetryHandler = null;
 }

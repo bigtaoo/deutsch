@@ -90,6 +90,21 @@ jobs:
       - name: cap sync ios
         run: npx cap sync ios
 
+      # 变更 52：热更曾经在真机上整个哑掉，最像的成因是 CapacitorUpdater 这个类没能
+      # 链进最终二进制（SwiftPM 静态库剥掉了「看起来没人用」的符号）。这一步只能查出
+      # 「配置有没有列它」，查不出「链接器最后留没留它」—— 但配置漏了它，后面必然是
+      # 同一种哑法，所以先把这道最便宜的门槛卡住：两个源都得看得见 CapacitorUpdater。
+      - name: 校验热更插件确实进了这次构建
+        run: |
+          grep -q CapacitorUpdaterPlugin ios/App/App/capacitor.config.json || {
+            echo "::error::capacitor.config.json 的 packageClassList 里没有 CapacitorUpdaterPlugin —— 这次构建装上去热更会整个不生效"
+            exit 1
+          }
+          grep -q CapgoCapacitorUpdater ios/App/CapApp-SPM/Package.swift || {
+            echo "::error::CapApp-SPM/Package.swift 没有 CapgoCapacitorUpdater 依赖"
+            exit 1
+          }
+
       - uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}

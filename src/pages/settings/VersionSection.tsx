@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Disclosure, Hint, Note, Section } from '@/components/ui';
-import { pendingUpdateVersion, runningBuild, type RunningBuild } from '@/platform/nativeUpdate';
+import { Button, Disclosure, Hint, Note, Section } from '@/components/ui';
+import {
+  checkNativeUpdate,
+  pendingUpdateVersion,
+  probePlugins,
+  readLastCheckLog,
+  runningBuild,
+  type CheckLogEntry,
+  type RunningBuild,
+} from '@/platform/nativeUpdate';
 import { initSafeArea, safeAreaProbe, type Platform } from '@/platform/safeArea';
 import { nativePlatform } from '@/platform/native';
 import { wakeLockState } from '@/platform/wakeLock';
@@ -10,8 +18,9 @@ import { wakeLockState } from '@/platform/wakeLock';
 // 壳的版本和跑着的前端版本从此是两个数，而且大多数时候不一样。
 //
 // 形状按 §12.3：平时是静默的两行事实（`Hint` 那一档，不是状态），只有「下好了等着
-// 生效」时才升到一行提示（`Note`）。不给「现在就更新」的按钮 —— 立刻换 bundle 是整个
+// 生效」时才升到一行提示（`Note`）。不给「立刻换上这一版」的按钮 —— 那是整个
 // WebView 重载，会清掉只活在 React state 里的听写答案，而这一页恰恰可以从练习中途进来。
+// （变更 52 加的是另一个按钮：「查一次」，不是「换一次」，见下方那段。）
 //
 // ── 这一块绝不能把自己整块抹掉（2026-09-22 真机修） ──
 // 原来第一行是 `if (build === undefined) return null;`，而 `build` 来自一个**过原生桥**
@@ -22,10 +31,20 @@ import { wakeLockState } from '@/platform/wakeLock';
 // 现在：平台由 `nativePlatform()` 单独问（不过桥，只是一次动态 import），版本号问不出来
 // 就如实写「问不出来」。**诊断块无论如何都画** —— 它正是用来回答「这台设备上到底
 // 发生了什么」的，一个会在出问题时自己消失的诊断等于没有。
+//
+// ── 「现在就查一次更新」按钮（变更 52，2026-09-23）──
+// 之前没有这个按钮，理由写在上面：立刻**换 bundle**是整个 WebView 重载，会清掉
+// 只活在 state 里的听写答案。但「查一次」和「换一次」是两件事——查询只是后台一次
+// `checkNativeUpdate()`，不碰当前跑着的这份前端，加它没有那条顾虑。加它的理由是
+// 变更 50 那次死锁：没有 Mac、看不到 Xcode 控制台时，「push 了 main，手机到底拿到
+// 没有」原来要等下次冷启动才能看到结果，现在能在设置页当场把这个回路闭上，
+// 而且查完就能看见 `readLastCheckLog()` 那份逐步记录，不再是「查了但不知道发生了什么」。
 export function VersionSection() {
   const [platform, setPlatform] = useState<Platform | null>(null);
   const [build, setBuild] = useState<RunningBuild | null | undefined>(undefined);
   const [pending, setPending] = useState<string | null>(null);
+  const [log, setLog] = useState<CheckLogEntry | null>(() => readLastCheckLog());
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     void nativePlatform().then(setPlatform);
@@ -35,8 +54,30 @@ export function VersionSection() {
     setPending(pendingUpdateVersion());
   }, []);
 
+  const runCheckNow = async (): Promise<void> => {
+    setChecking(true);
+    try {
+      await checkNativeUpdate();
+    } finally {
+      setChecking(false);
+      // 查完这几个数可能都变了：build 里的 queued 字段、pending、以及诊断块要读的日志。
+      void runningBuild().then(setBuild);
+      setPending(pendingUpdateVersion());
+      setLog(readLastCheckLog());
+    }
+  };
+
   return (
-    <Section title="版本">
+    <Section
+      title="版本"
+      aside={
+        platform === 'ios' ? (
+          <Button onClick={() => void runCheckNow()} disabled={checking}>
+            {checking ? '查询中…' : '现在就查一次更新'}
+          </Button>
+        ) : undefined
+      }
+    >
       {platform === null ? (
         <Hint>正在问这台设备…</Hint>
       ) : platform === 'web' ? (
@@ -85,7 +126,7 @@ export function VersionSection() {
       )}
       {/* **无论平台、无论版本号问没问出来都画。** 它正是用来回答「这台设备上到底
           发生了什么」的，而一个会在出问题时自己消失的诊断等于没有。 */}
-      <DeviceDiagnostics />
+      <DeviceDiagnostics log={log} />
     </Section>
   );
 }
@@ -100,8 +141,13 @@ export function VersionSection() {
  *
  * 常亮那一行分三种状况说，因为「屏幕没保持亮」有三个完全不同的成因、
  * 三个完全不同的下一步 —— 见 `wakeLockState()` 的注释。
+ *
+ * **插件注册与查更新日志**（变更 52）也在这里：`probePlugins()` 同步、不过桥，
+ * 能把「类没链进这次构建」和「调用本身超时」这两种成因分开——前者要发新包，
+ * 后者纯粹是等或重试，`log` 参数（`readLastCheckLog()`）则是上一次
+ * `checkNativeUpdate()` 走到了哪一步、结论是什么。
  */
-function DeviceDiagnostics() {
+function DeviceDiagnostics({ log }: { log: CheckLogEntry | null }) {
   // 正常情况下 App.tsx 启动时已经量过一次，这里直接读那一份（免得两处数字对不上）。
   // **但不能只依赖它**：启动时那一次排在 `nativePlatform()` 之后，而那是个异步动态
   // import —— 它失败、或者哪天被挪了位置，这一块就只会显示「还没量」，
@@ -119,6 +165,10 @@ function DeviceDiagnostics() {
     const timer = setInterval(() => setLock(wakeLockState()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // 插件注册情况是同步的（`window.Capacitor.PluginHeaders` 是原生侧启动时一次性
+  // 注入的静态数据），不会在会话中途变化，读一次就够，不用像常亮那样定时重读。
+  const pluginProbe = probePlugins();
 
   return (
     <Disclosure summary="这台设备的边距与常亮">
@@ -142,19 +192,55 @@ function DeviceDiagnostics() {
 
       {/* **除了此刻的状态，还要报「上一次申请的结果」。** 申请发生在应用挂载那一刻，
           而人是过一会儿才走到这一页来看的；中间可能切过后台（系统收走锁、回来再申请），
-          也可能一开始就被拒了。只报此刻状态说不清「刚才那次到底成没成」。 */}
+          也可能一开始就被拒了。只报此刻状态说不清「刚才那次到底成没成」。
+          **iOS 上现在有两道防线**（变更 52）：这一行报的是 Web Wake Lock 那道，
+          原生侧 `SceneDelegate.isIdleTimerDisabled` 那道不经过 JS、这里看不到、
+          也不需要看到 —— 它坏不坏跟这一行的结果无关。 */}
       <Hint tone={!lock.supported || lock.lastResult === 'rejected' ? 'warn' : 'neutral'}>
-        屏幕常亮：
+        屏幕常亮（Web API）：
         {!lock.supported
-          ? '这台 WebView 没有 Screen Wake Lock —— 屏幕仍会按系统的自动锁屏时间灭掉，只能去原生侧改（要出新包）。'
+          ? '这台 WebView 没有 Screen Wake Lock。'
           : lock.held
             ? '锁拿着，这个应用开着的时候屏幕不会自己灭（切到别的 App 或手动锁屏时系统会收回）。'
             : lock.lastResult === 'rejected'
-              ? `API 在，但最近一次申请（${formatAgo(lock.lastAgoMs)}前）被拒了 —— 省电模式或系统策略。`
+              ? `最近一次申请（${formatAgo(lock.lastAgoMs)}前）被拒了`
+                + (lock.lastErrorName ? `（${lock.lastErrorName}${lock.lastErrorMessage ? `：${lock.lastErrorMessage}` : ''}）` : '')
+                + ' —— 已经排了下一次用户手势自动重试。'
               : lock.lastResult === 'ok'
-                ? `API 在；最近一次申请（${formatAgo(lock.lastAgoMs)}前）拿到过锁，但这一刻没拿着。`
-                : 'API 在，但还没申请到 —— 页面刚打开或正处在后台时会是这样，回到前台几秒后再看。'}
+                ? `最近一次申请（${formatAgo(lock.lastAgoMs)}前）拿到过锁，但这一刻没拿着。`
+                : '还没申请到 —— 页面刚打开或正处在后台时会是这样，回到前台几秒后再看。'}
+        {/* iOS 壳上另有不经过这层 API 的原生开关，坏了才需要出新包；低电量模式
+            两道防线都拦不住，这一档只能如实说，没有代码能治。 */}
+        {probe?.platform === 'ios' && (
+          <>
+            <br />
+            iOS 壳另有原生接管（isIdleTimerDisabled），不依赖这个 Web API——上面这一行
+            被拒不代表屏幕真的会灭。低电量模式下两道都会被系统忽略，那一档没有代码能治。
+          </>
+        )}
       </Hint>
+
+      {/* 插件注册与上次查更新的完整记录（变更 52）。见文件头「诊断」那段：
+          `updaterRegistered=false` 是「类没链进二进制」，要发新包；日志里的
+          `xxx:timeout` 是「调用本身没人回」，纯粹是桥的事，下一版可能就好了 ——
+          两种成因分得开，下一步才分得开。 */}
+      {probe?.platform === 'ios' && (
+        <Hint tone={pluginProbe.updaterRegistered ? 'neutral' : 'warn'}>
+          插件注册：{pluginProbe.registered.length} 个
+          {pluginProbe.registered.length > 0 ? `（${pluginProbe.registered.join('、')}）` : ''}
+          <br />
+          {pluginProbe.updaterRegistered
+            ? `CapacitorUpdater 注册成功，方法：${pluginProbe.updaterMethods?.join('、') || '（空）'}`
+            : 'CapacitorUpdater 不在这份名单里 —— 这不是调用超时，是这个类没链进这次构建，热更这一版起不来，只能发新包。'}
+        </Hint>
+      )}
+      {log && (
+        <Hint>
+          上次查更新（{formatAgo(Date.now() - log.at)}前）：{log.outcome}
+          <br />
+          步骤：{log.steps.length > 0 ? log.steps.join(' → ') : '（还没走到任何一步）'}
+        </Hint>
+      )}
     </Disclosure>
   );
 }

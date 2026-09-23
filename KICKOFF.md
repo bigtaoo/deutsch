@@ -10,6 +10,54 @@
 附录 A 是 DW 接口的实测结果（A.6 是实现完成后用真实期次做的复验），附录 B 是 GitHub API 的实测结果——
 这些是真实探测出来的事实，不要重新假设，也不用重新验证（除非怀疑对方改版了）。
 
+## 现状（2026-09-23，热更诊断到根 + 常亮改走原生——变更 52）
+
+**用户带着变更 50 的真机结果回来，指出两件事没解**：
+
+① 「App.getInfo() 是好的（报出了 0.6.1），哑的是 CapacitorUpdater.current()。范围一下子
+缩到 capgo 那个插件上了。」——两者走同一条桥调度队列（`CapacitorBridge.dispatchQueue`，
+单条串行），队列真堵了不可能让 `getInfo()` 先回来，「慢」解释不通。读了 `@capacitor/ios`
+源码找到更像的成因：`CapacitorBridge.handleJSCall` 里 `guard let plugin = ... else { ...;
+return }`——插件类没注册上，桥直接丢掉这次调用，JS 那边的 Promise 没有人会
+resolve/reject 它。
+
+② 「另外常亮申请被拒、又不是省电模式，是一条新暴露的问题」——原来 `catch {}` 把异常
+整个吞了，连拒绝的是哪一种都没留下。
+
+**这次没法在真机上验，只能把「查不出来」变成「代码里有地方能查」**：
+
+- `probePlugins()`（`src/platform/nativeUpdate.ts`）同步读 `window.Capacitor.PluginHeaders`——
+  那是插件**注册成功**时原生侧一次性注入的静态数据，跟调用挂不挂没关系。能把「类没链进
+  二进制」和「调用本身超时」这两种成因分开，下一步完全不同：前者要发新包，后者可能
+  下一版自己就好。
+- `checkNativeUpdate()` 现在不管走到哪一步、怎么失败，都往 `CheckLogEntry` 里写一笔
+  （`readLastCheckLog()`，不过桥，含 `probePlugins()` 快照）；补了两个还没盖到的自锁点：
+  `fetch` 本身没超时（手写 `AbortController`，不用 `AbortSignal.timeout()`——那是 Safari
+  16.4 才有，部署目标是 iOS 15）、`notifyNativeAppReady()` 自己过桥也没超时。
+- **`CapApp-SPM.swift` 加了对 `CapacitorUpdaterPlugin`/`SocialLoginPlugin` 的显式引用**——
+  这是「最像的成因」的最低代价赌注：这两个类之前只靠 `NSClassFromString` 动态查找，没有
+  编译期保证 SwiftPM 静态库的链接器会留下"看起来没人用"的符号。代价是零（本来就是既有
+  依赖），猜错了也不会更坏。`release-ios.yml` 新增一道 CI 校验，挡的是最便宜能查的那一档
+  错——配置里漏列了这个插件。
+- `VersionSection` 新增「现在就查一次更新」按钮（iOS 上才有，不影响「不给立刻换上的按钮」
+  那条既有约束——查一次和换一次是两件事）+ 两块新诊断（插件注册名单、上次查更新的逐步
+  记录）。
+- **常亮换成 `SceneDelegate` 接管**：这份工程有 `UIApplicationSceneManifest`，场景生命周期
+  起了之后 `AppDelegate.applicationDidBecomeActive` 根本不会被调用，所以挂在
+  `SceneDelegate.sceneDidBecomeActive`/`sceneWillResignActive`，直接拨
+  `UIApplication.isIdleTimerDisabled`，不经过 WKWebView 的 Wake Lock 实现。Web Wake Lock
+  那边也补了：记下 `err.name`/`err.message`（不能用 `err instanceof Error`——真机抛的是
+  `DOMException`，不一定是 `Error` 子类）、被拒之后等下一次用户手势（`pointerdown`）自动
+  重试一次。两道防线并存、互不依赖。低电量模式下两道都会被系统忽略，没有代码能治，
+  诊断行如实说。
+
+**测试**：前端 +23（982），server（133）/e2e（43）不受影响，五条验证全绿。
+
+**这一整条都要等下一次出包装机才算数**：`probePlugins()` 名单里有没有
+`CapacitorUpdater`、`isIdleTimerDisabled` 接管之后屏幕真的不灭、`err.name` 到底是什么、
+以及最关键的——`CapApp-SPM.swift` 那处赌注到底压中没压中。Swift 部分我没法本地编译
+验证（没有 Mac），下一步是出一个 `ios-v0.6.2` 装机看结果。
+
 ## 现状（2026-09-22 深夜再更新，音效在 iOS 上没声音——变更 51）
 
 **用户报**：「按钮点击的音效播放，在网页上正常，在手机上没声音」——正是变更 46 落地
@@ -1077,6 +1125,19 @@ Google 对这个值逐字符比对。第二层要修好第一层才会露出来�
 两者若不是同一个，结论要重验。
 
 ## 下一步建议（按价值排序）
+
+0q. **出 `ios-v0.6.2`、装机，验变更 52 那三件事**——这是当前最高优先级，因为下面
+   0o 条里「常亮」「`current()` 为什么哑」这两条悬念的修法都已经写进代码了，
+   但**没法在这个环境里验证**（没有 Mac，Swift 编译不了）。装机之后：
+   ① 设置 → 版本 → 展开诊断，看「插件注册」那一块——`CapacitorUpdater` 在不在名单里
+   就是答案：在，说明当时是调用超时，`askBridgeVerbose` 那套已经够用；不在，说明
+   `CapApp-SPM.swift` 那处显式引用的赌注压中了，是它把类重新链回了二进制。
+   ② 点一下「现在就查一次更新」，看 `readLastCheckLog()` 的步骤记录里 `current` 那
+   一步是 `ok` 还是 `timeout`——和 ① 合起来才是完整诊断。
+   ③ 屏幕放着五分钟不碰，看灭不灭（`SceneDelegate.isIdleTimerDisabled` 接管住了没有）；
+   顺带看一眼常亮那一行的 `err.name`——被拒的具体原因这次总算记下来了。
+   **这一条验完之前，不要再花时间猜 `current()` 为什么哑或常亮为什么被拒**——
+   0o 条里那两小段是变更 52 之前的分析，现在有更直接的数据来源了。
 
 0p. **音效在真机上重新确认一遍**（变更 51）。改动本身已经推上去了，但这个环境
    没法起真的 WKWebView，只能靠推理判断根因、靠单测钉住新的调用顺序——真正验证

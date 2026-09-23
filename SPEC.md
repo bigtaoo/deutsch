@@ -65,6 +65,8 @@
 
 | 51 | **音效的 resume 手势链补了半截（2026-09-22）**：`playSfx()`（[src/audio/sfx.ts](src/audio/sfx.ts)）从「`resume()` 不等就直接 `start()`」改成**等 `resume()` 真的 resolve 了再 `start()`**；`sfx.test.ts` 两处断言从「点完立刻查」改成「等一个微任务再查」；FR-10.12 表述同步更新 | 用户报「按钮点击的音效播放，在网页上正常，在手机上没声音」——正是 §10「没验的（要真机）」清单里变更 46 落地时就留着的那条悬念，这次算是真被验出来了。**suspended 的上下文里排的音，Chrome 桌面上 resume 之后照样会响，WKWebView 不认**：那一下播放静默丢在原地，不抛错、不提示，跟音效模块本来的设计（失败一律静默）合起来就是「点了没反应」——和变更 45/50 那几次「查不到成因」的坑是同一种失败方式。**这一条还没在真机上重新确认过**：下一次热更到手机之后点一下选项确认真的响了，顺带看一眼德语句子还在播时答题两个声音会不会互相掐掉（这半条 FR-10.12 原文就有，没有理由跟着坏，但没有单独验过） |
 
+| 52 | **热更诊断到根、常亮改走原生（2026-09-23）**：`§7.12`「查更新」一段重写，新增 `§12.12` 的诊断子段。`src/platform/nativeUpdate.ts` 新增 `probePlugins()`（同步读 `window.Capacitor.PluginHeaders`，不过桥，回答「这台设备上 `CapacitorUpdater` 到底注册没注册」）、`askBridgeVerbose()`（`askBridge` 的诊断版，`timeout`/`rejected`/`threw` 三态分开）、`CheckLogEntry` + `readLastCheckLog()`（`checkNativeUpdate()` 每一步都落 localStorage，`finally` 里无条件写，含 `probePlugins()` 那一刻的快照）；`checkNativeUpdate()` 补齐两个还没盖到的自锁点：`fetch` 本身没有超时（手写 `AbortController`，不用 `AbortSignal.timeout()`——那是 Safari 16.4 才有，部署目标是 iOS 15）、`notifyNativeAppReady()` 自己过桥也没超时。`VersionSection` 新增「现在就查一次更新」按钮（iOS 上才有）与两块新诊断（插件注册名单 + 上次查更新的逐步记录）。`ios/App/CapApp-SPM/Sources/CapApp-SPM/CapApp-SPM.swift` 新增对 `CapacitorUpdaterPlugin` / `SocialLoginPlugin` 的显式引用（防 SwiftPM 静态库死代码剥离）；`.github/workflows/release-ios.yml` 的 `cap sync ios` 之后新增一步，校验 `CapacitorUpdater` 确实进了这次构建。`SceneDelegate.swift` 新增 `sceneDidBecomeActive`/`sceneWillResignActive`，直接拨 `UIApplication.isIdleTimerDisabled`——FR-18.7 常亮从此有两道防线，Web Wake Lock 不再是唯一防线。`src/platform/wakeLock.ts`：被拒时记下 `err.name`/`err.message`（不能拿 `instanceof Error` 判——真机抛的是 `DOMException`，不一定是 `Error` 子类）；新增「下一次用户手势（`pointerdown`）自动重试一次」（`armGestureRetry`，一次被拒只挂一个监听器）；成功时清掉上一次的错误残留。前端 +42 单测（982），无 server/e2e 改动，五条验证全绿 | 用户带着上一轮（变更 50）的真机结果回来，指出两件事没解：**①** `App.getInfo()` 好、`CapacitorUpdater.current()` 哑，两者同一条桥队列，「慢」解释不通——更像是插件类没被链进二进制，桥找不到就直接丢调用（`CapacitorBridge.handleJSCall` 的 `guard ... else { return }`，读了 `@capacitor/ios` 源码验证）；**②** 「常亮申请被拒，且不是省电模式」是新暴露的问题，原来的 `catch {}` 连拒绝原因都没留。<br>**这次没法在真机上验**——没有 Mac，只能把「查不出来」变成「代码里有地方能查」：`probePlugins()` 分开「类没注册」和「调用超时」这两种成因（前者要发新包，后者可能下一版自己就好），`CapApp-SPM.swift` 那处显式引用是「最像的成因」的最低代价赌注（不引入新依赖，猜错了也不会更坏），CI 那道校验挡的是「配置里漏列」这一档最便宜就能查的错。常亮换成 `SceneDelegate` 接管是因为这份工程有 `UIApplicationSceneManifest`——**`AppDelegate.applicationDidBecomeActive` 根本不会被调用**，原来的实现如果试图挂在那里会是又一个「挂了个不响的钩子」。**这一整条都要等下一次出包装机才算数**：`probePlugins()` 的名单里有没有 `CapacitorUpdater`、`isIdleTimerDisabled` 接管之后屏幕真的不灭、以及最关键的——这次的赌注到底压中没压中 |
+
 ---
 
 ## 1. 产品定义
@@ -861,6 +863,22 @@ DW 在 `manuscript` 里已经把它认定的生词内联标注好了（附录 A.
 没有这个 API（只能去原生侧动 `isIdleTimerDisabled`，要出新包）／申请被拒（省电模式、系统策略）／
 拿到了但又被系统收走。只报「此刻有没有拿着」说不清「刚才那次到底成没成」，而那才是要诊断的。
 
+**iOS 上现在有两道防线，不再只靠 Web API（变更 52，2026-09-23）**。起因是用户在
+**非省电模式下**报了「申请被拒」——Web Wake Lock 是浏览器标准，WKWebView 认不认、
+什么时候放行不由这个应用控制，而原来 `catch {}` 把异常整个吞了，连拒绝的是哪一种都
+没留下。现在做了三件事：① 记下 `err.name`/`err.message`（不能用 `err instanceof Error`
+判——真机抛的是 `DOMException`，不一定是 `Error` 子类，改成按「有没有 `name`/`message`
+这两个字符串字段」认）；② 被拒之后等**下一次真实用户手势**（`pointerdown`）自动再申请
+一次（`armGestureRetry`，一次被拒只挂一个监听器）——有的浏览器把 Wake Lock 的申请绑在
+一次用户激活里，应用挂载那一刻不算数，光靠 `visibilitychange` 不够，那条路只在切后台
+再回来时触发；③ **`SceneDelegate.sceneDidBecomeActive`/`sceneWillResignActive` 直接拨
+`UIApplication.isIdleTimerDisabled`**，不经过 WKWebView 的 Wake Lock 实现，也就不受它
+认不认的影响——这份工程有 `UIApplicationSceneManifest` + `SceneDelegate`，场景生命周期
+起了之后 `AppDelegate.applicationDidBecomeActive` 根本不会被调用，所以必须挂在
+`SceneDelegate` 上。两道防线并存、互不依赖：原生那边坏了不影响 JS 这边继续申请，
+JS 这边被拒也不代表原生那边没接管。**低电量模式下两道都会被系统忽略**，那一档没有
+代码能治，诊断行如实说。**这一条要等下一次真机验：屏幕放着五分钟不碰灭不灭。**
+
 **FR-18.6 不做的**：不让用户自选照片（要处理任意尺寸、方向、EXIF 旋转，以及一张亮到
 看不清白字的图）；不做模板与配色选项；不做周报月报；不把记录页放进导航（§12.1 的判据）。
 
@@ -1588,6 +1606,39 @@ PWA 那侧做不到同样的事：manifest 的 `name`/`short_name` 是单值，�
 | 安全网 | `notifyAppReady()` 挂在启动时序的 `onAlive` 那一档（`src/app/boot.ts`），超时 20 秒回滚 | 放模块顶层证明不了什么：连库都打不开的构建照样能执行到 import。但也**不能无条件等到表全读完**——`Promise.allSettled` 接得住 reject，接不住「永不 settle」（IndexedDB 的 `blocked`），那样一张卡住的表就会让这个 bundle 被判死并回滚。所以 `onAlive` 最多等 8 秒（变更 50） |
 | 装新 IPA | `resetWhenUpdate: true`，丢掉所有热更 bundle | 新壳可能带了新的原生方法，而留着的旧 JS 不知道它们存在 |
 
+#### 诊断：插件到底注册没注册（变更 52，2026-09-23）
+
+变更 50 修的是「桥调用挂住」，没查出**为什么**。真机上后来确认 `App.getInfo()` 好、
+只有 `CapacitorUpdater.current()` 哑 —— 而两者走的是同一条桥调度队列
+（`CapacitorBridge.dispatchQueue`，单条串行），队列真堵了不可能让 `getInfo()` 先回来。
+读 `@capacitor/ios` 源码确认了更像的成因：`CapacitorBridge.handleJSCall` 里
+`guard let plugin = plugins[call.pluginId] ?? load() else { ...; return }` ——
+插件类没注册上，桥直接丢掉这次调用，JS 那边的 Promise **没有人会 resolve/reject 它**。
+
+`probePlugins()`（`src/platform/nativeUpdate.ts`）同步读 `window.Capacitor.PluginHeaders`——
+那是 `JSExport.exportJS` 在插件**注册成功**时一次性注入的静态数据，跟调用挂不挂没有关系。
+据此能把「类没链进二进制 / 没被发现」和「调用本身超时」这两种成因分开，而它们的下一步
+完全不同：前者要动 Swift（见下）、后者纯粹是等或重试，JS 什么都做不了。
+
+`checkNativeUpdate()` 现在**不管走到哪一步、怎么失败，都往 `CheckLogEntry` 里写一笔**
+（`readLastCheckLog()`，不过桥，存 localStorage）：`plugin-import` / `fetch` / `current` /
+`getInfo` / `decide` / `download` / `next` 每一步的结果，加上那一刻的 `probePlugins()` 快照。
+变更 50 那次死锁的教训是「重启多少次都一样，且什么都不剩」——诊断的价值就是把「什么都不剩」
+变成「剩一份能看的记录」。顺带补了两个还没盖到的自锁点：`fetch` 本身没有超时（手写
+`setTimeout` + `AbortController`，不用 `AbortSignal.timeout()`——那是 Safari 16.4 才有，
+部署目标是 iOS 15，老设备上会直接同步抛 `TypeError`）；`notifyNativeAppReady()` 自己
+过桥也没超时，不调用的后果和 `checkNativeUpdate()` 卡死一样重——20 秒后插件判定
+这个 bundle 起不来并回滚。
+
+**Swift 那半截是一次有依据的赌注，不是确诊**：`ios/App/CapApp-SPM/Sources/CapApp-SPM/CapApp-SPM.swift`
+在变更 52 之前只有 `isCapacitorApp = true` 一行，没有任何代码真正用到 `CapacitorUpdaterPlugin` /
+`SocialLoginPlugin`——它们进不进最终二进制全靠 `NSClassFromString` 在运行时动态查找，
+**没有编译期保证**说 SwiftPM 静态库的链接器一定会留下"看起来没人用"的符号。现在文件里
+显式引用这两个类，让链接器没法丢。代价是零（这两个类本来就是既有依赖，见 `Package.swift`），
+猜错了也不会更坏。`.github/workflows/release-ios.yml` 的 `cap sync ios` 之后新增一道校验，
+挡的是最便宜就能查的那一档错——`packageClassList` / `Package.swift` 里漏列了这个插件。
+**这一条要等下一次出包装机、看 `probePlugins()` 的名单里有没有 `CapacitorUpdater` 才算数。**
+
 #### 真正的障碍：`/models/` 与 `/dict/`
 
 热更把 web 根整个切到 `Library/NoCloud/ionic_built_snapshots/<id>/`，而 `/models/`
@@ -2051,19 +2102,26 @@ Android 那条仍未跑过。
 - [ ] **那一行诊断本身还没被人读到过**（他在 0.6.0 上没找到那一块；那个包出自 `85d7cfc`，
       诊断当时还只挂在原生分支里、且在设置页最后一块的折叠块内）。热更到 `2d4e3d1`
       之后再看一眼，把 `上 Npx` 那个数字记下来 —— 它是将来判断「Capacitor 修没修好」的基线
+- [ ] **热更死锁的根子到底是不是「插件没链进二进制」，变更 52 还没验**：出下一版 iOS 包、
+      装机之后进设置页 → 版本 → 展开诊断，看「插件注册」那一块——`CapacitorUpdater` 在不在
+      名单里就是答案：在，说明当时真是调用超时，`askBridgeVerbose` 那套已经够用；不在，
+      说明 `CapApp-SPM.swift` 那处显式引用的赌注压中了，是它把这个类重新链回了二进制。
+      同时点一下「现在就查一次更新」，看 `readLastCheckLog()` 那份逐步记录里 `current` 那
+      一步是 `ok` 还是 `timeout`——这一条和上一条合起来才是完整的诊断结果
 - [ ] **屏幕常亮真的亮着**：手机上打开应用放着不动两分钟，**随便哪一页**，屏幕不灭；
       切出去再回来仍然不灭（后半句是最容易静默失效的那半 —— 锁被自动释放之后要自己要回来）。
       读不准的话看诊断行：它会说「锁拿着」／「被拒了」／「这台 WebView 没有这个 API」
 - [ ] **⚠️ 2026-09-22 真机上读到的是「API 在，但最近一次申请被拒了」，而手机不在省电模式**
-      —— 所以 FR-18.7 在 iPhone 上**大概率根本没生效**，而不是「没验」。诊断行把三种成因
-      分开说这件事在这里第一次派上用场：不是「没有这个 API」（WKWebView 有），也不是
-      省电模式（他确认过），那就只剩「系统策略/权限」或者**申请时机不对** —— `setKeepAwake(true)`
-      排在 `App.tsx` 挂载那一刻，而 WKWebView 里 Screen Wake Lock 通常要求
-      **文档可见 + 在用户手势链上**。最像的修法是把首次申请挪到第一次用户交互
-      （或 `visibilitychange` 回前台）之后，而不是挂载时就要；`attachWakeLockListener()`
-      已经有回前台重申请的那条路，缺的是「挂载时那一次被拒之后没有任何重试」。
-      **先查这一条再动代码**：诊断行现在会报「上一次申请多久以前、结果是什么」，
-      在真机上点一下屏幕再看那一行，就能确认是不是手势链的问题
+      —— 已在变更 52（2026-09-23）动了代码，**但还没真机复验**。做了三件事：
+      ① 诊断行现在报被拒的具体原因（`err.name`/`err.message`，比如 `NotAllowedError`）；
+      ② 被拒之后排了下一次用户手势（`pointerdown`）自动重试——赌的正是「申请时机不对，
+      WKWebView 的 Wake Lock 要在用户手势链上」这条，`setKeepAwake(true)` 挂载那一刻
+      的首次申请仍可能被拒，但现在不用等切后台再回来，碰一下屏幕就会重试；
+      ③ **`SceneDelegate` 直接接管 `isIdleTimerDisabled`**，不经过这层 Web API——这是
+      更可靠的那道防线，Web Wake Lock 从「唯一防线」降级成「web 版防线 + iOS 诊断来源」。
+      **下一次真机要看两件事**：① 诊断行里 `err.name` 到底是什么（`NotAllowedError` 之外
+      还有别的可能，读到了才知道要不要继续查）；② 不管 Web API 这边报什么，屏幕放着
+      五分钟不碰到底灭不灭——那才是 `isIdleTimerDisabled` 这道防线是否真的接管住了
 - [ ] **⚠️ 2026-09-22 真机上验证到「网页上正常、手机上没声音」，根子已经找到并修了**：
       `playSfx` 原来的写法是 `resume()` 不等就直接 `start()`——suspended 的上下文里排
       的音，Chrome 桌面上 resume 之后会照样响，但 WKWebView 不认这一套，静默丢在原地
@@ -2167,6 +2225,37 @@ Android 那条仍未跑过。
       更新判断只能靠 `queuedBuildId` 那个本地记号 —— 而记号的弱点是**万一某个 bundle
       下好了却回滚了，记号仍然说「下过了」，于是那一版不会重下**。自愈条件是下一次部署
       （buildId 一变就重新下），所以不是死局，但真要查 `current()` 就从这里查起
+
+**热更诊断到根 + 常亮改走原生（变更 52，2026-09-23）**
+
+*自动化测试（不用人再走一遍）*
+
+- [x] `probePlugins`（`nativeUpdate.test.ts`，5 条）：浏览器里没有 `window.Capacitor`、
+      桥在但还没注册任何插件、**类没链进二进制的那种失败**（别的插件都注册了，唯独
+      `CapacitorUpdater` 不在名单里）、注册成功时报出方法名、`PluginHeaders` 格式不认识
+      时不炸
+- [x] `checkNativeUpdate` 的诊断日志（新增 5 条）：正常跑完时每一步按顺序落地、桥哑掉的
+      具体原因（`timeout`）进日志而不是整条记录消失、`fetch` 本身悬着也要超时也要落一笔、
+      记录里带着那一刻的插件注册情况、从没查过时 `readLastCheckLog()` 是 `null` 不是抛错
+- [x] `notifyNativeAppReady`（新增 1 条）：桥永远不回调也要 settle，不能把 `App.tsx` 里
+      排在它后面的「查更新」一起拖死
+- [x] `wakeLock.ts`（新增 5 条）：被拒时记下 `err.name`/`err.message`（不用
+      `instanceof Error`——`DOMException` 不一定是 `Error` 子类）、成功之后错误信息不残留
+      上一次被拒的内容、`pointerdown` 之后自动再申请一次、一次被拒只挂一个监听器、
+      应用已卸载时 `pointerdown` 不会凭空申请
+- [x] `VersionSection`（新增 7 条）：iOS 上才有「现在就查一次更新」按钮、web 上没有、
+      点一下会查一次且查完刷新版本号与日志（按钮短暂显示「查询中」）、
+      `CapacitorUpdater` 没注册上时明说「不是超时，是没链进这次构建」、
+      注册成功时报出方法名、上次查更新的记录摆出来、从没查过时不留一个空壳
+- [x] 前端单测从 959 增到 982，server（133）/e2e（43）不受影响，五条验证全绿
+
+*没验的（要真机，判据现成，见上方两条清单里对应的条目）*
+
+- [ ] `probePlugins()` 的名单里有没有 `CapacitorUpdater`——分开「类没链进二进制」还是
+      「调用超时」这两种成因，决定 `CapApp-SPM.swift` 那处显式引用的赌注压中了没有
+- [ ] `isIdleTimerDisabled` 接管之后屏幕放着五分钟不碰真的不灭；Web Wake Lock 被拒时
+      `err.name` 到底是什么（读到了才知道要不要继续查）
+- [ ] 「现在就查一次更新」点一下，`readLastCheckLog()` 的步骤记录里能不能看懂卡在哪一步
 
 ---
 
@@ -2492,9 +2581,25 @@ tab 名旁边那个点是**前提状态**，不是「做完了」：
 
 两条：
 
-1. **不给「现在就更新」的按钮。** 立刻换 bundle 是整个 WebView 重载，会清掉只活在
+1. **不给「立刻换上这一版」的按钮。** 那是整个 WebView 重载，会清掉只活在
    React state 里的听写答案，而这一页恰恰可以从练习中途进来。
 2. **平时是静默的**（§12.3 第一档）：没有待生效的更新时，这一块只有两行灰字，不画任何状态。
+
+**「现在就查一次更新」按钮（变更 52，2026-09-23）——iOS 上才有，摆在 `Section` 的
+`aside`**。这个按钮和上面那条不矛盾：**查一次**和**换一次**是两件事，`checkNativeUpdate()`
+只是后台一次网络请求 + 判断，不碰当前跑着的这份前端。加它的理由是变更 50 那次死锁——
+没有 Mac、看不到 Xcode 控制台时，「push 了 main，手机到底拿到没有」原来要等下次冷启动
+才能看到结果，现在能在设置页当场把这个回路闭上。
+
+**诊断区新增两块**（`Disclosure`，跟安全区/常亮同一处）：
+
+| 块 | 内容 | 为什么 |
+|---|---|---|
+| 插件注册 | `probePlugins()` 的名单 + `CapacitorUpdater` 在不在里面 + 它的方法名 | 分开「类没链进二进制」（要发新包）和「调用本身超时」（可能下一版自己就好）这两种成因——见 §7.12「诊断」那段 |
+| 上次查更新 | `readLastCheckLog()`：多久前、走到了哪一步、结论 | `checkNativeUpdate()` 原来失败就是 `catch { return null }`，重启一次什么都不剩；现在无论成功、跳过还是异常都落一笔 |
+
+从没查过时后一块不画（不留一个空壳）；前一块只在 iOS 壳上画（`probe.platform === 'ios'`，
+安全区那次实测顺带定下来的平台）。
 
 ### 12.13 识词卡的形状（FR-21，2026-09-21）
 

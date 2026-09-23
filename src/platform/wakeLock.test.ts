@@ -194,4 +194,74 @@ describe('wakeLockState', () => {
     expect(wakeLockState().lastResult).toBeNull();
     expect(wakeLockState().lastAgoMs).toBe(0);
   });
+
+  // 变更 52：原来 `catch {}` 把异常整个吞了，诊断行只能说「被拒」，说不出为什么。
+  it('被拒时记下具体是哪一种 —— 诊断行要能说出成因，不只是「被拒」', async () => {
+    request.mockRejectedValue(new DOMException('省电模式', 'NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('rejected'));
+    const state = wakeLockState();
+    expect(state.lastErrorName).toBe('NotAllowedError');
+    expect(state.lastErrorMessage).toBe('省电模式');
+  });
+
+  it('申请成功之后错误信息不会残留上一次被拒的内容', async () => {
+    request.mockRejectedValueOnce(new DOMException('省电模式', 'NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('rejected'));
+    await new Promise((r) => setTimeout(r, 0));
+    setKeepAwake(false);
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('ok'));
+    expect(wakeLockState().lastErrorName).toBeUndefined();
+  });
+});
+
+// ── 被拒之后，下一次用户手势要再试一次（变更 52）─────────────────────────
+//
+// 有的浏览器把 Wake Lock 的申请绑在「一次用户激活」里 —— 应用挂载那一刻不算数。
+// 这个应用的主场景又恰恰是「挂载之后很久都不碰屏幕」，只靠 visibilitychange
+// 补救不够：那条路只在切后台再回来时触发，第一次被拒之后如果用户一直不碰屏幕，
+// 就再也没有重试的机会了。
+
+describe('被拒之后靠下一次用户手势重试', () => {
+  it('pointerdown 之后自动再申请一次', async () => {
+    request.mockRejectedValueOnce(new DOMException('', 'NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(wakeLockState().lastResult).toBe('rejected');
+
+    document.dispatchEvent(new Event('pointerdown'));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('ok'));
+  });
+
+  it('一次被拒只挂一个监听器 —— 不会每被拒一次就叠加一个', async () => {
+    request.mockRejectedValue(new DOMException('', 'NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    // 还没等到那次 pointerdown，又被拒了一次（比如应用又调了一次 setKeepAwake）——
+    // 不该因此挂上第二个 pointerdown 监听器。
+    setKeepAwake(false);
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+    document.dispatchEvent(new Event('pointerdown'));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+    // 只挂了一个：这一次 pointerdown 之后不会有第二次紧跟着触发的重试。
+    await new Promise((r) => setTimeout(r, 0));
+    expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it('应用已经卸载（wanted=false）时 pointerdown 不会凭空申请', async () => {
+    request.mockRejectedValueOnce(new DOMException('', 'NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    setKeepAwake(false);
+
+    document.dispatchEvent(new Event('pointerdown'));
+    await new Promise((r) => setTimeout(r, 0));
+    // acquire() 自己会因为 !wanted 立刻返回，不会真的调 request。
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 });

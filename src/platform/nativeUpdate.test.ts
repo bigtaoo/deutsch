@@ -3,6 +3,8 @@ import {
   checkNativeUpdate,
   decideUpdate,
   notifyNativeAppReady,
+  probePlugins,
+  readLastCheckLog,
   runningBuild,
   versionAtLeast,
   type OtaManifest,
@@ -356,6 +358,10 @@ describe('notifyNativeAppReady', () => {
     notifyAppReady.mockResolvedValue(undefined);
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('iOS 上真的告诉原生侧「这一版起来了」', async () => {
     await notifyNativeAppReady();
     expect(notifyAppReady).toHaveBeenCalledTimes(1);
@@ -371,5 +377,205 @@ describe('notifyNativeAppReady', () => {
     notifyAppReady.mockRejectedValue(new Error('plugin not implemented'));
     // 抛给调用方的话，App.tsx 那一档里排在它后面的「查更新」就不跑了。
     await expect(notifyNativeAppReady()).resolves.toBeUndefined();
+  });
+
+  // 这一条守的是变更 52 才补上的那个自锁点：原来这里没有超时，桥哑了这一步就永远
+  // 挂着，20 秒后插件判定 bundle 起不来并回滚 —— 而调用方（App.tsx 的 onAlive）
+  // 排在它后面的 checkNativeUpdate() 也永远轮不到。
+  it('桥永远不回调也要 settle，不能把调用方挂住', async () => {
+    vi.useFakeTimers();
+    notifyAppReady.mockReturnValue(new Promise(() => {}));
+    let settled = false;
+    void notifyNativeAppReady().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(settled).toBe(true);
+  });
+});
+
+// ── probePlugins：不过桥，回答「插件到底注册没注册」（变更 52）───────────────
+//
+// 这组测的是文件头「诊断」那段的核心判据：桥调用挂住有两种完全不同的成因——
+// 类没链进二进制（这份名单里压根没有它）、和调用本身超时（名单里有，就是没人回）。
+// 两者的下一步不同，`probePlugins()` 存在的全部意义就是把它们分开。
+
+describe('probePlugins', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'Capacitor');
+  });
+
+  it('浏览器里没有 window.Capacitor —— 如实说不存在', () => {
+    expect(probePlugins()).toEqual({
+      bridgePresent: false,
+      registered: [],
+      updaterRegistered: false,
+      updaterMethods: null,
+    });
+  });
+
+  it('桥在但一个插件都还没注册（PluginHeaders 是空数组）', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: { PluginHeaders: [] },
+      configurable: true,
+    });
+    expect(probePlugins()).toEqual({
+      bridgePresent: true,
+      registered: [],
+      updaterRegistered: false,
+      updaterMethods: null,
+    });
+  });
+
+  it('**类没链进二进制的那种失败**：别的插件都注册了，唯独 CapacitorUpdater 不在名单里', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: {
+        PluginHeaders: [
+          { name: 'App', methods: [{ name: 'getInfo' }] },
+          { name: 'SplashScreen', methods: [{ name: 'hide' }] },
+        ],
+      },
+      configurable: true,
+    });
+    const p = probePlugins();
+    expect(p.bridgePresent).toBe(true);
+    expect(p.registered).toEqual(['App', 'SplashScreen']);
+    expect(p.updaterRegistered).toBe(false);
+    expect(p.updaterMethods).toBeNull();
+  });
+
+  it('注册成功时报出它的方法名 —— 这一档才是「调用本身超时」，不是没注册', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: {
+        PluginHeaders: [
+          { name: 'App', methods: [{ name: 'getInfo' }] },
+          {
+            name: 'CapacitorUpdater',
+            methods: [{ name: 'current' }, { name: 'download' }, { name: 'notifyAppReady' }],
+          },
+        ],
+      },
+      configurable: true,
+    });
+    const p = probePlugins();
+    expect(p.updaterRegistered).toBe(true);
+    expect(p.updaterMethods).toEqual(['current', 'download', 'notifyAppReady']);
+  });
+
+  it('格式不认识（不是数组）时不炸，按「没有插件」处理', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: { PluginHeaders: 'not-an-array' },
+      configurable: true,
+    });
+    expect(probePlugins()).toEqual({
+      bridgePresent: true,
+      registered: [],
+      updaterRegistered: false,
+      updaterMethods: null,
+    });
+  });
+});
+
+// ── checkNativeUpdate 的诊断日志：重启多少次都一样时，至少剩一份能看的记录 ─────
+//
+// 变更 50 那次的死锁里，手机重启五次「不报错、不留日志」。这组测的是补上的那份
+// `CheckLogEntry`：不管走到哪一步、怎么失败，都要落地，且落地的内容要能回答
+// 「卡在哪一步」而不只是「失败了」。
+
+describe('checkNativeUpdate 的诊断日志', () => {
+  const body = {
+    buildId: 'e209c83',
+    version: '0.6.0+e209c83',
+    url: 'https://d.gamestao.com/ota/bundle-e209c83.zip',
+    minNative: '0.4.0',
+    bytes: 10_792_911,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('localStorage', memoryStorage());
+    vi.mocked(nativePlatform).mockResolvedValue('ios');
+    current.mockResolvedValue({ bundle: { version: 'builtin' } });
+    getInfo.mockResolvedValue({ version: '0.6.0' });
+    download.mockResolvedValue({ id: 'bundle-1' });
+    next.mockResolvedValue(undefined);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
+    Reflect.deleteProperty(window, 'Capacitor');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(window, 'Capacitor');
+  });
+
+  it('正常跑完：每一步都按顺序记下，outcome 说人话', async () => {
+    await checkNativeUpdate();
+    const log = readLastCheckLog();
+    expect(log?.steps).toEqual([
+      'plugin-import:ok',
+      'fetch:ok',
+      'current:ok',
+      'getInfo:ok',
+      'decide:download',
+      'download:ok',
+      'next:ok',
+    ]);
+    expect(log?.outcome).toContain(body.version);
+  });
+
+  it('桥哑掉时那一步的具体原因（timeout）进日志，而不是整条记录消失', async () => {
+    vi.useFakeTimers();
+    current.mockReturnValue(new Promise(() => {}));
+    const pending = checkNativeUpdate();
+    await vi.advanceTimersByTimeAsync(5000);
+    await pending;
+    const log = readLastCheckLog();
+    expect(log?.steps).toContain('current:timeout');
+    expect(log?.steps).toContain('getInfo:ok');
+    // 未知不拦更新（decideUpdate 的既有约定），所以照样走到下载。
+    expect(log?.steps).toContain('decide:download');
+  });
+
+  it('manifest 拉不到（fetch 本身悬着）—— 也要超时，也要落一笔', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, opts: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            opts.signal.addEventListener('abort', () =>
+              reject(new DOMException('The operation was aborted.', 'AbortError')),
+            );
+          }),
+      ),
+    );
+    const pending = checkNativeUpdate();
+    await vi.advanceTimersByTimeAsync(9000);
+    await expect(pending).resolves.toBeNull();
+    const log = readLastCheckLog();
+    expect(log?.steps.some((s) => s.startsWith('fetch:threw:'))).toBe(true);
+    expect(log?.outcome).toContain('异常');
+  });
+
+  it('记录里带着那一刻的插件注册情况 —— 查完不用再猜是哪一种哑', async () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: { PluginHeaders: [{ name: 'App', methods: [{ name: 'getInfo' }] }] },
+      configurable: true,
+    });
+    await checkNativeUpdate();
+    const log = readLastCheckLog();
+    expect(log?.probe).toEqual({
+      bridgePresent: true,
+      registered: ['App'],
+      updaterRegistered: false,
+      updaterMethods: null,
+    });
+  });
+
+  it('从没查过时是 null，不是抛错', () => {
+    expect(readLastCheckLog()).toBeNull();
   });
 });

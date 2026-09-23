@@ -9,29 +9,71 @@
 // 桥不回调时那个 Promise 永远不 settle，于是整个「版本」块在 iPhone 上一次都没出现过。
 // 这类 bug 不报错、不留日志，只表现为「设置页翻到底什么都没有」。
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent } from '@testing-library/dom';
 import { VersionSection } from './VersionSection';
-import { pendingUpdateVersion, runningBuild } from '@/platform/nativeUpdate';
+import {
+  checkNativeUpdate,
+  pendingUpdateVersion,
+  probePlugins,
+  readLastCheckLog,
+  runningBuild,
+} from '@/platform/nativeUpdate';
 import { nativePlatform } from '@/platform/native';
 
 vi.mock('@/platform/nativeUpdate', () => ({
   runningBuild: vi.fn(),
   pendingUpdateVersion: vi.fn(),
+  checkNativeUpdate: vi.fn(),
+  probePlugins: vi.fn(),
+  readLastCheckLog: vi.fn(),
 }));
 
 vi.mock('@/platform/native', () => ({
   nativePlatform: vi.fn(),
 }));
 
+// `safeArea.ts` 的 `lastProbe` 是模块级缓存（同一份跑到底不重量，见该文件注释），
+// 在真实运行里是对的，但会让这份测试文件里先跑的用例把平台"web"焊死在缓存里，
+// 后面的用例读到的还是那份旧值——和这份文件本身要测的东西无关，纯粹是
+// 模块级状态在测试之间露了底。直接假掉，让每条用例的 `nativePlatform()` mock
+// 说了算。
+vi.mock('@/platform/safeArea', () => ({
+  initSafeArea: vi.fn((platform: string) => ({
+    platform,
+    top: 0,
+    bottom: 0,
+    fallbackApplied: false,
+    fallbackTop: 0,
+  })),
+  safeAreaProbe: vi.fn(() => null),
+}));
+
 const mockRunning = vi.mocked(runningBuild);
 const mockPending = vi.mocked(pendingUpdateVersion);
 const mockPlatform = vi.mocked(nativePlatform);
+const mockCheck = vi.mocked(checkNativeUpdate);
+const mockProbe = vi.mocked(probePlugins);
+const mockLog = vi.mocked(readLastCheckLog);
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockPending.mockReturnValue(null);
   mockPlatform.mockResolvedValue('ios');
+  // 大多数用例不关心插件探针/查更新日志这两块 —— 给一个「什么都还没有」的默认值，
+  // 免得每条用例都要重复摆这两行。真要测的那几条自己覆盖。
+  mockProbe.mockReturnValue({
+    bridgePresent: true,
+    registered: [],
+    updaterRegistered: false,
+    updaterMethods: null,
+  });
+  mockLog.mockReturnValue(null);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('VersionSection', () => {
@@ -115,5 +157,100 @@ describe('VersionSection', () => {
     render(<VersionSection />);
     await waitFor(() => expect(screen.getByText('这台设备的边距与常亮')).toBeInTheDocument());
     expect(screen.getByText(/屏幕常亮/)).toBeInTheDocument();
+  });
+
+  // ── 「现在就查一次更新」按钮 + 插件探针 + 查更新日志（变更 52）───────────────
+
+  it('iOS 上才有「现在就查一次更新」的按钮，web 上没有', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/应用壳/)).toBeInTheDocument());
+    expect(screen.getByText('现在就查一次更新')).toBeInTheDocument();
+  });
+
+  it('web 上不摆这个按钮 —— checkNativeUpdate 在浏览器里本来就是空操作', async () => {
+    mockPlatform.mockResolvedValue('web');
+    mockRunning.mockResolvedValue(null);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/网页版/)).toBeInTheDocument());
+    expect(screen.queryByText('现在就查一次更新')).not.toBeInTheDocument();
+  });
+
+  it('点一下会查一次、查完刷新版本号与日志，按钮短暂显示「查询中」', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    let resolveCheck!: () => void;
+    mockCheck.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCheck = () => resolve(null);
+      }),
+    );
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('现在就查一次更新'));
+    await waitFor(() => expect(screen.getByText('查询中…')).toBeInTheDocument());
+    expect(mockCheck).toHaveBeenCalledTimes(1);
+
+    // 查完之后重新读一遍 build/pending/log —— 这一版可能刚下好。
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: '0.6.1+abcd123' });
+    mockLog.mockReturnValue({
+      at: Date.now(),
+      steps: ['plugin-import:ok', 'fetch:ok', 'decide:download', 'download:ok', 'next:ok'],
+      outcome: '下载并登记 0.6.1+abcd123',
+      probe: { bridgePresent: true, registered: [], updaterRegistered: true, updaterMethods: ['current'] },
+    });
+    resolveCheck();
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+    // 出现两处（版本 Hint + 查更新日志的 outcome）是对的——用 AllBy 而不是当成一处。
+    expect(screen.getAllByText(/0\.6\.1\+abcd123/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('CapacitorUpdater 没注册上时明说「不是超时，是没链进这次构建」', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    mockProbe.mockReturnValue({
+      bridgePresent: true,
+      registered: ['App', 'SplashScreen'],
+      updaterRegistered: false,
+      updaterMethods: null,
+    });
+    render(<VersionSection />);
+    await waitFor(() =>
+      expect(screen.getByText(/不在这份名单里/)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/只能发新包/)).toBeInTheDocument();
+  });
+
+  it('CapacitorUpdater 注册成功时报出它的方法名', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    mockProbe.mockReturnValue({
+      bridgePresent: true,
+      registered: ['App', 'CapacitorUpdater'],
+      updaterRegistered: true,
+      updaterMethods: ['current', 'download', 'notifyAppReady'],
+    });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/注册成功/)).toBeInTheDocument());
+    expect(screen.getByText(/current、download、notifyAppReady/)).toBeInTheDocument();
+  });
+
+  it('上次查更新的记录摆出来 —— 走到哪一步、结论是什么都要看得见', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    mockLog.mockReturnValue({
+      at: Date.now() - 5000,
+      steps: ['plugin-import:ok', 'fetch:ok', 'current:timeout', 'getInfo:ok', 'decide:download'],
+      outcome: '下载并登记 0.6.1+e209c83',
+      probe: { bridgePresent: true, registered: [], updaterRegistered: true, updaterMethods: [] },
+    });
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/上次查更新/)).toBeInTheDocument());
+    expect(screen.getByText(/current:timeout/)).toBeInTheDocument();
+  });
+
+  it('从没查过时不显示那一块，不留一个空壳', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    mockLog.mockReturnValue(null);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText(/应用壳/)).toBeInTheDocument());
+    expect(screen.queryByText(/上次查更新/)).not.toBeInTheDocument();
   });
 });
