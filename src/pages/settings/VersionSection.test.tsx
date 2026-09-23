@@ -205,6 +205,21 @@ describe('VersionSection', () => {
     expect(screen.getAllByText(/0\.6\.1\+abcd123/).length).toBeGreaterThanOrEqual(1);
   });
 
+  // 防御性用例：生产实现的 checkNativeUpdate() 已经把所有失败都收进 try/catch/finally
+  // 里、绝不会 reject（见 nativeUpdate.ts）。但这里的 mock 能设成 reject，而按钮的
+  // finally 逻辑不该依赖「它一定不会 reject」这个假设——万一哪天生产实现被改坏，
+  // 按钮不该卡死在「查询中」出不来。
+  it('即使 checkNativeUpdate 意外 reject，按钮也会从「查询中」恢复，不会卡死', async () => {
+    mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
+    mockCheck.mockRejectedValue(new Error('意外崩溃'));
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('现在就查一次更新'));
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+    expect(screen.queryByText('查询中…')).not.toBeInTheDocument();
+  });
+
   it('CapacitorUpdater 没注册上时明说「不是超时，是没链进这次构建」', async () => {
     mockRunning.mockResolvedValue({ native: '0.6.1', bundle: 'builtin' });
     mockProbe.mockReturnValue({

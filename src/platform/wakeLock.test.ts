@@ -215,6 +215,17 @@ describe('wakeLockState', () => {
     await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('ok'));
     expect(wakeLockState().lastErrorName).toBeUndefined();
   });
+
+  // 规范只保证 request() 会 reject，不保证 reject 的值是 Error/DOMException——
+  // 极端情况下 polyfill 或旧实现可能直接 reject 一个字符串。诊断行不能因此崩掉。
+  it('被拒的值不是 Error/DOMException（比如裸字符串）时也不炸，只是没有具体原因', async () => {
+    request.mockRejectedValue('boom');
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('rejected'));
+    const state = wakeLockState();
+    expect(state.lastErrorName).toBeUndefined();
+    expect(state.lastErrorMessage).toBe('boom');
+  });
 });
 
 // ── 被拒之后，下一次用户手势要再试一次（变更 52）─────────────────────────
@@ -263,5 +274,27 @@ describe('被拒之后靠下一次用户手势重试', () => {
     await new Promise((r) => setTimeout(r, 0));
     // acquire() 自己会因为 !wanted 立刻返回，不会真的调 request。
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  // `resetWakeLockForTests` 是测试之间唯一的清场点。挂着一个被拒之后没等到 pointerdown
+  // 就结束的用例，如果监听器没摘掉，会在下一条用例里被凭空触发——那种失败只在测试
+  // **顺序**变化时才暴露，最难查。直接断言 `removeEventListener` 拿到的是同一个函数
+  // 引用（不是靠间接的调用计数，那会被 `requesting` 那道闸掩盖掉）。
+  it('resetWakeLockForTests 会摘掉还没触发过的手势重试监听器', async () => {
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+
+    request.mockRejectedValueOnce(new DOMException('', 'NotAllowedError'));
+    setKeepAwake(true);
+    await vi.waitFor(() => expect(wakeLockState().lastResult).toBe('rejected'));
+
+    const pointerdownCall = addSpy.mock.calls.find(([type]) => type === 'pointerdown');
+    expect(pointerdownCall).toBeDefined();
+
+    resetWakeLockForTests();
+
+    expect(removeSpy).toHaveBeenCalledWith('pointerdown', pointerdownCall![1]);
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 });

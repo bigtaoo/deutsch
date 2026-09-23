@@ -476,6 +476,53 @@ describe('probePlugins', () => {
       updaterMethods: null,
     });
   });
+
+  // 这一块读的是原生侧塞过来的数据，不是这个应用自己写的——格式走样不该让诊断本身
+  // 炸掉（诊断炸了比诊断说不清楚还糟，那是「翻到底什么都没有」的另一种版本）。
+  it('数组里混进不是对象的元素、缺 name 的元素——照单跳过，不影响其余的正常读出', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: {
+        PluginHeaders: [
+          null,
+          'not-a-header',
+          42,
+          { methods: [{ name: 'x' }] }, // 缺 name
+          { name: 'App', methods: [{ name: 'getInfo' }] },
+        ],
+      },
+      configurable: true,
+    });
+    const p = probePlugins();
+    expect(p.registered).toEqual(['App']);
+    expect(p.updaterRegistered).toBe(false);
+  });
+
+  it('CapacitorUpdater 注册了但 methods 字段形状不对（不是数组）——报出「注册了」但方法列表给空', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: {
+        PluginHeaders: [{ name: 'CapacitorUpdater', methods: 'not-an-array' }],
+      },
+      configurable: true,
+    });
+    const p = probePlugins();
+    expect(p.updaterRegistered).toBe(true);
+    expect(p.updaterMethods).toEqual([]);
+  });
+
+  it('methods 数组里混进不是对象/缺 name 的方法条目——照单跳过', () => {
+    Object.defineProperty(window, 'Capacitor', {
+      value: {
+        PluginHeaders: [
+          {
+            name: 'CapacitorUpdater',
+            methods: [null, 'x', { rtype: 'promise' }, { name: 'current' }],
+          },
+        ],
+      },
+      configurable: true,
+    });
+    expect(probePlugins().updaterMethods).toEqual(['current']);
+  });
 });
 
 // ── checkNativeUpdate 的诊断日志：重启多少次都一样时，至少剩一份能看的记录 ─────
@@ -577,5 +624,32 @@ describe('checkNativeUpdate 的诊断日志', () => {
 
   it('从没查过时是 null，不是抛错', () => {
     expect(readLastCheckLog()).toBeNull();
+  });
+
+  it('localStorage 里那份记录是坏 JSON 时也回 null，不炸给调用方', () => {
+    localStorage.setItem('ota.lastCheckLog', '{not valid json');
+    expect(readLastCheckLog()).toBeNull();
+  });
+
+  // 桥哑有两种：一种是永远不 settle（上面「timeout」那条测的），另一种是原生侧
+  // 真的回了话但回的是个错误（比如插件初始化失败）。这两种在 `askBridgeVerbose`
+  // 里是不同的 `reason`，日志要能分清——否则「原生侧报错」和「问不出来」在诊断里
+  // 长一个样，而它们的下一步不同（前者原生侧至少给了错误信息，后者什么都没有）。
+  it('原生侧真的报错（reject）时记的是 rejected，不是 timeout', async () => {
+    current.mockRejectedValue(new Error('CapacitorUpdater is not initialized'));
+    await checkNativeUpdate();
+    const log = readLastCheckLog();
+    expect(log?.steps).toContain('current:rejected');
+  });
+
+  // `askBridgeVerbose` 的第三种失败：`make()` 自己同步抛，不走 Promise 那条路——
+  // 比如桥返回的对象里那个方法压根不是函数。
+  it('过桥调用同步抛出时记的是 threw', async () => {
+    current.mockImplementation(() => {
+      throw new TypeError('current is not a function');
+    });
+    await checkNativeUpdate();
+    const log = readLastCheckLog();
+    expect(log?.steps).toContain('current:threw');
   });
 });

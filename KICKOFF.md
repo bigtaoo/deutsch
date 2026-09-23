@@ -51,7 +51,13 @@ resolve/reject 它。
   重试一次。两道防线并存、互不依赖。低电量模式下两道都会被系统忽略，没有代码能治，
   诊断行如实说。
 
-**测试**：前端 +23（982），server（133）/e2e（43）不受影响，五条验证全绿。
+**测试**：前端 +23（982），server（133）/e2e（43）不受影响，五条验证全绿。用户随后问
+「有测试可以加吗」，又补了 9 条（991）：`probePlugins` 吃到畸形原生数据不炸、
+`checkNativeUpdate` 日志把 `rejected`/`threw`/`timeout` 三态分开、`readLastCheckLog`
+面对损坏 JSON 不抛错、`wakeLock` 被拒的值不是 `Error` 时不炸、`resetWakeLockForTests`
+真摘掉了手势监听器。**顺带在 `VersionSection.runCheckNow` 抓到一个真缺口**：
+`await checkNativeUpdate()` 没有 `catch`，补防御性用例当场证实会产生未处理的
+rejection，已补 `.catch(() => null)`。
 
 **这一整条都要等下一次出包装机才算数**：`probePlugins()` 名单里有没有
 `CapacitorUpdater`、`isIdleTimerDisabled` 接管之后屏幕真的不灭、`err.name` 到底是什么、

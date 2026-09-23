@@ -57,7 +57,11 @@ export function VersionSection() {
   const runCheckNow = async (): Promise<void> => {
     setChecking(true);
     try {
-      await checkNativeUpdate();
+      // checkNativeUpdate() 的生产实现把所有失败都收在自己的 try/catch/finally 里，
+      // 正常情况下不会 reject——但这一按钮不该把「它一定不会 reject」当成前提。
+      // 少这个 catch 的话，一次意外的 reject 会变成未处理的 rejection，
+      // 且下面 finally 之后不会再报错，用户看到的只是按钮修好了、但控制台炸了一下。
+      await checkNativeUpdate().catch(() => null);
     } finally {
       setChecking(false);
       // 查完这几个数可能都变了：build 里的 queued 字段、pending、以及诊断块要读的日志。
