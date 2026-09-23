@@ -343,6 +343,45 @@ describe('checkNativeUpdate', () => {
     await expect(checkNativeUpdate()).resolves.toBeNull();
     expect(download).not.toHaveBeenCalled();
   });
+
+  // ── 2026-09-23 真机踩到的坑：download()/next() 裸 await，没有超时 ──────────
+  //
+  // current()/getInfo() 早就套了 askBridgeVerbose，但下载和登记这两步一直是裸
+  // `await`。真机上 current() 4 秒超时后落进 download 分支，然后就卡死在
+  // download() 上——「现在就查一次更新」的按钮连着几分钟纹丝不动，和变更 50
+  // 那次一模一样的坏法，只是换了个调用。这组测的就是补上的这道超时。
+
+  it('**download() 永不回调也要 settle** —— 不能卡在这里不返回', async () => {
+    vi.useFakeTimers();
+    download.mockReturnValue(new Promise(() => {}));
+    const pending = checkNativeUpdate();
+
+    await vi.advanceTimersByTimeAsync(45_000);
+    await expect(pending).resolves.toMatchObject({ action: 'skip' });
+    expect(next).not.toHaveBeenCalled(); // 下都没下成，不该去登记
+    // 不过桥的那个记号也不该被写下——这一趟根本没有真的下好过。
+    expect(localStorage.getItem('ota.queuedBuildId')).toBeNull();
+  });
+
+  it('download() 真的报错（reject）—— 不用等超时，立刻反映', async () => {
+    download.mockRejectedValue(new Error('network unreachable'));
+    const d = await checkNativeUpdate();
+    expect(d).toMatchObject({ action: 'skip' });
+    expect(d && d.action === 'skip' && d.reason).toContain('rejected');
+  });
+
+  it('**next() 永不回调也要 settle**，且不能假装登记成功了', async () => {
+    vi.useFakeTimers();
+    next.mockReturnValue(new Promise(() => {}));
+    const pending = checkNativeUpdate();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    const d = await pending;
+    expect(d).toMatchObject({ action: 'skip' });
+    // 包已经"下好"了（download 那步是 mock 的即时 resolve），但 next 没登记成——
+    // 设置页不该显示"已下好，下次打开生效"，那样是在撒谎，记号也不该落地。
+    expect(localStorage.getItem('ota.queuedBuildId')).toBeNull();
+  });
 });
 
 // ── notifyNativeAppReady：热更的回滚安全网 ─────────────────────────────

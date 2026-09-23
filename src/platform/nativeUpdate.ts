@@ -225,6 +225,21 @@ export function probePlugins(): PluginProbe {
 /** 过桥问一个数最多等多久。要么给出答案，要么给出「问不出来」，不能两者都不给。 */
 const BRIDGE_TIMEOUT_MS = 4000;
 
+/**
+ * `download()` 允许多久。2026-09-23 真机上抓到的坑：`current()`/`getInfo()` 都套了
+ * `askBridgeVerbose`，唯独下面 `download()`/`next()` 这两下还是裸 `await`——查了一次
+ * 更新，`current()` 4 秒超时（决策因此落进 `download` 分支），然后卡死在 `download()`，
+ * 「现在就查一次更新」的按钮**连着好几分钟纹丝不动**，和变更 50 那次一模一样的坏法，
+ * 只是这次换了个调用。插件自己的 Swift 实现里 `downloadTimeout` 是 600 秒（真下载大文件
+ * 要留的余量），但这里防的不是「文件大下得慢」——manifest 报的包统共几 MB 到十几 MB
+ * （§7.12「构建与发布」：33 个文件 10.2 MiB），45 秒对任何正常网络都绰绰有余；
+ * 真等到 45 秒还没回，十有八九是同一种桥没回话，而不是网速问题。
+ */
+const DOWNLOAD_TIMEOUT_MS = 45_000;
+
+/** `next()` 只是登记「下次启动用这个 id」，不碰网络，正常是毫秒级——10 秒纯粹是安全边际。 */
+const NEXT_TIMEOUT_MS = 10_000;
+
 /** 一个字符串化的错误消息，不管抛出来的是不是 `Error`。 */
 function errMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -248,7 +263,10 @@ export type BridgeOutcome<T> =
  * 插件的 JS chunk 都没 import 成功）。**每个数各问各的**，不要拿 `Promise.all` 把它们
  * 绑在一起 —— 那样一个挂住的调用会把另一个本来问得出来的也一起拖死。
  */
-async function askBridgeVerbose<T>(make: () => Promise<T>): Promise<BridgeOutcome<T>> {
+async function askBridgeVerbose<T>(
+  make: () => Promise<T>,
+  timeoutMs: number = BRIDGE_TIMEOUT_MS,
+): Promise<BridgeOutcome<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -258,7 +276,7 @@ async function askBridgeVerbose<T>(make: () => Promise<T>): Promise<BridgeOutcom
         .then((value) => ({ ok: true, value }) as const)
         .catch((err: unknown) => ({ ok: false, reason: 'rejected', message: errMessage(err) }) as const),
       new Promise<BridgeOutcome<T>>((resolve) => {
-        timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), BRIDGE_TIMEOUT_MS);
+        timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), timeoutMs);
       }),
     ]);
   } catch (err) {
@@ -443,14 +461,34 @@ export async function checkNativeUpdate(): Promise<UpdateDecision | null> {
       return outcome;
     }
 
-    const bundle = await CapacitorUpdater.download({
-      url: decision.url,
-      version: decision.version,
-    });
-    steps.push('download:ok');
+    const downloaded = await askBridgeVerbose(
+      () => CapacitorUpdater.download({ url: decision.url, version: decision.version }),
+      DOWNLOAD_TIMEOUT_MS,
+    );
+    steps.push(`download:${downloaded.ok ? 'ok' : downloaded.reason}`);
+    if (!downloaded.ok) {
+      // 45 秒还没回应，十有八九是桥没回话，不是文件大——不值得再等，留到下次
+      // 冷启动或下次手动点「现在就查一次更新」再试。**绝不能卡在这里不返回**：
+      // 这正是这次真机踩到的坑，见 DOWNLOAD_TIMEOUT_MS 的注释。
+      outcome = { action: 'skip', reason: `下载没有回应（${downloaded.reason}）——这次没跟上，下次再试` };
+      outcomeText = outcome.reason;
+      return outcome;
+    }
+
     // next 而不是 set：只登记，不重载。见文件顶部「更新时机」。
-    await CapacitorUpdater.next({ id: bundle.id });
-    steps.push('next:ok');
+    const registered = await askBridgeVerbose(
+      () => CapacitorUpdater.next({ id: downloaded.value.id }),
+      NEXT_TIMEOUT_MS,
+    );
+    steps.push(`next:${registered.ok ? 'ok' : registered.reason}`);
+    if (!registered.ok) {
+      // 包已经下好了，但没能登记成「下次启动用它」——不能假装这一趟成功了
+      // （那样设置页会显示「已下好，下次打开生效」，而原生侧其实什么都没登记）。
+      outcome = { action: 'skip', reason: `下好了但没能登记为下次启动用（${registered.reason}）——这次白下了，下次再试` };
+      outcomeText = outcome.reason;
+      return outcome;
+    }
+
     // 先落地再记内存：下次启动桥要是又哑了，就靠这一条判断「这一版不用重下」。
     rememberQueuedBuildId(manifest.buildId);
     pending = decision.version;
