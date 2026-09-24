@@ -16,6 +16,8 @@
 import { useRef, useState } from 'react';
 import { href, type Route } from '@/app/router';
 import { useVocabStore } from '@/state/useVocabStore';
+import { useSettingsStore } from '@/state/useSettingsStore';
+import { buildReviewQueue } from '@/srs/queue';
 import { useBottomLayer } from './bottomLayer';
 import { SyncChip } from './SyncChip';
 
@@ -53,11 +55,18 @@ function activeActivity(route: Route): Activity | undefined {
 /**
  * 今天到期几张。**每天唯一的待办**，所以它在两处导航上都是一个角标，
  * 而不是首页上一条会被读一次就再也不读的横幅。
+ *
+ * 数字必须跟复习页的「新卡 N · 复习 M」加起来一致 —— 都走 `buildReviewQueue`，
+ * 套 `newPerDay`/`reviewPerDay` 的每日上限与同日互斥去重。早先这里是一个不设上限
+ * 的原始 `due <= now` 计数，于是角标写着 19、进页面却只有 10 张能刷，两个数字
+ * 对不上（用户发现的）。「到期总共多少」不是这个角标要回答的问题。
  */
 export function useDueCount(): number {
-  return useVocabStore(
-    (s) => s.entries.filter((e) => !e.suspended && e.fsrs.due <= Date.now()).length,
-  );
+  const entries = useVocabStore((s) => s.entries);
+  const newPerDay = useSettingsStore((s) => s.settings.newPerDay);
+  const reviewPerDay = useSettingsStore((s) => s.settings.reviewPerDay);
+  const { newCount, reviewCount } = buildReviewQueue(entries, { newPerDay, reviewPerDay });
+  return newCount + reviewCount;
 }
 
 export function TopBar({ route }: { route: Route }) {

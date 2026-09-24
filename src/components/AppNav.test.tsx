@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { useVocabStore } from '@/state/useVocabStore';
+import { useSettingsStore } from '@/state/useSettingsStore';
 import { newCard } from '@/srs/fsrs';
 import type { Route } from '@/app/router';
 import type { VocabEntry } from '@/types/models';
@@ -29,8 +30,18 @@ function due(id: string, overrides: Partial<VocabEntry> = {}): VocabEntry {
   };
 }
 
+/** 已毕业、已到期的复习卡（state 2）—— 用来测 `reviewPerDay` 那条上限，新卡走 `newPerDay`。 */
+function reviewDue(id: string): VocabEntry {
+  return due(id, {
+    fsrs: { ...newCard(), state: 2, reps: 1, due: Date.now() - 1000 },
+  });
+}
+
 beforeEach(() => {
   useVocabStore.setState({ entries: [] });
+  useSettingsStore.setState((s) => ({
+    settings: { ...s.settings, newPerDay: 10, reviewPerDay: 60 },
+  }));
 });
 
 afterEach(() => {
@@ -84,8 +95,14 @@ describe('底部标签栏', () => {
   });
 
   it('没有到期的就不显示角标 —— 空徽章比没有徽章更吵', () => {
+    // 用一张已经毕业、明天才到期的卡（state 2）—— 新卡（state 0）在队列里
+    // 不看 due，只看有没有占满 newPerDay，所以不能拿它来测「还没到期」。
     useVocabStore.setState({
-      entries: [due('a', { fsrs: newCard(new Date(Date.now() + 86_400_000)) })],
+      entries: [
+        due('a', {
+          fsrs: { ...newCard(), state: 2, reps: 1, due: Date.now() + 86_400_000 },
+        }),
+      ],
     });
     render(<BottomTabs route={{ name: 'lessons' }} />);
     expect(screen.getByRole('link', { name: /复习/ }).textContent).toBe('复习');
@@ -98,9 +115,41 @@ describe('底部标签栏', () => {
   });
 
   it('超过 99 显示 99+', () => {
+    // 角标数字受 newPerDay 上限约束（见下面「与复习页口径一致」），
+    // 这里把上限调大到能实际撑到 99+，而不是测一个平时到不了的数字。
+    useSettingsStore.setState((s) => ({ settings: { ...s.settings, newPerDay: 200 } }));
     useVocabStore.setState({ entries: Array.from({ length: 120 }, (_, i) => due(`w${i}`)) });
     render(<BottomTabs route={{ name: 'lessons' }} />);
     expect(screen.getByRole('link', { name: /复习/ })).toHaveTextContent('99+');
+  });
+
+  it('角标口径与复习页一致 —— 受 newPerDay 上限约束（用户发现两个数字对不上）', () => {
+    useVocabStore.setState({ entries: Array.from({ length: 19 }, (_, i) => due(`w${i}`)) });
+    render(<BottomTabs route={{ name: 'lessons' }} />);
+    // newPerDay 默认 10，19 张到期新卡里只有 10 张真正能进今天的队列。
+    expect(screen.getByRole('link', { name: /复习/ })).toHaveTextContent('10');
+  });
+
+  it('reviewPerDay 同样封顶 —— 不是只有新卡那条上限生效', () => {
+    useSettingsStore.setState((s) => ({ settings: { ...s.settings, reviewPerDay: 5 } }));
+    useVocabStore.setState({ entries: Array.from({ length: 8 }, (_, i) => reviewDue(`r${i}`)) });
+    render(<BottomTabs route={{ name: 'lessons' }} />);
+    expect(screen.getByRole('link', { name: /复习/ })).toHaveTextContent('5');
+  });
+
+  it('新卡与复习各占各的上限，角标是两边加起来的和', () => {
+    // 5 张到期复习（上限 3 → 只算 3 张）+ 4 张到期新卡（上限 2 → 只算 2 张），角标该是 5。
+    useSettingsStore.setState((s) => ({
+      settings: { ...s.settings, newPerDay: 2, reviewPerDay: 3 },
+    }));
+    useVocabStore.setState({
+      entries: [
+        ...Array.from({ length: 5 }, (_, i) => reviewDue(`r${i}`)),
+        ...Array.from({ length: 4 }, (_, i) => due(`n${i}`)),
+      ],
+    });
+    render(<BottomTabs route={{ name: 'lessons' }} />);
+    expect(screen.getByRole('link', { name: /复习/ })).toHaveTextContent('5');
   });
 });
 
@@ -134,5 +183,14 @@ describe('顶部栏', () => {
     const title = screen.getAllByText('素材').find((el) => el.tagName === 'SPAN');
     expect(title).toBeInTheDocument();
     expect(screen.queryByText('努力学德语')).toBeNull();
+  });
+
+  it('桌面顶部导航的角标数字跟底部标签栏同一个口径', () => {
+    // 顶部栏（桌面 `sm:flex` 那一份）走的是同一个 `useDueCount`，但渲染路径
+    // 完全独立（另一段 JSX、另一套 className 分支）——两边各画各的角标，
+    // 漏改一边不会被类型或单测之外的任何东西挡住。
+    useVocabStore.setState({ entries: Array.from({ length: 19 }, (_, i) => due(`w${i}`)) });
+    render(<TopBar route={{ name: 'lessons' }} />);
+    expect(screen.getByRole('link', { name: /复习/ })).toHaveTextContent('10');
   });
 });
