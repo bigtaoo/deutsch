@@ -6,7 +6,10 @@ export const DEFAULT_SETTINGS: Settings = {
   newPerDay: 10,
   reviewPerDay: 60,
   shadowingGapRatio: 1.2,
-  shadowingRepeat: 2,
+  // 默认 1（2026-09-26 从 2 改来）：有了录音回放（FR-6.8），一遍就是「听 → 跟读 → 听自己」完整的一轮。
+  shadowingRepeat: 1,
+  // FR-6.8：每一遍都录音并回放，默认开。
+  shadowingEcho: true,
   playbackRate: 1.0,
   dictationStrictCase: true,
   autoAlignOnImport: true,

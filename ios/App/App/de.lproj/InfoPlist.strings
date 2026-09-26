@@ -12,3 +12,4 @@
 
 "CFBundleDisplayName" = "Hörtraining";
 "CFBundleName" = "Hörtraining";
+"NSMicrophoneUsageDescription" = "Beim Nachsprechen wird deine Aussprache kurz aufgenommen und sofort abgespielt, damit du sie mit dem Original vergleichen kannst. Die Aufnahme bleibt nur im Arbeitsspeicher und wird weder gespeichert noch hochgeladen.";

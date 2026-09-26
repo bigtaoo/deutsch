@@ -160,6 +160,7 @@ function testSettings(now: number) {
     reviewPerDay: 60,
     shadowingGapRatio: 1.2,
     shadowingRepeat: 2,
+    shadowingEcho: false,
     playbackRate: 1,
     dictationStrictCase: true,
     autoAlignOnImport: false,
@@ -241,6 +242,7 @@ export function readCardBackup(): BackupFile {
       reviewPerDay: 60,
       shadowingGapRatio: 1.2,
       shadowingRepeat: 2,
+      shadowingEcho: false,
       playbackRate: 1,
       dictationStrictCase: true,
       autoAlignOnImport: false,
@@ -271,7 +273,16 @@ export function readCardBackup(): BackupFile {
  * 时间戳是手写的：每句按空格分词、在句子的时间范围里均分，够回答
  * 「这一刻哪个词该亮」。真实的那份由对齐器产出，有它自己的 9 个单测文件。
  */
-export function timedLessonBackup(lessonId: string, now = Date.now() + 60_000): BackupFile {
+export function timedLessonBackup(
+  lessonId: string,
+  now = Date.now() + 60_000,
+  /**
+   * 跟读那套（FR-6.8）要的是**短**句（等一句原句放完才轮到录音）和打开的 `shadowingEcho`；
+   * 通听那套要长句（理由见下面）。默认值就是通听那套原来的样子。
+   */
+  opts: { sentenceSeconds?: number; settings?: Record<string, unknown> } = {},
+): BackupFile {
+  const sentenceSeconds = opts.sentenceSeconds ?? 10;
   const texts = [
     'Der deutsche Wald ist mehr als nur eine Ansammlung von Bäumen.',
     'Für viele Menschen ist er ein Ort der Ruhe und der Erholung.',
@@ -282,8 +293,8 @@ export function timedLessonBackup(lessonId: string, now = Date.now() + 60_000): 
   const sentences: Sentence[] = texts.map((text, index) => {
     // 一句 10 秒（比真实素材慢得多）是**刻意的**：断言要在「当前词还亮着」的窗口里跑完，
     // 而 CI 上点一下按钮慢半秒很正常。句子短了，用例就会随机掉进句间空档里变红。
-    const startTime = index * 10;
-    const endTime = startTime + 9.5;
+    const startTime = index * sentenceSeconds;
+    const endTime = startTime + sentenceSeconds - 0.5;
 
     // 按空格切，逐词均分这一句的时间范围。charStart/charEnd 是**句内** offset。
     const words: { charStart: number; charEnd: number; start: number; end: number }[] = [];
@@ -335,6 +346,6 @@ export function timedLessonBackup(lessonId: string, now = Date.now() + 60_000): 
       },
     ],
     vocab: [],
-    settings: testSettings(now),
+    settings: { ...testSettings(now), ...opts.settings },
   };
 }

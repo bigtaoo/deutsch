@@ -251,7 +251,13 @@ export interface Settings {
   newPerDay: number; // 10
   reviewPerDay: number; // 60
   shadowingGapRatio: number; // 1.2
-  shadowingRepeat: number; // 2
+  shadowingRepeat: number; // 1（2026-09-26 前是 2）
+  /**
+   * FR-6.8：跟读时每一遍都录音，静默间隔结束后把录下的这一遍放出来。**默认开** —— 听不到自己
+   * 念的样子，跟读就只剩「嘴在动」，看不出和原句差在哪。设备不能录（iOS 旧壳、没麦克风）时
+   * 这个开关不起作用，不需要人去关。
+   */
+  shadowingEcho: boolean;
   playbackRate: number; // 1.0
   dictationStrictCase: boolean; // true
   // FR-15：DW 自动导入后立刻跑一遍自动打点。默认开 ——

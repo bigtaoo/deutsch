@@ -12,3 +12,4 @@
 
 "CFBundleDisplayName" = "努力学德语";
 "CFBundleName" = "努力学德语";
+"NSMicrophoneUsageDescription" = "跟读时录下你念的那一遍，马上放给你听，和原句对照。录音只留在内存里，不保存、不上传。";

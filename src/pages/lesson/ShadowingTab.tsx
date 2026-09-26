@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { audioPlayer } from '@/audio/player';
 import { useLessonAudio } from '@/audio/useLessonAudio';
 import { ShadowingMachine, type PlayRange, type ShadowingState } from '@/audio/shadowing';
+import { MicEcho, describeMicError, echoSupported } from '@/audio/echo';
 import { annotatedSentences, resolveRange } from '@/lesson/timing';
 import { displayNumbers } from '@/lesson/sentences';
 import { hasTranslations } from '@/lesson/translation';
@@ -27,14 +28,60 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
     repeatsLeft: 0,
     gapStartedAt: 0,
     gapMs: 0,
+    pass: 0,
+    recording: false,
   });
 
+  // FR-6.8：录音回放。麦克风在「开始跟读」时打开、「停止」时关掉 —— 不跟读的时候
+  // 浏览器标签上不该一直亮着那个红点。
+  const echoRef = useRef<MicEcho>(null);
+  if (!echoRef.current) echoRef.current = new MicEcho();
+  const echo = echoRef.current;
+  const [canEcho, setCanEcho] = useState(false);
+  const [micOpen, setMicOpen] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void echoSupported().then((ok) => !cancelled && setCanEcho(ok));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const machineRef = useRef<ShadowingMachine>(null);
-  if (!machineRef.current) machineRef.current = new ShadowingMachine({ player: audioPlayer });
+  if (!machineRef.current) machineRef.current = new ShadowingMachine({ player: audioPlayer, echo });
   const machine = machineRef.current;
 
+  const stopAll = () => {
+    machine.stop();
+    echo.close();
+    setMicOpen(false);
+  };
+
   useEffect(() => machine.subscribe(setState), [machine]);
-  useEffect(() => () => machine.stop(), [machine]);
+  useEffect(
+    () => () => {
+      machine.stop();
+      echo.close();
+    },
+    [machine, echo],
+  );
+
+  const echoOn = canEcho && settings.shadowingEcho;
+
+  const start = () => {
+    // 先起播再要麦克风：iOS 的第一次 play() 必须留在这次点击的同步段里，
+    // 等权限弹窗回来手势就断了。麦克风打开之前的那几遍按普通间隔走（见下面 setQueue 的 `echo`），
+    // 通常第一句还没放完它就开好了。
+    machine.start();
+    if (!echoOn || echo.isOpen) return;
+    setMicError(null);
+    echo.open().then(
+      () => setMicOpen(true),
+      (err: unknown) => setMicError(describeMicError(err)),
+    );
+  };
 
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
   // FR-19.4：跟读时的中文和通听共用一个开关 —— 「今天想不想看中文」不该在两页上各答一次。
@@ -50,15 +97,33 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
   }, [lesson.sentences, lesson.audioDuration, difficultOnly]);
 
   useEffect(() => {
-    machine.setQueue(queue, { gapRatio: settings.shadowingGapRatio, repeat: settings.shadowingRepeat });
-  }, [machine, queue, settings.shadowingGapRatio, settings.shadowingRepeat]);
+    machine.setQueue(queue, {
+      gapRatio: settings.shadowingGapRatio,
+      repeat: settings.shadowingRepeat,
+      // 麦克风没打开就不进录音那一遍 —— 否则界面上写着「录音中」，结束后却什么都不放。
+      echo: echoOn && micOpen,
+    });
+  }, [machine, queue, settings.shadowingGapRatio, settings.shadowingRepeat, echoOn, micOpen]);
+
+  // 跟读中途把开关关掉：麦克风立刻还回去。
+  useEffect(() => {
+    if (!echoOn) {
+      echo.close();
+      setMicOpen(false);
+    }
+  }, [echoOn, echo]);
 
   // §3.2：手机锁屏/切后台会打断循环。暂停并保留位置，不做后台播放。
   useEffect(() => {
-    const onHidden = () => document.hidden && machine.stop();
+    const onHidden = () => {
+      if (!document.hidden) return;
+      machine.stop();
+      echo.close();
+      setMicOpen(false);
+    };
     document.addEventListener('visibilitychange', onHidden);
     return () => document.removeEventListener('visibilitychange', onHidden);
-  }, [machine]);
+  }, [machine, echo]);
 
   const currentSentenceIndex = machine.current()?.sentenceIndex ?? null;
 
@@ -86,6 +151,8 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
       if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) return;
       switch (e.key) {
         case ' ': e.preventDefault(); machine.replay(); break;
+        // FR-6.8：桌面上手在键盘上，读完一句去点鼠标太别扭。
+        case 'Enter': if (state.recording) { e.preventDefault(); machine.finishTake(); } break;
         case 'ArrowRight': e.preventDefault(); machine.next(); break;
         case 'ArrowLeft': e.preventDefault(); machine.previous(); break;
         case 'd': case 'D': e.preventDefault(); toggleDifficult(currentSentenceIndex); break;
@@ -151,7 +218,19 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
             onChange={(e) => void update({ shadowingGapRatio: Number(e.target.value) || 1.2 })}
           />
         </label>
+        {canEcho && (
+          <label className="flex items-center gap-2 text-ui">
+            <input
+              type="checkbox"
+              checked={settings.shadowingEcho}
+              onChange={(e) => void update({ shadowingEcho: e.target.checked })}
+            />
+            录音并回放
+          </label>
+        )}
       </div>
+
+      {echoOn && micError && <Hint>{micError}</Hint>}
 
       <CurrentSentenceCard
         lesson={lesson}
@@ -159,15 +238,16 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
         sentenceIndex={currentSentenceIndex}
         displayNumber={currentSentenceIndex !== null ? numbers.get(currentSentenceIndex) : undefined}
         showTranslation={translated && settings.showTranslation}
+        onFinishTake={() => machine.finishTake()}
       />
 
       <div className="flex flex-wrap items-center gap-2">
         {state.phase === 'idle' ? (
-          <Button variant="primary" disabled={audio.status !== 'ready'} onClick={() => machine.start()}>
+          <Button variant="primary" disabled={audio.status !== 'ready'} onClick={start}>
             开始跟读
           </Button>
         ) : (
-          <Button variant="primary" onClick={() => machine.stop()}>
+          <Button variant="primary" onClick={stopAll}>
             停止
           </Button>
         )}
@@ -199,7 +279,7 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
       </div>
 
       <Hint>
-        队列 {queue.length} 句 · Space 重播 · ←/→ 换句 · D 标困难 · +/- 变速。
+        队列 {queue.length} 句 · Space 重播 · ←/→ 换句 · D 标困难 · +/- 变速{echoOn ? ' · Enter 读完了' : ''}。
         变速即时生效，不重启当前句。
       </Hint>
     </div>
@@ -212,12 +292,14 @@ function CurrentSentenceCard({
   sentenceIndex,
   displayNumber,
   showTranslation,
+  onFinishTake,
 }: {
   lesson: Lesson;
   state: ShadowingState;
   sentenceIndex: number | null;
   displayNumber: number | undefined;
   showTranslation: boolean;
+  onFinishTake: () => void;
 }) {
   const sentence = sentenceIndex !== null ? lesson.sentences[sentenceIndex] : undefined;
 
@@ -231,7 +313,7 @@ function CurrentSentenceCard({
               <span className="rounded-ctl bg-warn-soft px-2 py-0.5 text-note text-warn">困难</span>
             )}
             <span className="text-note text-faint">
-              {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
+              第 {state.pass} 遍 · {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
             </span>
           </div>
           <p className="text-de">{sentence.text}</p>
@@ -243,8 +325,28 @@ function CurrentSentenceCard({
         <p className="text-faint">按「开始跟读」进入循环。</p>
       )}
 
-      <GapCountdown state={state} />
+      {state.recording ? <RecordingButton onFinish={onFinishTake} /> : <GapCountdown state={state} />}
     </Card>
+  );
+}
+
+/**
+ * FR-6.8：录音那一遍没有倒计时，只有这一个按钮 —— 念完了点它（或按 Enter）就开始回放。
+ * 按钮本身在「呼吸」，一眼就知道现在是在录。
+ */
+function RecordingButton({ onFinish }: { onFinish: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onFinish}
+      className="flex min-h-11 w-full items-center justify-center gap-3 rounded-ctl border border-danger bg-danger-soft px-4 py-3 text-ui text-danger"
+    >
+      <span className="relative flex h-3 w-3">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-danger opacity-60" />
+        <span className="relative inline-flex h-3 w-3 rounded-full bg-danger" />
+      </span>
+      录音中 —— 跟读完点这里（Enter）听自己
+    </button>
   );
 }
 
@@ -267,6 +369,17 @@ function GapCountdown({ state }: { state: ShadowingState }) {
     return () => cancelAnimationFrame(raf);
   }, [state.phase, state.gapStartedAt, state.gapMs]);
 
+  if (state.phase === 'echo') {
+    return (
+      <div className="space-y-1">
+        <div className="h-2 rounded-ctl bg-accent-soft">
+          <div className="h-2 w-full rounded-ctl bg-accent opacity-60" />
+        </div>
+        <p className="text-note text-accent">回放你刚才的跟读 —— 和原句比一比</p>
+      </div>
+    );
+  }
+
   if (state.phase !== 'gap') {
     return (
       <div className="h-2 rounded-ctl bg-sunken">
@@ -280,7 +393,9 @@ function GapCountdown({ state }: { state: ShadowingState }) {
       <div className="h-2 overflow-hidden rounded-ctl bg-ok-soft">
         <div className="h-2 bg-ok transition-none" style={{ width: `${(1 - progress) * 100}%` }} />
       </div>
-      <p className="text-note text-ok">现在跟读 —— 还有 {((1 - progress) * (state.gapMs / 1000)).toFixed(1)} 秒</p>
+      <p className="text-note text-ok">
+        现在跟读 —— 还有 {((1 - progress) * (state.gapMs / 1000)).toFixed(1)} 秒
+      </p>
     </div>
   );
 }

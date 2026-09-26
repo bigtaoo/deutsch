@@ -12,3 +12,4 @@
 
 "CFBundleDisplayName" = "Hörtraining";
 "CFBundleName" = "Hörtraining";
+"NSMicrophoneUsageDescription" = "While shadowing, your attempt is recorded and played straight back so you can compare it with the original. The recording stays in memory only and is never saved or uploaded.";

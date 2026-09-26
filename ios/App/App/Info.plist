@@ -79,6 +79,12 @@
 	     只会在审核时被问、并在系统设置里给用户看一条假的开关。
 	     若哪天又要用摄像头，把 NSCameraUsageDescription 加回来 ——
 	     没有它，WKWebView 里的 getUserMedia 不是报错，而是直接崩溃退出。 -->
+	<!-- 麦克风（FR-6.8 跟读回放，2026-09-26）：跟读时录下自己念的那一遍再放出来。
+	     没有这条，WKWebView 里的 getUserMedia 会让进程直接被杀（同上）。前端是热更下发的，
+	     会先落到没有这条的旧壳上，所以 src/audio/echo.ts 用 ECHO_MIN_IOS 按壳版本把关 ——
+	     **以后要是改了带这条的首个版本号，那边的常量要一起改**。 -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>跟读时录下你念的那一遍，马上放给你听，和原句对照。录音只留在内存里，不保存、不上传。</string>
 	<!-- Google 登录（FR-11.1）：把 iOS 客户端 ID 的反向域名注册成 URL scheme，
 	     系统浏览器授权完才知道该跳回哪个 App。没有它，登录会跳出去 Safari 然后回不来。
 	     这个字符串就是客户端 ID 前后两段调个个，不是另外申请的东西。
