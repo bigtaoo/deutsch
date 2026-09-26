@@ -232,6 +232,20 @@ describe('ReviewPage：听音四选一', () => {
     expect(texts.every((t) => !t.includes('Vorhang'))).toBe(true); // 词形不该出现
   });
 
+  it('孤立词发音的辨义题同样亮出词形，而且只亮一处（§12.19）', async () => {
+    seed([
+      entry('Vorhang', { gender: 'm', fsrs: reviewState() }),
+      entry('heilen', { id: 'heilen' }),
+      entry('Falke', { id: 'Falke' }),
+      entry('Spind', { id: 'Spind' }),
+    ]);
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    const shown = screen.getAllByText('Vorhang').filter((el) => el.closest('button') === null);
+    expect(shown).toHaveLength(1);
+  });
+
   it('一轮做完后给出下次到期时间，不留在最后一张卡上', async () => {
     seed([entry('Vorhang', { gender: 'm' })]);
     render(<ReviewPage />);
@@ -400,7 +414,7 @@ describe('ReviewPage：课程听卡的原句音频（变更 53）', () => {
   }
 
   /** 一张课程听卡：有 `lessonId` + `sentenceIndex` + `hasTimestamp`，本机也有素材。 */
-  function seedLessonListenCard(extra: Partial<VocabEntry> = {}) {
+  function seedLessonListenCard(extra: Partial<VocabEntry> = {}, others: VocabEntry[] = []) {
     useVocabStore.setState({
       entries: [
         entry('Vorhang', {
@@ -411,6 +425,7 @@ describe('ReviewPage：课程听卡的原句音频（变更 53）', () => {
           hasTimestamp: true,
           ...extra,
         }),
+        ...others,
       ],
       loaded: true,
     });
@@ -445,6 +460,40 @@ describe('ReviewPage：课程听卡的原句音频（变更 53）', () => {
 
     expect(audioPlayer.playRange).not.toHaveBeenCalled();
     expect(audioPlayer.pause).not.toHaveBeenCalled();
+  });
+
+  /** 不在题面按钮里的那几处「Vorhang」—— 卡面上单独亮出来的词形。 */
+  function wordOutsideChoices(word: string) {
+    return screen.queryAllByText(word).filter((el) => el.closest('button') === null);
+  }
+
+  it('辨形题的题干说「听到的那个词」，不说「挖掉」—— 句子是整句播的（§12.19）', async () => {
+    seedLessonListenCard();
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(new Blob(['x']));
+    render(<ReviewPage />);
+
+    // 干扰项凑几个不是这条要测的（规则 ⑥），题出来了就行
+    await waitFor(() => expect(choiceButtons().length).toBeGreaterThan(0));
+    expect(screen.getByText('听这一句，选出你听到的那个词')).toBeInTheDocument();
+    expect(screen.queryByText(/挖掉/)).toBeNull();
+    // FR-10.2：辨形题的正面照旧不给词形
+    expect(wordOutsideChoices('Vorhang')).toHaveLength(0);
+  });
+
+  it('辨义题把目标词亮在卡面上，题干改问意思（§12.19）', async () => {
+    seedLessonListenCard({ fsrs: reviewState() }, [
+      entry('heilen', { id: 'heilen' }),
+      entry('Falke', { id: 'Falke' }),
+      entry('Spind', { id: 'Spind' }),
+    ]);
+    vi.mocked(getAudioBlob).mockResolvedValueOnce(new Blob(['x']));
+    render(<ReviewPage />);
+
+    await waitFor(() => expect(choiceButtons()).toHaveLength(4));
+    expect(screen.getByText('这句里有这个词，选出它的意思')).toBeInTheDocument();
+    // 恰好一处、不在选项里 —— 选项是释义（且词头遮掉了），词形只该出现在题面上
+    expect(wordOutsideChoices('Vorhang')).toHaveLength(1);
+    expect(choiceButtons().every((b) => !(b.textContent ?? '').includes('Vorhang'))).toBe(true);
   });
 
   it('hasMaterial 说有、audioBlobs 里实际取不到：明说，不是永久变灰的播放键（FR-10.5）', async () => {

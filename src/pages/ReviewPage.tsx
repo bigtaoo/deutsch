@@ -576,6 +576,12 @@ function QuizCard({
   });
 
   const noAudio = !isRead && audioStatus === 'word-only' && wordSource === 'none';
+  /**
+   * §12.19：辨义题把目标词亮在卡面上。整句里没说考哪个词，只能靠
+   * 「四条释义各属于谁、谁在这句里」去排除 —— 考的就不只是意思了。
+   * 它已经过了辨形那一关（FR-10.9），这时候再藏词形没有训练价值。
+   */
+  const isGloss = !isRead && question?.kind === 'gloss';
 
   return (
     <>
@@ -613,7 +619,12 @@ function QuizCard({
           ) : (
             <div className="flex flex-col items-center gap-2">
               <PlayButton disabled={!playable} onClick={() => range && void audioPlayer.playRange(range.start, range.end)} />
-              <p className="text-note text-faint">听这一句，选出挖掉的那个词</p>
+              {/* §12.19：题干跟题型走。句子是整句播的，没有挖掉任何词 ——
+                  「挖空」是读卡 cloze 的说法，以前这里写死一句、两种题都在说错话。 */}
+              <p className="text-note text-faint">
+                {question?.kind === 'gloss' ? '这句里有这个词，选出它的意思' : '听这一句，选出你听到的那个词'}
+              </p>
+              {isGloss && <GlossTarget word={entry.surface} />}
             </div>
           )
         ) : audioStatus === 'word-only' ? (
@@ -633,6 +644,8 @@ function QuizCard({
                 {' · '}孤立词发音，练不到连读
               </p>
             )}
+            {/* 没声音时下面那行已经把词亮出来了，别显示两遍 */}
+            {isGloss && !noAudio && <GlossTarget word={entry.surface} />}
           </div>
         ) : (
           // FR-10.5：两种无音频原因给不同出口，绝不静默降级成纯文本卡
@@ -731,6 +744,14 @@ function PlayButton({ disabled, onClick }: { disabled: boolean; onClick: () => v
       ▶
     </button>
   );
+}
+
+/**
+ * 听卡辨义题的目标词（§12.19）。裸词形、不带冠词 —— 与 read-gloss 题面同一条理由：
+ * 性留给答对的 600ms 和卡背（FR-10.11）。
+ */
+function GlossTarget({ word }: { word: string }) {
+  return <p className="text-center text-word font-semibold">{word}</p>;
 }
 
 /**
