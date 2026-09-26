@@ -1,12 +1,12 @@
 // FR-13.11：每个来源配一份 __APOLLO_STATE__ 快照回归测试。
 // DW 改版时**测试先红**，而不是某天用的时候才发现。
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { extractApolloState, ApolloParseError, findKeys } from './apolloState';
 import { manuscriptToText, htmlToPlainText } from './htmlToText';
 import { parseGlossaryTitle } from './glossary';
 import { parseFeed, sortAndDedupe } from './rss';
-import { mapSpansToSentences, parseLessonPage, parseLessonId, lessonUrl } from './adapter';
+import { articleUrl, fetchLesson, LessonNotFoundError, mapSpansToSentences, parseLessonPage, parseLessonId, lessonUrl } from './adapter';
 import { segmentSentences } from '@/lesson/segment';
 import { createSentences } from '@/lesson/sentences';
 import { FIXTURE_FEED_XML, FIXTURE_LESSON_ID, FIXTURE_PAGE_HTML } from './__fixtures__/lessonPage';
@@ -194,5 +194,83 @@ describe('parseLessonId（L2 半自动入口）', () => {
 
   it('只知道 id 也能拼出页面地址', () => {
     expect(lessonUrl('45334084')).toBe('https://learngerman.dw.com/de/lektion/l-45334084');
+  });
+});
+
+// 2026-09-26：Langsam gesprochene Nachrichten 的页面是 Article（a-<id>）不是 Lesson ——
+// 以前一律报「__APOLLO_STATE__ 里没有 Lesson:…」。结构照实测页面（内容是编的）：
+// 文稿在 `text`，每条新闻一个 <h2>；`audios` 挂两条，第一条慢速、第二条正常语速。
+const ARTICLE_ID = '79000001';
+const articleState = {
+  ROOT_QUERY: {},
+  'Audio:79000003': { __typename: 'Audio', mp3Src: 'https://cdn.invalid/nachrichten_live.mp3', duration: 334 },
+  'Audio:79000002': { __typename: 'Audio', mp3Src: 'https://cdn.invalid/langsamenachrichten.mp3', duration: 478 },
+  [`Article:${ARTICLE_ID}`]: {
+    __typename: 'Article',
+    name: '26.09.2026 – Langsam Gesprochene Nachrichten',
+    namedUrl: `/de/26092026-langsam-gesprochene-nachrichten/a-${ARTICLE_ID}`,
+    teaser: 'Trainiere dein Hörverstehen.',
+    firstPublicationDate: '2026-09-26T09:26:49.089Z',
+    text: '<h2>Erste Meldung ohne Punkt</h2>\n\n<p>Der erste Satz. Der zweite Satz.<br>\n&#160;</p>\n\n<h2>Zweite Meldung</h2>\n\n<p>Noch ein Satz.</p>',
+    audios: [{ __ref: 'Audio:79000002' }, { __ref: 'Audio:79000003' }],
+  },
+};
+const ARTICLE_HTML = `<html><script>window.__APOLLO_STATE__=${JSON.stringify(articleState)};</script></html>`;
+
+describe('Article 页面（Langsam gesprochene Nachrichten）', () => {
+  const article = parseLessonPage(ARTICLE_HTML, ARTICLE_ID, 'https://example.invalid/a');
+
+  it('认得 Article：标题、地址、发布时间都取到', () => {
+    expect(article.title).toBe('26.09.2026 – Langsam Gesprochene Nachrichten');
+    expect(article.sourceUrl).toBe(`https://learngerman.dw.com/de/26092026-langsam-gesprochene-nachrichten/a-${ARTICLE_ID}`);
+    expect(article.firstPublicationDate).toBe(Date.parse('2026-09-26T09:26:49.089Z'));
+    expect(article.knowledges).toEqual([]);
+  });
+
+  it('<h2> 标题自成一句，不和下一段第一句粘在一起', () => {
+    const texts = segmentSentences(article.plainText).map((s) => s.text);
+    expect(texts).toEqual(['Erste Meldung ohne Punkt', 'Der erste Satz.', 'Der zweite Satz.', 'Zweite Meldung', 'Noch ein Satz.']);
+  });
+
+  it('音频按实体自己的 audios 顺序取第一条（慢速），不按 state 里的键序', () => {
+    expect(article.audio).toEqual({ mp3Src: 'https://cdn.invalid/langsamenachrichten.mp3', duration: 478 });
+  });
+
+  it('两类实体都没有时报「找不到」，是 LessonNotFoundError', () => {
+    expect(() => parseLessonPage(ARTICLE_HTML, '1', 'x')).toThrow(LessonNotFoundError);
+  });
+
+  it('a-<id> 的地址也能抠出 id', () => {
+    expect(parseLessonId('https://learngerman.dw.com/de/26092026-x/a-79441515?maca=1')).toBe('79441515');
+  });
+});
+
+describe('fetchLesson 只给裸 id 时', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('Lesson 页里没有这一课 → 改按 a-<id> 再拉一次', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url);
+      const body = url.includes('/l-') ? '<script>window.__APOLLO_STATE__={"ROOT_QUERY":{}};</script>' : ARTICLE_HTML;
+      return new Response(body, { status: 200 });
+    });
+    const got = await fetchLesson(ARTICLE_ID);
+    expect(got.title).toContain('Langsam');
+    expect(urls).toEqual([lessonUrl(ARTICLE_ID), articleUrl(ARTICLE_ID)]);
+  });
+
+  it('给了地址就只拉那一个，不瞎猜', async () => {
+    const fetchMock = vi.fn(async () => new Response('<script>window.__APOLLO_STATE__={"ROOT_QUERY":{}};</script>'));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchLesson(ARTICLE_ID, 'https://example.invalid/l-1')).rejects.toThrow(LessonNotFoundError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('网络错误不触发改拉 Article', async () => {
+    const fetchMock = vi.fn(async () => new Response('', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(fetchLesson(ARTICLE_ID)).rejects.toThrow('页面请求失败：503');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

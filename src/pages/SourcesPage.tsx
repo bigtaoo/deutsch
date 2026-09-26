@@ -102,6 +102,13 @@ export function SourcesPage() {
 
       <ManualIdSection />
 
+      <Section title="教材">
+        <Hint>
+          应用里不带教材内容。把自己那本的 Transkript（PDF 里全选复制）整份粘进来，按题切成一课一课，再选上对应的音频。
+        </Hint>
+        <Button onClick={() => navigate({ name: 'import-book' })}>导入整本教材</Button>
+      </Section>
+
       <Section title="完全手动">
         <Hint>
           粘贴文本 + 选本地文件。教材音频、DW 改版之后都走这条 —— 它不依赖上面任何一层，永远可用。

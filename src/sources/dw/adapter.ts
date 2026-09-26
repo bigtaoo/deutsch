@@ -40,11 +40,19 @@ export function lessonUrl(lessonId: string, slug = 'lektion'): string {
   return `${DW_PAGE_BASE}/de/${slug}/l-${lessonId}`;
 }
 
-/** FR-13 L2：从粘贴的 URL 或裸 id 里抠出 lesson id。 */
+/**
+ * Langsam gesprochene Nachrichten 这一类不是 Lesson 而是 Article（2026-09-26 实测）：
+ * 地址是 `a-<id>`，拿 `l-<id>` 去请求，DW 回的页面里压根没有这个实体。
+ */
+export function articleUrl(id: string, slug = 'artikel'): string {
+  return `${DW_PAGE_BASE}/de/${slug}/a-${id}`;
+}
+
+/** FR-13 L2：从粘贴的 URL 或裸 id 里抠出 lesson id（`l-<id>` 与 `a-<id>` 都认）。 */
 export function parseLessonId(input: string): string | null {
   const trimmed = input.trim();
   if (/^\d+$/.test(trimmed)) return trimmed;
-  return /\/l-(\d+)/.exec(trimmed)?.[1] ?? null;
+  return /\/[la]-(\d+)/.exec(trimmed)?.[1] ?? null;
 }
 
 export async function fetchFeed(url: string): Promise<FeedItem[]> {
@@ -53,24 +61,42 @@ export async function fetchFeed(url: string): Promise<FeedItem[]> {
   return sortAndDedupe(parseFeed(await res.text()));
 }
 
-export async function fetchLesson(lessonId: string, url = lessonUrl(lessonId)): Promise<DwLesson> {
+/**
+ * 给了地址就只认那个地址；只给了裸 id 时先按 Lesson 拉，页面里没有这一课再按 Article 拉一次 ——
+ * 光凭一个数字分不出它是哪一类。
+ */
+export async function fetchLesson(lessonId: string, url?: string): Promise<DwLesson> {
+  if (url) return fetchPage(lessonId, url);
+  try {
+    return await fetchPage(lessonId, lessonUrl(lessonId));
+  } catch (err) {
+    if (!(err instanceof LessonNotFoundError)) throw err;
+    return fetchPage(lessonId, articleUrl(lessonId));
+  }
+}
+
+async function fetchPage(lessonId: string, url: string): Promise<DwLesson> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`页面请求失败：${res.status}`);
   return parseLessonPage(await res.text(), lessonId, url);
 }
 
+export class LessonNotFoundError extends Error {}
+
 /** 抽出来是为了让快照回归测试（FR-13.11）能直接喂 HTML，不碰网络。 */
 export function parseLessonPage(html: string, lessonId: string, url: string): DwLesson {
   const state = extractApolloState(html);
-  const lesson = state[`Lesson:${lessonId}`] as Record<string, unknown> | undefined;
-  if (!lesson) throw new Error(`__APOLLO_STATE__ 里没有 Lesson:${lessonId}`);
+  // Lesson 的文稿在 `manuscript`；Article 的在 `text`（<h2> 标题 + <p> 段落），其余字段同名。
+  const asLesson = state[`Lesson:${lessonId}`] as Record<string, unknown> | undefined;
+  const lesson = asLesson ?? (state[`Article:${lessonId}`] as Record<string, unknown> | undefined);
+  if (!lesson) throw new LessonNotFoundError(`页面里既没有 Lesson:${lessonId} 也没有 Article:${lessonId}`);
 
-  const manuscriptHtml = String(lesson.manuscript ?? '');
+  const manuscriptHtml = String((asLesson ? lesson.manuscript : lesson.text) ?? '');
   const teaser = htmlToPlainText(String(lesson.teaser ?? ''));
   const conversion = manuscriptToText(manuscriptHtml);
 
   const knowledges = collectKnowledges(state, lesson.knowledges);
-  const audio = findAudio(state);
+  const audio = findAudio(state, lesson.audios);
 
   const firstPublication = Date.parse(String(lesson.firstPublicationDate ?? ''));
 
@@ -106,8 +132,13 @@ function collectKnowledges(state: ApolloState, refs: unknown): DwKnowledge[] {
   return out;
 }
 
-function findAudio(state: ApolloState): { mp3Src: string; duration: number } | undefined {
-  for (const key of findKeys(state, 'Audio')) {
+/**
+ * 优先按实体自己的 `audios` 引用顺序找：Langsam gesprochene Nachrichten 一页挂两条音频，
+ * 第一条是慢速朗读（与 RSS enclosure 同一份、与文稿对应），第二条是正常语速的直播版。
+ */
+function findAudio(state: ApolloState, refs?: unknown): { mp3Src: string; duration: number } | undefined {
+  const own = Array.isArray(refs) ? refs.map(derefKey).filter((k): k is string => k !== null) : [];
+  for (const key of [...own, ...findKeys(state, 'Audio')]) {
     const node = state[key] as Record<string, unknown> | undefined;
     const src = node?.mp3Src;
     if (typeof src === 'string' && src) {

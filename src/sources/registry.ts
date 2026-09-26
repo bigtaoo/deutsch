@@ -23,12 +23,14 @@ export const SOURCES: SourceDefinition[] = [
     note: '每周一篇，更新已放缓，靠吃存档',
   },
   {
-    id: 'dw-sprachbar',
-    name: 'DW Sprachbar',
-    feedUrl: 'https://rss.dw.com/xml/DKpodcast_sprachbar_de',
+    // 原来这里是 DW Sprachbar —— 那条 RSS 已经下线（2026-09-26 实测 `no feed by that name`），
+    // 换成仍在周更、页面结构与 Alltagsdeutsch 同为 Lesson 的 Top-Thema。
+    id: 'dw-topthema',
+    name: 'DW Top-Thema',
+    feedUrl: 'https://rss.dw.com/xml/DKpodcast_topthemamitvokabeln_de',
     adapter: 'dw',
-    level: 'B2–C1',
-    note: '页面结构推测与 Alltagsdeutsch 同构，未验证',
+    level: 'B1–B2',
+    note: '每周两篇时事短文，带词汇表',
   },
   {
     id: 'dw-langsam',
@@ -36,6 +38,7 @@ export const SOURCES: SourceDefinition[] = [
     feedUrl: 'https://rss.dw.com/xml/DKpodcast_lgn_de',
     adapter: 'dw',
     level: 'B1–B2',
-    note: '语速慢，适合做打点练习的热身',
+    // 页面是 Article 不是 Lesson（a-<id>），文稿在 `text`，没有词汇表；一页两条音频取慢速那条。
+    note: '语速慢，适合做打点练习的热身；没有词汇表',
   },
 ];

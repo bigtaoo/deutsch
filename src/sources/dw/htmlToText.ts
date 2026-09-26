@@ -48,7 +48,9 @@ export function manuscriptToText(html: string): ManuscriptConversion {
     for (const child of Array.from(el.childNodes)) walk(child);
     const end = text.length;
 
-    if (tag === 'p') text += '\n\n';
+    // Article（Langsam gesprochene Nachrichten）每条新闻一个 <h2> 标题，不带句号 ——
+    // 不断开的话标题会和下一段第一句粘成一句。Lesson 的 manuscript 里没有 <h*>（实测），不受影响。
+    if (tag === 'p' || /^h[1-6]$/.test(tag)) text += '\n\n';
 
     if (tag === 'span' && el.getAttribute('data-type') === 'GLOSSARY') {
       const id = el.getAttribute('data-id');
