@@ -384,6 +384,17 @@ function GapCountdown({ state }: { state: ShadowingState }) {
     );
   }
 
+  if (state.phase === 'reprise') {
+    return (
+      <div className="space-y-1">
+        <div className="h-2 rounded-ctl bg-sunken">
+          <div className="h-2 w-full rounded-ctl bg-accent" />
+        </div>
+        <p className="text-note text-accent">再听一遍原句 —— 刚听完自己，对照着听</p>
+      </div>
+    );
+  }
+
   if (state.phase !== 'gap') {
     return (
       <div className="h-2 rounded-ctl bg-sunken">

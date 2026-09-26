@@ -54,7 +54,7 @@ async function seedShadowingLesson(page: Page): Promise<void> {
 
 const recordButton = (page: Page) => page.getByRole('button', { name: /录音中/ });
 
-test('原句 → 录音一直录到点「读完了」→ 真的放出了录下的那么长 → 下一句（FR-6.8）', async ({ page }) => {
+test('原句 → 录音一直录到点「读完了」→ 真的放出了录下的那么长 → 再听原句 → 下一句（FR-6.8）', async ({ page }) => {
   await trackMicStreams(page);
   await seedShadowingLesson(page);
 
@@ -68,8 +68,10 @@ test('原句 → 录音一直录到点「读完了」→ 真的放出了录下�
   const clickedAt = Date.now();
 
   await expect(page.getByText('回放你刚才的跟读')).toBeVisible();
-  await expect(page.getByText('Für viele Menschen')).toBeVisible({ timeout: 15_000 });
+  // 放完自己，原句再放一遍，然后才是下一句
+  await expect(page.getByText('再听一遍原句')).toBeVisible({ timeout: 15_000 });
   const playedMs = Date.now() - clickedAt;
+  await expect(page.getByText('Für viele Menschen')).toBeVisible({ timeout: 15_000 });
 
   // 回放真的放了录下的那一段：解码失败或录了个空，状态机会**立刻**跳到下一句（≈ 0 秒）。
   // 下限留松一点（录了 2 秒，放 ≥ 1.2 秒就算），上限只防「卡在回放里靠保底才出来」。

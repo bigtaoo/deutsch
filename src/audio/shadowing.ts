@@ -4,7 +4,11 @@
 //
 // FR-6.8 录音回放开着时（`echo`），每一遍的 GAP 换成录音，人点「读完了」之后多一段 ECHO：
 //
-//   PLAYING → GAP(录音，等 finishTake()) → ECHO(放自己那一遍) → (repeat--) → PLAYING | NEXT
+//   PLAYING → GAP(录音，等 finishTake()) → ECHO(放自己那一遍) → (repeat--) → PLAYING | REPRISE → NEXT
+//
+// REPRISE：最后一遍放完自己之后，把原句再放一遍再进下一句 —— 系统读、我读、听自己、再听系统，
+// 刚听完自己马上对照原句，差别才听得出来。只在最后一遍加：还有下一遍时，下一遍的 PLAYING
+// 本来就是「再听系统」，再插一次就连着放两遍原句了。没录到/没回放的那一遍也不加。
 //
 // 为什么不用嵌套 setTimeout：变速、跳句、暂停都会在半途发生，嵌套定时器的每一层
 // 都得记得自己取消自己，漏一个就是「上一句的定时器把下一句打断」这种查不出来的 bug。
@@ -40,7 +44,7 @@ export interface EchoRecorder {
   halt(): void;
 }
 
-export type ShadowingPhase = 'idle' | 'playing' | 'gap' | 'echo';
+export type ShadowingPhase = 'idle' | 'playing' | 'gap' | 'echo' | 'reprise';
 
 export interface ShadowingState {
   phase: ShadowingPhase;
@@ -226,7 +230,7 @@ export class ShadowingMachine {
           this.set({ ...this.state, phase: 'echo', recording: false });
           return echo.play(clip, {
             onEnded: () => {
-              if (epoch === this.epoch) this.afterPass(position, repeatsLeft, pass);
+              if (epoch === this.epoch) this.afterEcho(position, repeatsLeft, pass, range);
             },
           });
         })
@@ -254,6 +258,22 @@ export class ShadowingMachine {
   /** FR-6.8：「读完了」—— 结束这一遍的录音、开始回放。不在录音时什么都不做。 */
   finishTake(): void {
     this.finishCurrentTake?.();
+  }
+
+  /** 放完自己那一遍：还有下一遍就照常进入（它本身就从原句开始），最后一遍则先 REPRISE。 */
+  private afterEcho(position: number, repeatsLeft: number, pass: number, range: PlayRange): void {
+    if (repeatsLeft - 1 > 0) return this.afterPass(position, repeatsLeft, pass);
+    const epoch = this.epoch;
+    this.set({ ...this.state, phase: 'reprise', gapStartedAt: 0, gapMs: 0, recording: false });
+    void this.player
+      .playRange(range.start, range.end, {
+        onEnded: () => {
+          if (epoch === this.epoch) this.advance(position);
+        },
+      })
+      .catch(() => {
+        if (epoch === this.epoch) this.stop();
+      });
   }
 
   private afterPass(position: number, repeatsLeft: number, pass: number): void {

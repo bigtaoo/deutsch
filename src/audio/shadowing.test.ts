@@ -202,7 +202,7 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     machine.setQueue(QUEUE, { gapRatio: 1.2, repeat: 1, echo: true });
   });
 
-  it('原句 → 录音一直录到点「读完了」→ 回放 → 放完才进下一句', async () => {
+  it('原句 → 录音一直录到点「读完了」→ 回放 → 原句再放一遍 → 才进下一句', async () => {
     machine.start();
     player.finish();
     expect(machine.getState()).toMatchObject({ phase: 'gap', pass: 1, recording: true });
@@ -217,8 +217,36 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     expect(player.calls).toHaveLength(1); // 录音还在放，下一句没开始
 
     echo.finish();
-    expect(player.calls[1]).toEqual([10, 11]);
+    expect(machine.getState()).toMatchObject({ phase: 'reprise', position: 0, recording: false });
+    expect(player.calls[1]).toEqual([0, 2]); // 同一句原句
+    expect(echo.starts).toBe(1); // 再听那一遍不录
+
+    player.finish();
+    expect(player.calls[2]).toEqual([10, 11]);
     expect(machine.getState()).toMatchObject({ phase: 'playing', position: 1, pass: 1 });
+  });
+
+  it('再听原句中跳句 / 停止：迟到的 onEnded 不推进', async () => {
+    machine.start();
+    player.finish();
+    machine.finishTake();
+    await settle();
+    echo.finish();
+    expect(machine.getState().phase).toBe('reprise');
+    machine.stop();
+    player.finish();
+    expect(machine.getState().phase).toBe('idle');
+    expect(player.calls).toHaveLength(2);
+  });
+
+  it('最后一句的再听放完：整段结束', async () => {
+    machine.start(2);
+    player.finish();
+    machine.finishTake();
+    await settle();
+    echo.finish();
+    player.finish();
+    expect(machine.getState().phase).toBe('idle');
   });
 
   it('长句的保底上限是句长 × 5；到了上限自动当作读完', async () => {
@@ -262,7 +290,11 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
       echo.finish();
     }
     expect(echo.played).toHaveLength(2);
-    expect(player.calls[2]).toEqual([10, 11]);
+    // 第 1 遍放完自己直接进第 2 遍（它本身就从原句开始），只有最后一遍后面多一次再听
+    expect(player.calls).toEqual([[0, 2], [0, 2], [0, 2]]);
+    expect(machine.getState().phase).toBe('reprise');
+    player.finish();
+    expect(player.calls[3]).toEqual([10, 11]);
   });
 
   it('echo 关着时和原来完全一样：固定间隔，finishTake 无效', () => {
@@ -297,7 +329,7 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     machine.finishTake();
     await settle();
     expect(echo.played).toHaveLength(0);
-    expect(player.calls[1]).toEqual([10, 11]);
+    expect(player.calls[1]).toEqual([10, 11]); // 没录到就没有再听，直接下一句
   });
 
   it('点了「读完了」、录音还没交出来就跳句：迟到的录音不会被放出来', async () => {
