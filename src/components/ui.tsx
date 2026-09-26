@@ -201,10 +201,13 @@ export function FilePicker({
   accept,
   children,
   onPick,
+  onPickMany,
 }: {
   accept: string;
   children: ReactNode;
-  onPick: (file: File | undefined) => void;
+  onPick?: (file: File | undefined) => void;
+  /** 给了它就是多选（FR-1.8：教材一个 Aufgabe 跨好几轨）。 */
+  onPickMany?: (files: File[]) => void;
 }) {
   return (
     <label
@@ -214,9 +217,11 @@ export function FilePicker({
       <input
         type="file"
         accept={accept}
+        multiple={Boolean(onPickMany)}
         className="sr-only"
         onChange={(e) => {
-          onPick(e.target.files?.[0]);
+          if (onPickMany) onPickMany([...(e.target.files ?? [])]);
+          else onPick?.(e.target.files?.[0]);
           // 清空之后选同一个文件还能再触发一次 change
           e.target.value = '';
         }}

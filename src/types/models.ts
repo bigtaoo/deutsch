@@ -17,7 +17,17 @@ export interface Lesson {
   title: string; // "Alltagsdeutsch: Der deutsche Wald"
   source:
     | { type: 'dw'; dwLessonId: string; sourceUrl: string } // 可补齐（FR-3.5）
-    | { type: 'manual'; audioFileName?: string }; // 不可补齐（FR-3.6）
+    | {
+        type: 'manual';
+        audioFileName?: string;
+        /**
+         * FR-1.8：这一课的音频是**按顺序拼起来的几轨**（教材一个 Aufgabe 常跨好几轨）。
+         * 只有拼过的课才有，且 `audioFileName` 是其中第一个。换设备补音频时按这份清单
+         * 认文件、按这个顺序重新拼 —— 拼接是确定性的，拼出来的字节数与桌面上那份一致，
+         * 所以不会被判成「换过音频」而白对一遍（FR-3.6a）。
+         */
+        audioFiles?: string[];
+      }; // 不可补齐（FR-3.6）
   /**
    * 音频的**原始下载地址**（DW 的 mp3 直链）。音频本身不进备份，这一行进 ——
    * 换设备后照它把音频取回来，不必先抓一遍页面（FR-3.5 仍然会顺手刷新它，
@@ -41,6 +51,17 @@ export interface Lesson {
    */
   audioBytes?: number;
   manuscriptHash?: string; // plainText 的 hash；补齐后校验 DW 是否改过稿（FR-3.7）
+  /**
+   * FR-1.9：课程列表里按它分组（「Aspekte neu C1」）。缺失 = 不归任何一组，照旧平铺在最上面。
+   * 只是一个自由文本的名字，不是一张「书」表 —— 分组是纯派生的，没有别的东西挂在书上。
+   */
+  collection?: string;
+  /**
+   * FR-1.7：切句时要从行首剥掉的说话人标记（`●` `○` `△`、`Moderatorin`）。
+   * 存下来是因为 FR-1.5 重新切句要用**同一份**清单：换一份清单，同一行切出来的句子文本
+   * 就不一样，旧句一句都认领不上，时间戳和挖空整篇丢光。
+   */
+  speakers?: string[];
   sentences: Sentence[];
   /**
    * FR-14：DW 在 `manuscript` 里内联标注好的生词候选。
@@ -96,6 +117,12 @@ export interface Sentence {
   blanks: Blank[];
   markedDifficult: boolean; // 跟读时跟不上的句子
   excluded: boolean; // 非朗读内容，如 Glossar（FR-1.4）
+  /**
+   * FR-1.7：这一句是某个说话人一段话的**第一句**时，那个说话人的标记（`●` / `Moderatorin`）。
+   * 标记本身不在 `text` 里 —— 它不念，留在正文里会被当成要对齐的字、会出现在挖空与复习的原句里。
+   * 只挂在一段话的第一句上：同一个人连说三句，界面上也只标一次，和书上一样。
+   */
+  speaker?: string;
   /**
    * FR-15.2 / FR-5.3：句内每个词的音频区间，自动对齐顺带算出来的。
    *

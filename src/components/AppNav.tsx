@@ -45,7 +45,7 @@ const DRAWER: Array<{ label: string; route: Route; note: string }> = [
 
 /** 详情/流程页：底部让给音频条，标签栏收起，顶部给一个返回。 */
 function isDetail(route: Route): boolean {
-  return route.name === 'lesson' || route.name === 'import';
+  return route.name === 'lesson' || route.name === 'import' || route.name === 'import-book';
 }
 
 function activeActivity(route: Route): Activity | undefined {

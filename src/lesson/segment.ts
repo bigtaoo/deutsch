@@ -6,11 +6,20 @@
 // 换行是硬边界：manuscript 里 <br /> → \n、</p> → \n\n，跨行合并一定是错的，
 // 所以先按行切开，规则只在行内生效。
 
+import { matchSpeaker } from './speakers';
+
 export interface RawSegment {
   text: string;
   /** 在原始 plainText 中的 offset（已去掉首尾空白） */
   charStart: number;
   charEnd: number;
+  /** FR-1.7：这一片是一段话的第一句时，那段话的说话人标记（已从 text 里剥掉） */
+  speaker?: string;
+}
+
+export interface SegmentOptions {
+  /** FR-1.7：要从行首剥掉的说话人标记（`Lesson.speakers`）。不给 = 不剥，与以前完全一样。 */
+  speakers?: readonly string[];
 }
 
 /** §7.1 缩写表。同时匹配带空格与不带空格的变体，匹配前会把空白折掉。 */
@@ -137,21 +146,28 @@ function applyMergeRules(pieces: Array<{ text: string; index: number }>): Array<
  * 切分整篇纯文本。返回的 offset 直接对应 `Sentence.charStart` / `charEnd`（FR-2.4），
  * 是 plainText 里的绝对位置，不含首尾空白。
  */
-export function segmentSentences(plainText: string): RawSegment[] {
+export function segmentSentences(plainText: string, options: SegmentOptions = {}): RawSegment[] {
   const out: RawSegment[] = [];
   let lineStart = 0;
 
-  for (const line of plainText.split('\n')) {
+  for (const fullLine of plainText.split('\n')) {
+    // FR-1.7：行首的说话人标记整个跳过 —— offset 仍然是 plainText 里的绝对位置，
+    // 只是句子从标记后面开始。
+    const label = matchSpeaker(fullLine, options.speakers);
+    const skip = label?.skip ?? 0;
+    const line = fullLine.slice(skip);
+    let speaker = label?.speaker;
     if (line.trim().length > 0) {
       for (const piece of applyMergeRules(rawSegmentsOfLine(line))) {
         const leading = piece.text.length - piece.text.trimStart().length;
         const text = piece.text.trim();
         if (text.length === 0) continue;
-        const charStart = lineStart + piece.index + leading;
-        out.push({ text, charStart, charEnd: charStart + text.length });
+        const charStart = lineStart + skip + piece.index + leading;
+        out.push({ text, charStart, charEnd: charStart + text.length, ...(speaker ? { speaker } : {}) });
+        speaker = undefined; // 只标这段话的第一句
       }
     }
-    lineStart += line.length + 1; // +1 = 被 split 吃掉的 \n
+    lineStart += fullLine.length + 1; // +1 = 被 split 吃掉的 \n
   }
 
   return out;

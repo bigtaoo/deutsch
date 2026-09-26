@@ -10,6 +10,7 @@ import { ShadowingMachine, type PlayRange, type ShadowingState } from '@/audio/s
 import { MicEcho, describeMicError, echoSupported } from '@/audio/echo';
 import { annotatedSentences, resolveRange } from '@/lesson/timing';
 import { displayNumbers } from '@/lesson/sentences';
+import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
@@ -316,7 +317,10 @@ function CurrentSentenceCard({
               第 {state.pass} 遍 · {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
             </span>
           </div>
-          <p className="text-de">{sentence.text}</p>
+          <p className="text-de">
+            <SpeakerMark speaker={sentence.speaker} />
+            {sentence.text}
+          </p>
           {showTranslation && sentence.translation && (
             <p className="whitespace-pre-line text-ui text-muted">{sentence.translation}</p>
           )}

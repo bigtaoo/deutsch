@@ -22,6 +22,7 @@ import { useLessonStore, isMaterialMissing, isRehydratable } from '@/state/useLe
 import { useAlignStore } from '@/state/useAlignStore';
 import { rehydrateLesson } from '@/sources/importLesson';
 import { hasTimings } from '@/align/apply';
+import { bindPickedAudio, isMultiTrack, listedAudioFiles } from '@/lesson/bindAudio';
 import { SentencesTab } from './lesson/SentencesTab';
 import { AlignStatus } from './lesson/AlignStatus';
 import { ListenTab } from './lesson/ListenTab';
@@ -210,7 +211,6 @@ const autoRehydrated = new Set<string>();
  */
 function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId))!;
-  const attachAudio = useLessonStore((s) => s.attachAudio);
   const enqueueAlign = useAlignStore((s) => s.enqueue);
   const phone = useAlignStore((s) => s.phone);
   const remote = useAlignStore((s) => s.remote);
@@ -250,16 +250,32 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
     }
   };
 
-  const pickAudio = async (file: File | undefined) => {
-    if (!file) return;
-    const { duration, mismatch } = await attachAudio(lessonId, file);
-    // 换了音频文件 = 旧时间戳大概率作废，直接重对一遍（FR-15）。
-    enqueueAlign(lessonId);
-    setMessage(
-      mismatch
-        ? `已绑定，但时长不匹配（原 ${formatTime(lesson.audioDuration, 0)} vs 新 ${formatTime(duration, 0)}），时间戳可能失效。`
-        : `已绑定：${file.name}`,
-    );
+  const multiTrack = isMultiTrack(lesson);
+
+  const pickAudio = async (files: File[]) => {
+    if (files.length === 0) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const result = await bindPickedAudio(lesson, files);
+      if (!result.ok) {
+        setMessage(`还缺这几个文件：${result.missing.join('、')}。要一次全部选上，按原来的顺序拼。`);
+        return;
+      }
+      const { duration, mismatch } = result.outcome;
+      // FR-3.6a：绑的是同一份音频就不重对 —— 时间戳是桌面算好、同步过来的那一份。
+      setMessage(
+        mismatch
+          ? `已绑定，但时长不匹配（原 ${formatTime(lesson.audioDuration, 0)} vs 新 ${formatTime(duration, 0)}），正在重新对齐。`
+          : result.realigned
+            ? `已绑定：${result.fileName}，正在自动对齐（进度在页面底部）。`
+            : `已绑定：${result.fileName}。时间戳是同步来的，不用重对。`,
+      );
+    } catch (err) {
+      setMessage(`绑定失败：${err instanceof Error ? err.message : err}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -279,8 +295,8 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
       title={busy ? '正在补齐素材…' : '素材未下载 —— 播放相关的功能全部不可用'}
       action={
         <>
-          <FilePicker accept="audio/*" onPick={(file) => void pickAudio(file)}>
-            选本地音频文件…
+          <FilePicker accept="audio/*" onPickMany={(files) => void pickAudio(files)}>
+            {multiTrack ? `选这 ${listedAudioFiles(lesson).length} 个音频文件…` : '选本地音频文件…'}
           </FilePicker>
           {rehydratable && !needsDecision && (
             <Button disabled={busy} onClick={() => void rehydrate()}>
@@ -296,7 +312,9 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
           ? '照标注层里记着的下载地址重新抓页面和音频（6~10MB）。'
           : rehydratable
             ? '这一课来自 DW，可以按 lesson id 重新抓取。'
-            : '这一课是手动导入的，无法自动补齐，需要重新选择本地音频文件。'}
+            : multiTrack
+              ? `这一课是几轨拼起来的，要把这几个文件一起选上：${listedAudioFiles(lesson).join('、')}。`
+              : '这一课是手动导入的，无法自动补齐，需要重新选择本地音频文件。'}
       </p>
       {message && <Hint tone="warn">{message}</Hint>}
     </Banner>

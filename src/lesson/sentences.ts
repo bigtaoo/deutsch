@@ -28,6 +28,7 @@ export function createSentences(segments: RawSegment[]): Sentence[] {
     blanks: [],
     markedDifficult: false,
     excluded: false,
+    ...(seg.speaker ? { speaker: seg.speaker } : {}),
   }));
 }
 

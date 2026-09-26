@@ -8,6 +8,7 @@ import { audioPlayer } from '@/audio/player';
 import { useLessonAudio } from '@/audio/useLessonAudio';
 import { resolveRange } from '@/lesson/timing';
 import { displayNumbers } from '@/lesson/sentences';
+import { SpeakerMark } from '@/components/SpeakerPicker';
 import { isSelected, shouldSuggestCollocation, surfaceOf, toRanges, tokenize, type Range, type Token } from '@/lesson/tokens';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
@@ -123,6 +124,7 @@ function SentenceRow({
         <span className="w-8 shrink-0 pt-1 text-right text-note text-faint">{displayNumber ?? '—'}</span>
 
         <p className="min-w-0 flex-1 text-de leading-loose">
+          <SpeakerMark speaker={sentence.speaker} />
           {tokens.map((token) => {
             const inBlank = isSelected(blankRanges, token);
             const picked = active && selection.some((t) => t.start === token.start);

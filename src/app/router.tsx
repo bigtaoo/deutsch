@@ -7,6 +7,7 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
 export type Route =
   | { name: 'lessons' }
   | { name: 'import' }
+  | { name: 'import-book' }
   | { name: 'sources' }
   | { name: 'lesson'; lessonId: string; tab: LessonTab }
   | { name: 'vocab' }
@@ -59,6 +60,8 @@ function parse(hash: string): Route {
       return { name: 'lessons' };
     case 'import':
       return { name: 'import' };
+    case 'import-book':
+      return { name: 'import-book' };
     case 'sources':
       return { name: 'sources' };
     case 'vocab':

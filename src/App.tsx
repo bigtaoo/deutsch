@@ -19,6 +19,7 @@ import { AlignBar, AlignCrashBanner } from '@/components/AlignBar';
 import { BottomTabs, TopBar, shouldShowBottomTabs } from '@/components/AppNav';
 import { LessonsPage } from '@/pages/LessonsPage';
 import { ImportPage } from '@/pages/ImportPage';
+import { BookImportPage } from '@/pages/BookImportPage';
 import { LessonPage } from '@/pages/LessonPage';
 import { SourcesPage } from '@/pages/SourcesPage';
 import { VocabPage } from '@/pages/VocabPage';
@@ -125,6 +126,7 @@ function App() {
 
         {route.name === 'lessons' && <LessonsPage />}
         {route.name === 'import' && <ImportPage />}
+        {route.name === 'import-book' && <BookImportPage />}
         {route.name === 'sources' && <SourcesPage />}
         {route.name === 'lesson' && <LessonPage lessonId={route.lessonId} tab={route.tab} />}
         {route.name === 'vocab' && <VocabPage />}

@@ -7,6 +7,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useLessonStore } from '@/state/useLessonStore';
 import { segmentSentences } from '@/lesson/segment';
 import { resegment } from '@/lesson/resegment';
+import { SpeakerMark } from '@/components/SpeakerPicker';
 import {
   displayNumbers,
   excludeLastN,
@@ -132,6 +133,7 @@ export function SentencesTab({ lesson, cache }: Props) {
                       setNotice(null);
                     }}
                   >
+                    <SpeakerMark speaker={sentence.speaker} />
                     {sentence.text}
                   </p>
                 )}

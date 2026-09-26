@@ -108,6 +108,55 @@ describe('createLesson', () => {
     expect((await getLessonCache(id))?.audioBytes).toBe(2048);
   });
 
+  it('手动导入也在标注层记下字节数 —— 另一台设备重绑同一个文件时靠它认出是同一份（FR-3.6a）', async () => {
+    const id = await useLessonStore.getState().createLesson({
+      title: 'Lektion',
+      plainText: TEXT,
+      audioFile: audioFile('track.mp3', 4096),
+    });
+    expect((await getLesson(id))!.audioBytes).toBe(4096);
+  });
+
+  it('几轨拼起来的课记下全部文件名（按拼接顺序），第一个同时是 audioFileName（FR-1.8）', async () => {
+    const id = await useLessonStore.getState().createLesson({
+      title: 'Kapitel 1 · Modul 2 Aufgabe 2a',
+      plainText: TEXT,
+      audioFile: audioFile('1_02 +7.mp3'),
+      audioFiles: ['1_02.mp3', '1_03.mp3'],
+    });
+    expect((await getLesson(id))!.source).toEqual({
+      type: 'manual',
+      audioFileName: '1_02.mp3',
+      audioFiles: ['1_02.mp3', '1_03.mp3'],
+    });
+  });
+
+  it('分组名去掉首尾空白再存；空串等于不分组（FR-1.9）', async () => {
+    const a = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT, collection: '  Aspekte neu C1 ' });
+    const b = await useLessonStore.getState().createLesson({ title: 'B', plainText: TEXT, collection: '   ' });
+    expect((await getLesson(a))!.collection).toBe('Aspekte neu C1');
+    expect(await getLesson(b)).not.toHaveProperty('collection');
+  });
+
+  it('给了说话人清单就从行首剥掉、记在第一句上，并把清单存进课程（FR-1.7）', async () => {
+    const text = '● Hallo. Wie geht’s?\n○ Gut.';
+    const id = await useLessonStore.getState().createLesson({ title: 'Dialog', plainText: text, speakers: ['●', '○'] });
+    const stored = (await getLesson(id))!;
+    expect(stored.speakers).toEqual(['●', '○']);
+    expect(stored.sentences.map((s) => [s.speaker, s.text])).toEqual([
+      ['●', 'Hallo.'],
+      [undefined, 'Wie geht’s?'],
+      ['○', 'Gut.'],
+    ]);
+  });
+
+  it('空清单等于没给：不存 speakers 字段，切句与以前一样', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'X', plainText: '● Hallo.', speakers: [] });
+    const stored = (await getLesson(id))!;
+    expect(stored).not.toHaveProperty('speakers');
+    expect(stored.sentences[0].text).toBe('● Hallo.');
+  });
+
   it('给了 dwLessonId 就是 DW 来源，因此可以自动补齐（FR-3.5）', async () => {
     const id = await useLessonStore.getState().createLesson({
       title: 'Lektion',
@@ -235,6 +284,23 @@ describe('resegmentLesson（FR-1.5）', () => {
     expect((await getLessonCache(id))?.plainText).toBe(`${TEXT} Vierter Satz.`);
   });
 
+  it('用这一课当初的说话人清单重切 —— 换一份清单同一行切出来的文本不同，一句都认领不上', async () => {
+    const text = '● Hallo.\n○ Gut.';
+    const id = await useLessonStore.getState().createLesson({ title: 'Dialog', plainText: text, speakers: ['●', '○'] });
+    await useLessonStore.getState().patchLesson(id, (l) => ({
+      ...l,
+      sentences: l.sentences.map((s) => ({ ...s, startTime: s.index * 2, timingSource: 'auto' as const })),
+    }));
+
+    const result = await useLessonStore.getState().resegmentLesson(id, `${text}\n● Tschüss.`);
+
+    expect(result.sentences.map((s) => [s.speaker, s.text, s.startTime])).toEqual([
+      ['●', 'Hallo.', 0],
+      ['○', 'Gut.', 2],
+      ['●', 'Tschüss.', undefined],
+    ]);
+  });
+
   it('课程不存在时抛，而不是静默建一课', async () => {
     await expect(
       useLessonStore.getState().resegmentLesson('gibt-es-nicht', TEXT),
@@ -263,6 +329,53 @@ describe('attachAudio（FR-3.6）', () => {
     expect(mismatch).toBe(true);
     // 已有时长不被覆盖 —— 时间戳还是按它标的。
     expect((await getLesson(id))!.audioDuration).toBe(123.5);
+  });
+
+  it('绑回同一个文件（字节数一样）：audioChanged 为 false —— 调用方据此不重对齐（FR-3.6a）', async () => {
+    const id = await useLessonStore.getState().createLesson({
+      title: 'Lektion',
+      plainText: TEXT,
+      audioFile: audioFile('track.mp3', 4096),
+    });
+    const outcome = await useLessonStore.getState().attachAudio(id, audioFile('track.mp3', 4096));
+    expect(outcome.audioChanged).toBe(false);
+  });
+
+  it('字节数不同但时长在容差内（WAV 兜底在别的浏览器上差几个采样）：不算换了音频', async () => {
+    const id = await useLessonStore.getState().createLesson({
+      title: 'Lektion',
+      plainText: TEXT,
+      audioFile: audioFile('a +1.wav', 4096),
+    });
+    readAudioDuration.mockResolvedValueOnce(123.5 + 0.01);
+    expect((await useLessonStore.getState().attachAudio(id, audioFile('a +1.wav', 4100))).audioChanged).toBe(false);
+  });
+
+  it('字节数不同且时长对不上：换了音频', async () => {
+    const id = await useLessonStore.getState().createLesson({
+      title: 'Lektion',
+      plainText: TEXT,
+      audioFile: audioFile('a.mp3', 4096),
+    });
+    readAudioDuration.mockResolvedValueOnce(200);
+    expect((await useLessonStore.getState().attachAudio(id, audioFile('b.mp3', 9999))).audioChanged).toBe(true);
+  });
+
+  it('什么都没记过的课（没有字节数也没有时长）只能当作换过', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'Lektion', plainText: TEXT });
+    expect((await useLessonStore.getState().attachAudio(id, audioFile())).audioChanged).toBe(true);
+  });
+
+  it('audioChanged 是拿写回之前的字节数比的 —— 写回之后再比永远相等', async () => {
+    const id = await useLessonStore.getState().createLesson({
+      title: 'Lektion',
+      plainText: TEXT,
+      audioFile: audioFile('a.mp3', 100),
+    });
+    readAudioDuration.mockResolvedValueOnce(300);
+    const first = await useLessonStore.getState().attachAudio(id, audioFile('b.mp3', 200));
+    expect(first.audioChanged).toBe(true);
+    expect((await getLesson(id))!.audioBytes).toBe(200);
   });
 
   it('容差之内当成同一份', async () => {

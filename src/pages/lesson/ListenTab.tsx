@@ -17,6 +17,7 @@ import { audioPlayer } from '@/audio/player';
 import { flaggedByConfidence, toggleTimingChecked } from '@/align/apply';
 import { activeAt, buildKaraoke, type KaraokeLine } from '@/lesson/karaoke';
 import { displayNumbers } from '@/lesson/sentences';
+import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
 import { AudioBar } from '@/components/AudioBar';
 import { LessonNotes } from './LessonNotes';
@@ -194,6 +195,7 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
               key={line.index}
               line={line}
               number={numbers.get(line.index)}
+              speaker={lesson.sentences[line.index]?.speaker}
               translation={showTranslation ? lesson.sentences[line.index]?.translation : undefined}
               check={
                 flagged.pending.has(line.index)
@@ -246,6 +248,7 @@ type Check = 'pending' | 'checked' | null;
 const Line = memo(function Line({
   line,
   number,
+  speaker,
   translation,
   check,
   state,
@@ -256,6 +259,8 @@ const Line = memo(function Line({
 }: {
   line: KaraokeLine;
   number: number | undefined;
+  /** FR-1.7：说话人标记，只在一段话的第一句上有 */
+  speaker: string | undefined;
   /** FR-19：中文。开关关着时传 undefined —— memo 因此在关着的时候完全不受译文影响。 */
   translation: string | undefined;
   check: Check;
@@ -302,6 +307,7 @@ const Line = memo(function Line({
         <span className={gutter}>{number ?? '—'}</span>
       )}
       <div className="min-w-0 flex-1">
+        <SpeakerMark speaker={speaker} />
         {line.tokens.map((token, i) =>
           token.time ? (
             // 当前词必须是**反白**（warn 实底 + surface 字），不能是 warn-soft：

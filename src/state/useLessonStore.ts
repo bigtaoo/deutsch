@@ -32,6 +32,12 @@ export interface NewLessonInput {
   manuscriptHtml?: string;
   plainText: string;
   audioFile?: File;
+  /** FR-1.8：`audioFile` 是几轨拼起来的时候，原来那几个文件名（按拼接顺序） */
+  audioFiles?: string[];
+  /** FR-1.9：归到哪一组（「Aspekte neu C1」） */
+  collection?: string;
+  /** FR-1.7：切句时从行首剥掉的说话人标记 */
+  speakers?: string[];
 }
 
 interface LessonState {
@@ -65,10 +71,22 @@ interface LessonState {
   resegmentLesson: (lessonId: string, plainText: string, manuscriptHtml?: string) => Promise<ResegmentResult>;
 
   /** FR-1.3 / FR-3.6：绑定本地音频文件。 */
-  attachAudio: (lessonId: string, file: File) => Promise<{ duration: number; mismatch: boolean }>;
+  attachAudio: (lessonId: string, file: File) => Promise<AttachOutcome>;
 
   /** FR-3.8 / FR-3.9：清除单课缓存（标注层不动）。 */
   clearCache: (lessonId: string) => Promise<void>;
+}
+
+export interface AttachOutcome {
+  duration: number;
+  /** 时长对不上（FR-3.6）：界面上要警告「时间戳可能失效」 */
+  mismatch: boolean;
+  /**
+   * FR-3.6a：这次绑的是不是**另一份**音频。调用方拿它决定要不要重新对齐 ——
+   * 绑的是同一个文件（手机上补回桌面导入时用的那个 mp3）就不该重对，
+   * 时间戳正是桌面刚算好、同步过来的那一份。
+   */
+  audioChanged: boolean;
 }
 
 /** 时长差超过这个值就警告「时间戳可能失效」（FR-3.6）。 */
@@ -99,7 +117,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
   createLesson: async (input) => {
     const id = generateId();
     const now = Date.now();
-    const sentences = createSentences(segmentSentences(input.plainText));
+    const speakers = input.speakers && input.speakers.length > 0 ? input.speakers : undefined;
+    const sentences = createSentences(segmentSentences(input.plainText, { speakers }));
 
     let audioDuration: number | undefined;
     let audioBytes = 0;
@@ -114,8 +133,16 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       title: input.title,
       source: input.dwLessonId
         ? { type: 'dw', dwLessonId: input.dwLessonId, sourceUrl: input.sourceUrl ?? '' }
-        : { type: 'manual', audioFileName: input.audioFile?.name },
+        : {
+            type: 'manual',
+            audioFileName: input.audioFiles?.[0] ?? input.audioFile?.name,
+            ...(input.audioFiles && input.audioFiles.length > 1 ? { audioFiles: input.audioFiles } : {}),
+          },
       audioDuration,
+      // 手动导入以前不记字节数，于是另一台设备重绑同一个文件时无从判断「是不是同一个」（FR-3.6a）。
+      ...(input.audioFile ? { audioBytes } : {}),
+      ...(input.collection?.trim() ? { collection: input.collection.trim() } : {}),
+      ...(speakers ? { speakers } : {}),
       manuscriptHash: manuscriptHash(input.plainText),
       sentences,
       createdAt: now,
@@ -191,7 +218,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     const lesson = get().lessons.find((l) => l.id === lessonId) ?? (await getLesson(lessonId));
     if (!lesson) throw new Error('课程不存在');
 
-    const result = resegment(lesson.sentences, segmentSentences(plainText));
+    // FR-1.7：用这一课当初那份说话人清单，否则同一行切出来的文本不同、一句都认领不上。
+    const result = resegment(lesson.sentences, segmentSentences(plainText, { speakers: lesson.speakers }));
     const cache = (await getLessonCache(lessonId)) ?? {
       lessonId,
       hasAudio: false,
@@ -243,6 +271,15 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     const mismatch =
       lesson.audioDuration !== undefined &&
       Math.abs(lesson.audioDuration - duration) > DURATION_TOLERANCE_SECONDS;
+    // 字节数一样 = 同一个文件；不一样时再看时长 —— 多轨拼接走 WAV 兜底那条路时，
+    // 不同浏览器的解码器会差几个采样，字节数跟着变，但时长仍在容差内，那不算换了音频。
+    // 两样都没记过（很老的课）就只能当作换过。必须在下面写回 audioBytes **之前**算。
+    const audioChanged =
+      lesson.audioBytes === file.size
+        ? false
+        : lesson.audioDuration !== undefined
+          ? mismatch
+          : true;
 
     // 时长只在本来没有时才写（FR-3.6：对不上只警告，不静默改标注层），
     // 字节数则一律记上 —— 它是「下次补齐时音频换没换过」的判据（§0 变更 43）。
@@ -253,7 +290,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
         audioBytes: file.size,
       });
     }
-    return { duration, mismatch };
+    return { duration, mismatch, audioChanged };
   },
 
   clearCache: async (lessonId) => {
