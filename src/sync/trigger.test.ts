@@ -19,6 +19,10 @@ vi.mock('./session', () => ({
   getSessionToken: () => getSessionToken(),
 }));
 
+// 变更 69：syncNow 顺带扫一遍待传的音频。上传本身由 audio.test.ts 测，这里只看「调了、不等它」
+const uploadPendingAudio = vi.fn<() => Promise<number>>(async () => 0);
+vi.mock('./audio', () => ({ uploadPendingAudio: () => uploadPendingAudio() }));
+
 const {
   syncVocabNow,
   syncLessonDeletion,
@@ -386,5 +390,25 @@ describe('一次性修复（§0 变更 43：把变更之前丢掉的那些补推
     await syncNow({ force: true });
     const urlsAgain = (again.mock.calls as unknown as [string, RequestInit][]).map(([url]) => url);
     expect(urlsAgain.filter((u) => u.includes('lesson%3A'))).toHaveLength(0);
+  });
+});
+
+describe('syncNow 与音频上传（变更 69）', () => {
+  it('推完拉完顺带扫一遍待传音频，而且不等它 —— 一本书上百 MB，不能拖住启动', async () => {
+    uploadPendingAudio.mockReturnValueOnce(new Promise(() => {})); // 永远传不完
+    respondWith();
+    await syncNow({ force: true });
+    expect(uploadPendingAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it('扫描出错不冒到 syncNow 外面', async () => {
+    uploadPendingAudio.mockRejectedValueOnce(new Error('坏了'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    respondWith();
+    await expect(syncNow({ force: true })).resolves.toBeUndefined();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

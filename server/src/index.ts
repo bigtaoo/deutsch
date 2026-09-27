@@ -10,6 +10,7 @@ import { createEngine } from './align/engine.ts';
 import { createJobQueue } from './align/jobs.ts';
 import { createAiExplainer } from './ai.ts';
 import { createFileDiagSink } from './diag.ts';
+import { createFileAudioStore } from './audioStore.ts';
 
 const config = loadConfig();
 const store = new Store(join(config.dataDir, 'sync.sqlite'));
@@ -51,6 +52,8 @@ const app = createApp({
   // 而它存在的场合恰恰是「手机上出了事、而我什么都看不到」—— 那种时候最不该再去
   // 改一个环境变量重启一次。
   diag: createFileDiagSink(join(config.dataDir, 'diag')),
+  // 手动导入的课的音频（变更 69）。同样无条件开：它只在有人上传时才占盘，上限在 config.audio。
+  audio: createFileAudioStore(join(config.dataDir, 'audio'), config.audio),
 });
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) => {

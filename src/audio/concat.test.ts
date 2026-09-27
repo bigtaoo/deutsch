@@ -1,8 +1,17 @@
 // FR-1.8：多轨拼接。用手工拼出来的 MPEG1 Layer III 帧测字节那条路 ——
-// WAV 兜底要 Web Audio 解码，jsdom 里没有，那一半只测纯函数 encodeWav。
+// 转码那条路：编码器是真的 lamejs；解码（Web Audio）jsdom 里没有，用一个假的 OfflineAudioContext 顶上。
 
-import { describe, expect, it } from 'vitest';
-import { concatAudioFiles, concatMp3Bytes, encodeWav, parseFrameHeader, pickListedFiles, scanMp3 } from './concat';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  concatAudioFiles,
+  concatMp3Bytes,
+  createMp3Stream,
+  needsTranscode,
+  parseFrameHeader,
+  pickListedFiles,
+  scanMp3,
+  toInt16,
+} from './concat';
 
 /** 44.1kHz 的一帧。128kbps → 417 字节，160kbps → 522 字节。 */
 function frame({ kbps = 128, mono = false, fill = 0x11, marker }: { kbps?: 128 | 160; mono?: boolean; fill?: number; marker?: string } = {}): number[] {
@@ -118,18 +127,117 @@ describe('concatAudioFiles', () => {
   });
 });
 
-describe('encodeWav', () => {
-  it('写出 44 字节头 + 16 位单声道 PCM，并把越界值夹住', () => {
-    const wav = encodeWav(new Float32Array([0, 1, -1, 2]), 44100);
-    const view = new DataView(wav.buffer);
-    expect(new TextDecoder().decode(wav.subarray(0, 4))).toBe('RIFF');
-    expect(new TextDecoder().decode(wav.subarray(8, 12))).toBe('WAVE');
-    expect(view.getUint16(22, true)).toBe(1); // 单声道
-    expect(view.getUint32(24, true)).toBe(44100);
-    expect(view.getUint32(40, true)).toBe(8);
-    expect([view.getInt16(44, true), view.getInt16(46, true), view.getInt16(48, true), view.getInt16(50, true)]).toEqual([
-      0, 0x7fff, -0x8000, 0x7fff,
-    ]);
+describe('toInt16', () => {
+  it('[-1, 1] 映射到 16 位，越界的夹住', () => {
+    expect([...toInt16(new Float32Array([0, 1, -1, 2, -3]))]).toEqual([0, 0x7fff, -0x8000, 0x7fff, -0x8000]);
+  });
+});
+
+/** 最小的 WAV 头（RIFF….WAVE）+ 几个采样 */
+function wavBytes(): Uint8Array {
+  const out = new Uint8Array(48);
+  out.set([...'RIFF'].map((c) => c.charCodeAt(0)), 0);
+  out.set([...'WAVE'].map((c) => c.charCodeAt(0)), 8);
+  return out;
+}
+
+describe('needsTranscode', () => {
+  it('CBR mp3 不转；VBR mp3 转（seek 不准）；WAV 转（太大）；m4a 之类不认识的原样', () => {
+    expect(needsTranscode(mp3([id3v2(), frame(), frame()]))).toBe(false);
+    expect(needsTranscode(mp3([frame({ kbps: 128 }), frame({ kbps: 160 })]))).toBe(true);
+    expect(needsTranscode(wavBytes())).toBe(true);
+    expect(needsTranscode(new Uint8Array([0, 0, 0, 0x20, ...[...'ftypM4A '].map((c) => c.charCodeAt(0))]))).toBe(false);
+  });
+
+  it('带 Info 头的 CBR（LAME 写的）不转', () => {
+    expect(needsTranscode(mp3([frame({ marker: 'Info' }), frame(), frame()]))).toBe(false);
+  });
+});
+
+/** 1 秒 440Hz 正弦 */
+const tone = (seconds: number) => {
+  const out = new Float32Array(Math.round(44100 * seconds));
+  for (let i = 0; i < out.length; i++) out[i] = Math.sin((2 * Math.PI * 440 * i) / 44100) * 0.5;
+  return out;
+};
+
+describe('createMp3Stream（真的 lamejs）', () => {
+  it('编出来是 64kbps 单声道 44.1kHz 的 CBR —— 于是能按字节拼、seek 准', async () => {
+    const stream = await createMp3Stream();
+    await stream.push(tone(2));
+    const bytes = stream.finish();
+    const scanned = scanMp3(bytes)!;
+    expect(scanned.cbr).toBe(true);
+    expect(scanned.first).toMatchObject({ version: 3, sampleRate: 44100, mono: true, bitrateIndex: 5 }); // 5 = 64kbps
+    expect(bytes.length / 2).toBeGreaterThan(7_500); // 64kbps ≈ 8000 字节/秒
+    expect(bytes.length / 2).toBeLessThan(8_800);
+  });
+
+  it('分几段喂（几轨、或一轨切成好几块）：帧数 = 总采样数 / 1152，中间没有多出来的缝', async () => {
+    const stream = await createMp3Stream();
+    await stream.push(tone(1.3));
+    await stream.push(tone(0.7));
+    const bytes = stream.finish();
+    let frames = 0;
+    for (let at = 0; at < bytes.length; ) {
+      const f = parseFrameHeader(bytes, at);
+      if (!f) break;
+      frames++;
+      at += f.length;
+    }
+    const expected = (44100 * 2) / 1152; // ≈ 76.6
+    expect(frames).toBeGreaterThanOrEqual(Math.floor(expected));
+    expect(frames).toBeLessThanOrEqual(Math.ceil(expected) + 2); // 编码器延迟 + 末帧补齐
+  });
+});
+
+describe('concatAudioFiles · 转码那条路', () => {
+  /** 假的解码器：每个文件解成「文件字节数 / 100」秒的两声道正弦 */
+  function fakeAudioContext() {
+    const decoded: number[] = [];
+    class FakeOfflineAudioContext {
+      decodeAudioData(buf: ArrayBuffer) {
+        const seconds = buf.byteLength / 100;
+        decoded.push(seconds);
+        const data = tone(seconds);
+        return Promise.resolve({ length: data.length, numberOfChannels: 2, getChannelData: () => data });
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineAudioContext);
+    return decoded;
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('几轨 VBR：按顺序逐轨解码、编成一个 CBR mp3，文件名标出拼了几轨', async () => {
+    const decoded = fakeAudioContext();
+    // 不是 mp3 的字节 → 字节路拒绝 → 转码；字节数定了假解码器解出来多长
+    const a = new File([new Uint8Array(100)], '2_20.mp3');
+    const b = new File([new Uint8Array(50)], '2_21.mp3');
+    const { file, method } = await concatAudioFiles([a, b]);
+    expect(method).toBe('mp3');
+    expect(file.name).toBe('2_20 +1.mp3');
+    expect(file.type).toBe('audio/mpeg');
+    expect(decoded).toEqual([1, 0.5]);
+    const scanned = scanMp3(new Uint8Array(await file.arrayBuffer()))!;
+    expect(scanned.cbr).toBe(true);
+    expect(scanned.first.mono).toBe(true);
+  });
+
+  it('单个 VBR mp3 也转，名字不改（课程按这个名字认领音频，FR-3.6a）', async () => {
+    fakeAudioContext();
+    const vbr = new File([mp3([frame({ kbps: 128 }), frame({ kbps: 160 }), frame({ kbps: 128 })])], '605038_LB_CD2 (17).mp3');
+    const { file, method } = await concatAudioFiles([vbr]);
+    expect(method).toBe('mp3');
+    expect(file.name).toBe('605038_LB_CD2 (17).mp3');
+    expect(file).not.toBe(vbr);
+    expect(scanMp3(new Uint8Array(await file.arrayBuffer()))!.cbr).toBe(true);
+  });
+
+  it('单个 CBR mp3 不解码、原样返回', async () => {
+    const decoded = fakeAudioContext();
+    const cbr = new File([mp3([frame(), frame()])], 'a.mp3');
+    expect((await concatAudioFiles([cbr])).file).toBe(cbr);
+    expect(decoded).toEqual([]);
   });
 });
 

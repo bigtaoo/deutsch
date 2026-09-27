@@ -13,14 +13,23 @@
 //    不会被判成「换过音频」而白对一遍（FR-3.6a）。
 //    Xing 头必须去掉：它记着「这个文件有多少帧」，留着第一个文件的那份，
 //    浏览器会把整段拼接的时长报成第一轨的长度。
-// 2. **解码后拼成 WAV**（兜底）：VBR、采样率不一致、不是 mp3。VBR 不能按字节拼，
-//    因为去掉 Xing 头之后浏览器只能按码率估位置，`<audio>` 的 seek 会偏 —— 而跟读
-//    整个建立在「跳到这一句的起点」上。代价是体积（44.1kHz 单声道 16 位，约 5MB/分钟）。
+// 2. **解码后重新编码成 64kbps 单声道 CBR mp3**（其余情况，变更 69）：VBR、规格不一致、不是 mp3。
+//    VBR 不能按字节拼，因为去掉 Xing 头之后浏览器只能按码率估位置，`<audio>` 的 seek 会偏 —— 而跟读
+//    整个建立在「跳到这一句的起点」上。转成 CBR 之后 seek 是精确的，体积还比原声小一半
+//    （Aspekte neu C1 的原声平均 129kbps）。64kbps 单声道对说话录音听不出差别；再往下压就开始糊了，
+//    而这个应用练的正是听。以前这条路是拼成 WAV（约 5MB/分钟），一本书的多轨题就有 470MB。
+//
+// ── 单个文件也可能转 ──
+// VBR 的 mp3 单独一个也 seek 不准，WAV 单独一个也太大：这两种单个文件照样转。
+// CBR mp3 与其它本来就压缩过的格式（m4a / ogg / opus）原样保留 —— 它们 seek 是准的，不必再损一代。
+//
+// **转码不是确定性的**：不同浏览器的 mp3 解码器差几个采样，同一份原声在两台设备上转出来字节不同。
+// FR-3.6a 的「换没换音频」因此落到比时长那一档（0.5 秒容差），不会被误判成换过。
 
 export interface ConcatResult {
   file: File;
-  /** 走的是哪条路，界面上用来说明为什么这个文件突然变大了 */
-  method: 'bytes' | 'wav';
+  /** 走的是哪条路：原样 / 按字节拼，还是解码后重新编码 */
+  method: 'bytes' | 'mp3';
 }
 
 interface FrameInfo {
@@ -155,35 +164,67 @@ export function concatMp3Bytes(files: Uint8Array[]): Uint8Array<ArrayBuffer> | n
   return out;
 }
 
-/** 16 位 PCM 单声道 WAV。纯函数。 */
-export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array<ArrayBuffer> {
-  const out = new Uint8Array(44 + samples.length * 2);
-  const view = new DataView(out.buffer);
-  const ascii = (at: number, s: string) => [...s].forEach((c, i) => view.setUint8(at + i, c.charCodeAt(0)));
-  ascii(0, 'RIFF');
-  view.setUint32(4, 36 + samples.length * 2, true);
-  ascii(8, 'WAVE');
-  ascii(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // 单声道
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  ascii(36, 'data');
-  view.setUint32(40, samples.length * 2, true);
+/** 转码的规格：MPEG1 Layer III，44.1kHz，单声道，CBR 64kbps。 */
+export const TRANSCODE_RATE = 44100;
+export const TRANSCODE_KBPS = 64;
+
+/** 一次喂给编码器多少采样（1152 的整数倍 = 整帧），每喂这么多就让一次主线程，界面不卡死。 */
+const CHUNK = 1152 * 256;
+
+/** Float32 [-1, 1] → Int16，越界的夹住。纯函数。 */
+export function toInt16(samples: Float32Array): Int16Array {
+  const out = new Int16Array(samples.length);
   for (let i = 0; i < samples.length; i++) {
     const v = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
   }
   return out;
 }
 
-const WAV_RATE = 44100;
+type Mp3Encoder = { encodeBuffer(pcm: Int16Array): Uint8Array; flush(): Uint8Array };
+
+/**
+ * 流式编码：几轨一段一段喂进同一个编码器，拼接处没有缝；一次只在内存里放一轨的 PCM
+ * （Aspekte 最长一轨 12 分钟 ≈ 127MB Float32，整题一次性解码要翻几倍）。
+ * lamejs（LGPL-3.0，纯 JS 约 150KB）只有真要转码时才加载。
+ */
+export async function createMp3Stream(): Promise<{
+  push(samples: Float32Array): Promise<void>;
+  finish(): Uint8Array<ArrayBuffer>;
+}> {
+  const { Mp3Encoder } = await import('@breezystack/lamejs');
+  const encoder: Mp3Encoder = new Mp3Encoder(1, TRANSCODE_RATE, TRANSCODE_KBPS);
+  const chunks: Uint8Array[] = [];
+  return {
+    async push(samples) {
+      for (let i = 0; i < samples.length; i += CHUNK) {
+        chunks.push(encoder.encodeBuffer(toInt16(samples.subarray(i, i + CHUNK))));
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    },
+    finish() {
+      chunks.push(encoder.flush());
+      const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+      let offset = 0;
+      for (const c of chunks) {
+        out.set(c, offset);
+        offset += c.length;
+      }
+      return out;
+    },
+  };
+}
+
+/** 单个文件要不要转：VBR 的 mp3（seek 不准）与 WAV（太大）要转，其余原样。 */
+export function needsTranscode(bytes: Uint8Array): boolean {
+  const mp3 = scanMp3(bytes);
+  if (mp3) return !mp3.cbr;
+  const riff = bytes.length >= 12 && String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF';
+  return riff && String.fromCharCode(...bytes.subarray(8, 12)) === 'WAVE';
+}
 
 async function decodeMono(file: File): Promise<Float32Array> {
-  const ctx = new OfflineAudioContext(1, 1, WAV_RATE);
+  const ctx = new OfflineAudioContext(1, 1, TRANSCODE_RATE);
   const buffer = await ctx.decodeAudioData(await file.arrayBuffer());
   const mono = new Float32Array(buffer.length);
   for (let c = 0; c < buffer.numberOfChannels; c++) {
@@ -200,29 +241,31 @@ function concatName(files: File[], ext: string): string {
 }
 
 /**
- * 按给定顺序拼接。只有一个文件时原样返回 —— 不改字节，
- * 老路径（一课一个 mp3）的行为因此与以前完全一致。
+ * 按给定顺序拼接（顺带把单个 VBR / WAV 转成 CBR mp3）。
+ * 单个 CBR mp3 或 m4a 之类原样返回 —— 不改字节，一课一个 mp3 的老路径与以前完全一致。
  */
 export async function concatAudioFiles(files: File[]): Promise<ConcatResult> {
   if (files.length === 0) throw new Error('没有要拼的文件');
-  if (files.length === 1) return { file: files[0], method: 'bytes' };
+
+  if (files.length === 1) {
+    const [only] = files;
+    if (!needsTranscode(new Uint8Array(await only.arrayBuffer()))) return { file: only, method: 'bytes' };
+    // 名字不改：课程记着的是这个名字，换设备补音频时按它认领（FR-3.6a）
+    return { file: new File([await transcode(files)], only.name, { type: 'audio/mpeg' }), method: 'mp3' };
+  }
 
   const buffers = await Promise.all(files.map(async (f) => new Uint8Array(await f.arrayBuffer())));
   const joined = concatMp3Bytes(buffers);
   if (joined) {
     return { file: new File([joined], concatName(files, 'mp3'), { type: 'audio/mpeg' }), method: 'bytes' };
   }
+  return { file: new File([await transcode(files)], concatName(files, 'mp3'), { type: 'audio/mpeg' }), method: 'mp3' };
+}
 
-  const parts: Float32Array[] = [];
-  for (const f of files) parts.push(await decodeMono(f)); // 串行：一次只在内存里多放一轨的 PCM
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const all = new Float32Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    all.set(p, offset);
-    offset += p.length;
-  }
-  return { file: new File([encodeWav(all, WAV_RATE)], concatName(files, 'wav'), { type: 'audio/wav' }), method: 'wav' };
+async function transcode(files: File[]): Promise<Uint8Array<ArrayBuffer>> {
+  const stream = await createMp3Stream();
+  for (const f of files) await stream.push(await decodeMono(f)); // 串行：一次只解码一轨
+  return stream.finish();
 }
 
 /**

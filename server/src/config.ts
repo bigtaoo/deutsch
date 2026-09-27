@@ -61,6 +61,15 @@ export interface Config {
     /** 便宜模型足够 —— 只解释一个词或一句话，不需要强推理能力。 */
     model: string;
   };
+  /**
+   * 手动导入的课的音频（变更 69，见 audioStore.ts）。放在 `${dataDir}/audio`。
+   * 转成 64kbps 单声道之后最长一题 23 分钟约 11MB，单个 64MB 挡的是误传；
+   * 总量 5GB 挡的是失控的客户端把这台共用的机器写满。
+   */
+  audio: {
+    maxBytes: number;
+    quotaBytes: number;
+  };
 }
 
 function flag(raw: string | undefined, fallback: boolean): boolean {
@@ -115,6 +124,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ai: {
       apiKey: env.ANTHROPIC_API_KEY || undefined,
       model: env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5-20251001',
+    },
+    audio: {
+      maxBytes: Number(env.AUDIO_MAX_BYTES ?? 64 * 1024 * 1024),
+      quotaBytes: Number(env.AUDIO_QUOTA_BYTES ?? 5 * 1024 * 1024 * 1024),
     },
   };
 }

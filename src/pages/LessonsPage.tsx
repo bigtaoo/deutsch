@@ -20,7 +20,9 @@ import { useVocabStore } from '@/state/useVocabStore';
 import { useDueCount } from '@/components/AppNav';
 import { manualExportStage } from '@/components/SyncChip';
 import { Banner, Button, Chip, EmptyState, FilePicker, Note, formatBytes, formatTime } from '@/components/ui';
-import { bindPickedAudio, listedAudioFiles, matchGroupFiles } from '@/lesson/bindAudio';
+import { bindPickedAudio, listedAudioFiles, matchGroupFiles, restoreServerAudio } from '@/lesson/bindAudio';
+import { hasServerAudio } from '@/sync/audio';
+import { isSyncConfigured } from '@/sync/config';
 import type { Lesson } from '@/types/models';
 
 export function LessonsPage() {
@@ -145,7 +147,13 @@ function LessonRow({ lesson }: { lesson: Lesson }) {
       {isMaterialMissing(cache) && (
         <Chip
           tone="warn"
-          title={isRehydratable(lesson) ? '可按 lesson id 重新抓取' : '手动导入，需自己找回音频文件'}
+          title={
+            hasServerAudio(lesson)
+              ? '音频在同步服务器上，打开就自动下载'
+              : isRehydratable(lesson)
+                ? '可按 lesson id 重新抓取'
+                : '手动导入，需自己找回音频文件'
+          }
         >
           素材未下载
         </Chip>
@@ -198,6 +206,13 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
   const [busy, setBusy] = useState(false);
 
   const missing = lessons.filter((l) => isMaterialMissing(caches[l.id]) && listedAudioFiles(l).length > 0);
+  // 变更 69：缺音频的课里，服务器上有的一键下载，没有的才要自己选文件
+  const onServer = missing.filter(hasServerAudio);
+  const needFiles = missing.filter((l) => !hasServerAudio(l));
+  /** 本机有音频、还没传到服务器（或传的不是本机这一份）的课。没配同步服务器的构建里压根不会传，不提。 */
+  const pendingUpload = !isSyncConfigured() ? 0 : lessons.filter(
+    (l) => l.source.type === 'manual' && caches[l.id]?.hasAudio && l.audioRef?.bytes !== caches[l.id]?.audioBytes,
+  ).length;
   const aligned = lessons.filter((l) => l.sentences.some((s) => s.startTime !== undefined)).length;
 
   const onToggle = (next: boolean) => {
@@ -212,7 +227,7 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
     if (picked.length === 0) return;
     setBusy(true);
     setMessage(null);
-    const { matched, unmatched } = matchGroupFiles(missing, picked);
+    const { matched, unmatched } = matchGroupFiles(needFiles, picked);
     let realigned = 0;
     let failed = 0;
     for (const { lesson, files } of matched) {
@@ -225,6 +240,26 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
     }
     setBusy(false);
     setMessage(groupBindSummary(matched.length - failed, realigned, unmatched.length, failed));
+  };
+
+  /** 变更 69：服务器上有的那几课一次下完。串行：一次只把一课的音频放进内存。 */
+  const downloadGroup = async () => {
+    setBusy(true);
+    setMessage(null);
+    let done = 0;
+    let realigned = 0;
+    let failed = 0;
+    for (const lesson of onServer) {
+      try {
+        const result = await restoreServerAudio(lesson);
+        done++;
+        if (result.realigned) realigned++;
+      } catch {
+        failed++;
+      }
+    }
+    setBusy(false);
+    setMessage(groupDownloadSummary(done, realigned, failed));
   };
 
   return (
@@ -242,7 +277,20 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
         {missing.length > 0 && <Chip tone="warn">{missing.length} 课缺音频</Chip>}
       </summary>
       <div className="space-y-2 border-t border-line p-2">
-        {missing.length > 0 && (
+        {onServer.length > 0 && (
+          <Note
+            tone="warn"
+            action={
+              <Button disabled={busy} onClick={() => void downloadGroup()}>
+                {busy ? '正在下载…' : `下载这 ${onServer.length} 课`}
+              </Button>
+            }
+          >
+            {onServer.length} 课的音频在同步服务器上（共 {formatBytes(onServer.reduce((n, l) => n + (l.audioRef?.bytes ?? 0), 0))}），
+            这台设备上还没有。打开哪一课就自动下载哪一课，也可以一次下完。
+          </Note>
+        )}
+        {needFiles.length > 0 && (
           <Note
             tone="warn"
             action={
@@ -251,7 +299,12 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
               </FilePicker>
             }
           >
-            {missing.length} 课在这台设备上还没有音频。把这本书的音频文件一次全选上，按文件名各归各课。
+            {needFiles.length} 课在这台设备上还没有音频。把这本书的音频文件一次全选上，按文件名各归各课。
+          </Note>
+        )}
+        {pendingUpload > 0 && (
+          <Note>
+            {pendingUpload} 课的音频还没传到同步服务器：登录了同步会在后台自动传，传完别的设备打开就能自动下载。
           </Note>
         )}
         {message && <Note>{message}</Note>}
@@ -259,6 +312,13 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
       </div>
     </details>
   );
+}
+
+export function groupDownloadSummary(done: number, realigned: number, failed: number): string {
+  const parts = [`下载了 ${done} 课`];
+  if (done > 0) parts.push(realigned > 0 ? `其中 ${realigned} 课要重新对齐` : '时间戳都是同步来的，不用重对');
+  if (failed > 0) parts.push(`${failed} 课没下下来，再点一次会接着下`);
+  return `${parts.join('，')}。`;
 }
 
 export function groupBindSummary(bound: number, realigned: number, unmatched: number, failed: number): string {

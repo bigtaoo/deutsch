@@ -62,7 +62,7 @@ test('整份文稿按题导入：勾一章、一题两轨、拼成一个音频�
 
   // 默认折叠的一组
   const group = page.locator('details', { hasText: 'Aspekte neu C1' });
-  await expect(group.getByText('2 课')).toBeVisible();
+  await expect(group.locator('summary').getByText(/^2 课 · /)).toBeVisible();
   await group.locator('summary').click();
   const first = group.getByRole('link', { name: /Kapitel 1 · Modul 2 Aufgabe 2a/ });
   await expect(first).toBeVisible();

@@ -8,12 +8,19 @@ import type { Lesson, LessonCache } from '@/types/models';
 vi.mock('@/components/AppNav', () => ({ useDueCount: () => 0 }));
 vi.mock('@/sync/trigger', () => ({ syncNow: vi.fn(), scheduleLessonSync: vi.fn(), syncLessonDeletion: vi.fn() }));
 const bindPickedAudio = vi.fn();
+const restoreServerAudio = vi.fn();
+let syncConfigured = true;
+vi.mock('@/sync/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/sync/config')>()),
+  isSyncConfigured: () => syncConfigured,
+}));
 vi.mock('@/lesson/bindAudio', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lesson/bindAudio')>()),
   bindPickedAudio: (lesson: Lesson, files: File[]) => bindPickedAudio(lesson, files),
+  restoreServerAudio: (lesson: Lesson) => restoreServerAudio(lesson),
 }));
 
-const { LessonsPage, groupBindSummary, groupLessons } = await import('./LessonsPage');
+const { LessonsPage, groupBindSummary, groupDownloadSummary, groupLessons } = await import('./LessonsPage');
 
 function lesson(id: string, title: string, collection?: string, extra: Partial<Lesson> = {}): Lesson {
   return {
@@ -58,6 +65,7 @@ function stubStorage(overrides: Partial<Storage> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  syncConfigured = true;
   stubStorage();
 });
 
@@ -201,5 +209,65 @@ describe('groupBindSummary', () => {
 
   it('一课都没补上时不说「不用重对」', () => {
     expect(groupBindSummary(0, 0, 5, 0)).toBe('补上了 0 课，还有 5 课的文件不在这次选的里面。');
+  });
+});
+
+describe('分组块 · 音频在同步服务器上（变更 69）', () => {
+  const ref = (bytes: number) => ({ sha256: 'a'.repeat(64), bytes });
+  const onServer = (id: string, title: string, bytes = 2_000_000) =>
+    lesson(id, title, 'Aspekte neu C1', { source: { type: 'manual', audioFileName: `${id}.mp3` }, audioRef: ref(bytes) });
+  const local = (id: string, title: string) =>
+    lesson(id, title, 'Aspekte neu C1', { source: { type: 'manual', audioFileName: `${id}.mp3` } });
+
+  it('服务器上有的一键下载（报总大小），没有的才让选文件；两条各报各的课数', () => {
+    seed([onServer('a', 'Kapitel 7 · Modul 2 Aufgabe 3a'), onServer('b', 'Kapitel 7 · Modul 2 Aufgabe 3b'), local('c', 'Kapitel 7 · Modul 4 Aufgabe 3')]);
+    render(<LessonsPage />);
+    fireEvent.click(summary('Aspekte neu C1'));
+    const group = details('Aspekte neu C1');
+    expect(within(group).getByRole('button', { name: '下载这 2 课' })).toBeInTheDocument();
+    expect(within(group).getByText(/2 课的音频在同步服务器上（共 3\.8 MB）/)).toBeInTheDocument();
+    expect(within(group).getByText(/1 课在这台设备上还没有音频/)).toBeInTheDocument();
+    expect(within(summary('Aspekte neu C1')).getByText('3 课缺音频')).toBeInTheDocument();
+  });
+
+  it('一次下完：逐课下载，摘要报数；失败的那课报出来', async () => {
+    restoreServerAudio.mockResolvedValueOnce({ realigned: false }).mockRejectedValueOnce(new Error('断网'));
+    seed([onServer('a', 'Kapitel 7 · Modul 2 Aufgabe 3a'), onServer('b', 'Kapitel 7 · Modul 2 Aufgabe 3b')]);
+    render(<LessonsPage />);
+    fireEvent.click(summary('Aspekte neu C1'));
+    fireEvent.click(screen.getByRole('button', { name: '下载这 2 课' }));
+    expect(await screen.findByText('下载了 1 课，时间戳都是同步来的，不用重对，1 课没下下来，再点一次会接着下。')).toBeInTheDocument();
+    expect(restoreServerAudio.mock.calls.map(([l]) => (l as Lesson).id)).toEqual(['a', 'b']);
+  });
+
+  it('全都在服务器上：不出现「一次选齐音频」', () => {
+    seed([onServer('a', 'Kapitel 7 · Modul 2 Aufgabe 3a')]);
+    render(<LessonsPage />);
+    fireEvent.click(summary('Aspekte neu C1'));
+    expect(screen.queryByText('一次选齐音频…')).toBeNull();
+  });
+
+  it('本机有音频、还没传上去的课：报一条「还没传到同步服务器」；传过的不算', () => {
+    seed(
+      [local('a', 'Kapitel 7 · Modul 2 Aufgabe 3a'), onServer('b', 'Kapitel 7 · Modul 2 Aufgabe 3b', 1)],
+      { a: cached('a'), b: cached('b') },
+    );
+    render(<LessonsPage />);
+    fireEvent.click(summary('Aspekte neu C1'));
+    expect(screen.getByText(/^1 课的音频还没传到同步服务器/)).toBeInTheDocument();
+  });
+
+  it('没配同步服务器的构建：不提「还没传」—— 那里压根不会传', () => {
+    syncConfigured = false;
+    seed([local('a', 'Kapitel 7 · Modul 2 Aufgabe 3a')], { a: cached('a') });
+    render(<LessonsPage />);
+    fireEvent.click(summary('Aspekte neu C1'));
+    expect(screen.queryByText(/还没传到同步服务器/)).toBeNull();
+    syncConfigured = true;
+  });
+
+  it('groupDownloadSummary：要重对的、失败的都报；一课都没下到时不说「不用重对」', () => {
+    expect(groupDownloadSummary(3, 1, 0)).toBe('下载了 3 课，其中 1 课要重新对齐。');
+    expect(groupDownloadSummary(0, 0, 2)).toBe('下载了 0 课，2 课没下下来，再点一次会接着下。');
   });
 });

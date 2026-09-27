@@ -22,7 +22,7 @@ import { useLessonStore, isMaterialMissing, isRehydratable } from '@/state/useLe
 import { useAlignStore } from '@/state/useAlignStore';
 import { rehydrateLesson } from '@/sources/importLesson';
 import { hasTimings } from '@/align/apply';
-import { bindPickedAudio, isMultiTrack, listedAudioFiles } from '@/lesson/bindAudio';
+import { bindPickedAudio, isMultiTrack, listedAudioFiles, restoreServerAudio } from '@/lesson/bindAudio';
 import { SentencesTab } from './lesson/SentencesTab';
 import { AlignStatus } from './lesson/AlignStatus';
 import { ListenTab } from './lesson/ListenTab';
@@ -209,7 +209,7 @@ const autoRehydrated = new Set<string>();
  *
  * 它是「拦路」那一档（§12.3）：这一页现在真的做不了，所以有底色、有标题、有出口。
  */
-function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
+export function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId))!;
   const enqueueAlign = useAlignStore((s) => s.enqueue);
   const phone = useAlignStore((s) => s.phone);
@@ -220,12 +220,25 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
   const [needsDecision, setNeedsDecision] = useState(false);
 
   const rehydratable = isRehydratable(lesson);
+  /** 变更 69：手动导入的课，音频在同步服务器上 */
+  const fromServer = lesson.source.type === 'manual' && lesson.audioRef !== undefined;
 
   const rehydrate = async () => {
     setBusy(true);
     setMessage(null);
     setNeedsDecision(false);
     try {
+      if (fromServer) {
+        const { realigned } = await restoreServerAudio(lesson);
+        setMessage(
+          realigned
+            ? phone && !remote
+              ? '音频下载好了。这一课还没有时间戳 —— 手机上不自己算对齐，登录同步后由服务器算，或者在桌面上对一次会同步回来。'
+              : '音频下载好了，正在自动对齐（进度在页面底部）。'
+            : '音频下载好了。时间戳是同步来的，不用重对。',
+        );
+        return;
+      }
       const outcome = await rehydrateLesson(lesson);
       if (outcome.manuscriptChanged) {
         setNeedsDecision(true);
@@ -300,7 +313,7 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
           </FilePicker>
           {rehydratable && !needsDecision && (
             <Button disabled={busy} onClick={() => void rehydrate()}>
-              {busy ? '补齐中…' : '重新抓取'}
+              {busy ? '补齐中…' : fromServer ? '重新下载' : '重新抓取'}
             </Button>
           )}
           {needsDecision && <Button onClick={() => navigate({ name: 'sources' })}>去「来源」页处理</Button>}
@@ -309,12 +322,16 @@ function MissingMaterialBanner({ lessonId }: { lessonId: string }) {
     >
       <p>
         {busy
-          ? '照标注层里记着的下载地址重新抓页面和音频（6~10MB）。'
-          : rehydratable
-            ? '这一课来自 DW，可以按 lesson id 重新抓取。'
-            : multiTrack
-              ? `这一课是几轨拼起来的，要把这几个文件一起选上：${listedAudioFiles(lesson).join('、')}。`
-              : '这一课是手动导入的，无法自动补齐，需要重新选择本地音频文件。'}
+          ? fromServer
+            ? `从同步服务器下载音频（${formatBytes(lesson.audioRef!.bytes)}）。`
+            : '照标注层里记着的下载地址重新抓页面和音频（6~10MB）。'
+          : fromServer
+            ? '这一课的音频在同步服务器上，打开就会自动下载。'
+            : rehydratable
+              ? '这一课来自 DW，可以按 lesson id 重新抓取。'
+              : multiTrack
+                ? `这一课是几轨拼起来的，要把这几个文件一起选上：${listedAudioFiles(lesson).join('、')}。`
+                : '这一课是手动导入的，音频还没传到同步服务器上（登录同步后会自动传），这台设备上要重新选择本地音频文件。'}
       </p>
       {message && <Hint tone="warn">{message}</Hint>}
     </Banner>

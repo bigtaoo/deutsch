@@ -20,7 +20,10 @@ vi.mock('@/audio/concat', async (importOriginal) => ({
   concatAudioFiles: (files: File[]) => concatAudioFiles(files),
 }));
 
-const { bindPickedAudio, isMultiTrack, listedAudioFiles, matchGroupFiles, shouldRealign } = await import('./bindAudio');
+const downloadAudio = vi.fn(async (_ref: { sha256: string; bytes: number }) => new Blob([new Uint8Array(3)], { type: 'audio/mpeg' }));
+vi.mock('@/sync/audio', () => ({ downloadAudio: (ref: { sha256: string; bytes: number }) => downloadAudio(ref) }));
+
+const { bindPickedAudio, isMultiTrack, listedAudioFiles, matchGroupFiles, restoreServerAudio, shouldRealign } = await import('./bindAudio');
 
 function sentence(startTime?: number): Sentence {
   return { index: 0, text: 'Hallo.', charStart: 0, charEnd: 6, startTime, endTimeExplicit: false, blanks: [], markedDifficult: false, excluded: false };
@@ -123,5 +126,37 @@ describe('matchGroupFiles', () => {
       ['b', ['2.mp3', '3.mp3']],
     ]);
     expect(unmatched.map((l) => l.id)).toEqual(['c', 'd']);
+  });
+});
+
+describe('restoreServerAudio（变更 69）', () => {
+  const ref = { sha256: 'a'.repeat(64), bytes: 3 };
+
+  it('照 audioRef 下载、按记着的文件名绑上；同一份音频不重对', async () => {
+    const result = await restoreServerAudio(lesson({ audioRef: ref }));
+    expect(downloadAudio).toHaveBeenCalledWith(ref);
+    const [id, bound] = attachAudio.mock.calls[0] as [string, File];
+    expect(id).toBe('l1');
+    expect(bound.name).toBe('a.mp3');
+    expect(bound.type).toBe('audio/mpeg');
+    expect(result.realigned).toBe(false);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('这一课本来没有时间戳：下完排对齐', async () => {
+    const result = await restoreServerAudio(lesson({ audioRef: ref, sentences: [sentence()] }));
+    expect(result.realigned).toBe(true);
+    expect(enqueue).toHaveBeenCalledWith('l1');
+  });
+
+  it('没有 audioRef：直接报错，不去请求', async () => {
+    await expect(restoreServerAudio(lesson())).rejects.toThrow();
+    expect(downloadAudio).not.toHaveBeenCalled();
+  });
+
+  it('下载失败：错误原样抛给界面，不绑', async () => {
+    downloadAudio.mockRejectedValueOnce(new Error('对不上'));
+    await expect(restoreServerAudio(lesson({ audioRef: ref }))).rejects.toThrow('对不上');
+    expect(attachAudio).not.toHaveBeenCalled();
   });
 });

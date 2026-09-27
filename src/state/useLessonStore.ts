@@ -16,6 +16,7 @@ import {
 import { getVocabEntriesByLesson, putVocabEntry } from '@/db/vocab';
 import { migrateGlossaryIntoLessons } from '@/db/migrate';
 import { scheduleLessonSync, syncLessonDeletion } from '@/sync/trigger';
+import { hasServerAudio, registerAudioUploadDeps, scheduleAudioUpload } from '@/sync/audio';
 import { generateId } from '@/lib/id';
 import { manuscriptHash } from '@/lib/hash';
 import { readAudioDuration } from '@/audio/player';
@@ -164,6 +165,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       caches: { ...get().caches, [id]: cache },
     });
     scheduleLessonSync(id);
+    // 变更 69：手动导入的课的音频传一份到服务器，别的设备照 audioRef 自动下载
+    if (input.audioFile && !input.dwLessonId) scheduleAudioUpload();
     return id;
   },
 
@@ -290,6 +293,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
         audioBytes: file.size,
       });
     }
+    // 变更 69：从服务器下回来的那份 audioRef 对得上，扫的时候会跳过；本机新选的才会真的传
+    if (lesson.source.type === 'manual') scheduleAudioUpload();
     return { duration, mismatch, audioChanged };
   },
 
@@ -306,7 +311,14 @@ export function isMaterialMissing(cache: LessonCache | undefined): boolean {
   return !cache?.hasAudio;
 }
 
-/** FR-3.9：DW 来源清缓存无损，手动来源清了就得自己再找回音频文件。 */
+/**
+ * FR-3.9：DW 来源清缓存无损；手动来源在音频传到服务器之后（变更 69，有 audioRef）同样无损，
+ * 没传上去的清了就得自己再找回音频文件。
+ */
 export function isRehydratable(lesson: Lesson): boolean {
-  return lesson.source.type === 'dw';
+  return lesson.source.type === 'dw' || hasServerAudio(lesson);
 }
+
+registerAudioUploadDeps({
+  saveAudioRef: (lessonId, ref) => useLessonStore.getState().patchLesson(lessonId, (l) => ({ ...l, audioRef: ref })),
+});

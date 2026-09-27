@@ -17,6 +17,7 @@
 // 于是就地按 §2.4 的合并规则算出胜者，**写回本地**，再用远端版本号重推一次。
 // vocab 是逐条 last-write-wins（比 fsrs.last_review），课程与设置是整体比 updatedAt。
 
+import { uploadPendingAudio } from './audio';
 import { getMeta, getSettings, putMeta, putSettings } from '@/db/meta';
 import { getAllLessons, getLesson, putLesson } from '@/db/lessons';
 import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
@@ -420,6 +421,9 @@ export async function syncNow(options: { force?: boolean } = {}): Promise<void> 
   await repairUnpushed();
   await drainSyncQueue();
   await pullSyncNow(options);
+  // 变更 69：还没传上服务器的手动课音频。不等它 —— 一本书上百 MB，启动不该被它拖住；
+  // 它自己单飞、幂等，失败了下一次 syncNow 再扫到。
+  void uploadPendingAudio().catch((err: unknown) => console.warn('[audio] 扫描上传失败', err));
 }
 
 /**

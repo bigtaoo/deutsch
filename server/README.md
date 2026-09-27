@@ -27,8 +27,10 @@ Anthropic API，不加依赖。
 | `study` | 学习记录，逐日 × 逐设备的秒数（FR-18） | 落库后去抖 60s |
 | `aiCache` | AI 补充解释缓存，归一化词 → 解释（变更 49） | 问出新答案后去抖 5s |
 
-**缓存层一个字节都不上传**：音频、原文 HTML 留在设备上，课程在新设备显示「素材未下载」，
-按 lesson id 重新抓即可。
+**缓存层基本不上传**：DW 的课的音频、原文 HTML 留在设备上，课程在新设备显示「素材未下载」，
+按 lesson id 重新抓即可。**例外是手动导入的课（教材）的音频**（SPEC §0 变更 69 / FR-3.5c）：它没有别的来源地址，
+所以传一份上来当它的地址，存在 `${DATA_DIR}/audio/<用户>/<sha256>` —— 不是文档、不进 sqlite、没有版本（按内容定址，同名即同字节）。
+上限 `AUDIO_MAX_BYTES`（单个，默认 64MB）与 `AUDIO_QUOTA_BYTES`（每人总量，默认 5GB）。
 
 （`settings` 是 2026-09-02 加的，SPEC §0 变更 28。原本刻意不同步它，理由是「对齐档位这些
 跟机器走」—— 那条理由后来被推翻：真正跟机器走的东西记在黑匣子 localStorage 里，
@@ -56,6 +58,9 @@ Anthropic API，不加依赖。
 | GET | `/v1/align/jobs/:id/result` | 取矩阵（二进制，见下）。还没算完 → **409 + 当前状态**；取走即删 |
 | DELETE | `/v1/align/jobs/:id` | 取消（正在跑的那个在下一个块边界停） |
 | POST | `/v1/ai/explain` | `{word, context?, existing?}` → `{note}`。没配 `ANTHROPIC_API_KEY` → 503 `code=ai_off` |
+| HEAD | `/v1/audio/:sha256` | 手动课的音频在不在（变更 69）：200 + `content-length` / 404 |
+| GET | `/v1/audio/:sha256` | 取回来，支持单区间 Range；`cache-control: private, immutable`。**过令牌、按用户隔开** |
+| PUT | `/v1/audio/:sha256` | 请求体就是音频字节。服务器先算 SHA-256、对不上 400；已有 200、新存 201；超单个上限 413、超总量 507 |
 
 409 把远端现值带回去，是为了让客户端**一次往返**就能跑完「合并 → 重推」——
 合并规则（SPEC §2.4）仍然在客户端，服务器不理解业务语义，只管版本号。

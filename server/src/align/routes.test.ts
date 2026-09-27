@@ -41,6 +41,7 @@ const config: Config = {
   ai: {
     model: 'claude-haiku-4-5-20251001',
   },
+  audio: { maxBytes: 64, quotaBytes: 200 },
 };
 
 const verifyGoogleIdToken: GoogleVerifier = async (idToken) => ({

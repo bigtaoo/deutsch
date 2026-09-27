@@ -1,7 +1,7 @@
 // HTTP 层。所有依赖（存储、配置、Google 校验器）都从外面注入，
 // 于是测试可以拿一个内存库 + 假校验器把整套路由跑完，不需要网络、不需要端口。
 
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import type { Store } from './db.ts';
 import type { Config } from './config.ts';
@@ -13,6 +13,7 @@ import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
 import { serveWeights } from './align/weights.ts';
 import type { AiExplainer } from './ai.ts';
 import type { DiagSink } from './diag.ts';
+import { AudioRejected, SHA256_RE, type AudioStore } from './audioStore.ts';
 
 /** 文档 id 直接进 URL 路径，字符集收紧到「课程 id 用得到的那些」。 */
 const DOC_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -50,6 +51,11 @@ export interface AppDeps {
    * 手机上退回「复制诊断」那条路（它不依赖服务器，见 src/platform/bridgeDiag.ts）。
    */
   diag?: DiagSink;
+  /**
+   * 手动导入的课的音频（变更 69）。**同样可以整块缺席** —— 没给就回 503，
+   * 客户端退回「每台设备自己选一次文件」（变更 69 之前的样子）。
+   */
+  audio?: AudioStore;
   /** 测试里可以拨快时钟。 */
   now?: () => number;
 }
@@ -82,8 +88,10 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     '/v1/*',
     cors({
       origin: (origin) => (config.allowedOrigins.includes(origin) ? origin : null),
-      allowMethods: ['GET', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Content-Type', 'Authorization'],
+      allowMethods: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE', 'OPTIONS'],
+      // Range：音频（变更 69）边下边放、断点续传都要它
+      allowHeaders: ['Content-Type', 'Authorization', 'Range'],
+      exposeHeaders: ['Content-Length', 'Content-Range'],
       maxAge: 86_400,
     }),
   );
@@ -335,6 +343,45 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
       // 上游是网络问题还是账单问题，客户端不需要知道 —— 一律「暂时不可用」，
       // 让用户过一会儿再试，而不是把一段可能带敏感信息的报错原样展示出去。
       return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
+    }
+  });
+
+  // ── 手动导入的课的音频（变更 69，见 audioStore.ts）──────────────────────
+  // 注册在会话中间件之后：**没有不登录就能读的路**（SPEC §2.6.7 私人存档那三个开关之一）。
+  const audioOff = () => ({ error: '这台服务器没有开音频存储', code: 'audio_off' });
+  const audioRejected = (c: Context, err: unknown) => {
+    if (err instanceof AudioRejected) return c.json({ error: err.message }, err.status);
+    throw err;
+  };
+
+  app.on('HEAD', '/v1/audio/:sha256', async (c) => {
+    if (!deps.audio) return c.body(null, 503);
+    const sha256 = c.req.param('sha256');
+    if (!SHA256_RE.test(sha256)) return c.body(null, 400);
+    const size = await deps.audio.size(c.get('userId'), sha256);
+    return size === null ? c.body(null, 404) : c.body(null, 200, { 'content-length': String(size) });
+  });
+
+  app.get('/v1/audio/:sha256', async (c) => {
+    if (!deps.audio) return c.json(audioOff(), 503);
+    const sha256 = c.req.param('sha256');
+    if (!SHA256_RE.test(sha256)) return c.json({ error: '非法的音频哈希' }, 400);
+    const res = await deps.audio.open(c.get('userId'), sha256, c.req.header('range'));
+    return res ?? c.json({ error: '服务器上没有这份音频' }, 404);
+  });
+
+  app.put('/v1/audio/:sha256', async (c) => {
+    if (!deps.audio) return c.json(audioOff(), 503);
+    const sha256 = c.req.param('sha256');
+    if (!SHA256_RE.test(sha256)) return c.json({ error: '非法的音频哈希' }, 400);
+    // 先看声明的长度，别为一个注定要拒的请求把几十 MB 读进内存
+    const declared = Number(c.req.header('content-length') ?? NaN);
+    if (declared > deps.audio.maxBytes) return c.json({ error: `单个音频超过 ${deps.audio.maxBytes} 字节上限` }, 413);
+    try {
+      const result = await deps.audio.put(c.get('userId'), sha256, new Uint8Array(await c.req.arrayBuffer()));
+      return c.json({ sha256, result }, result === 'created' ? 201 : 200);
+    } catch (err) {
+      return audioRejected(c, err);
     }
   });
 

@@ -23,6 +23,15 @@ vi.mock('@/sync/trigger', () => ({
   syncLessonDeletion: (id: string) => syncLessonDeletion(id),
 }));
 
+// 变更 69：上传那一半只看「排没排」和「写回 audioRef 的那个钩子」，网络由 sync/audio.test.ts 测
+const scheduleAudioUpload = vi.fn();
+let uploadDeps: { saveAudioRef: (id: string, ref: { sha256: string; bytes: number }) => Promise<void> } | undefined;
+vi.mock('@/sync/audio', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/sync/audio')>()),
+  scheduleAudioUpload: () => scheduleAudioUpload(),
+  registerAudioUploadDeps: (d: typeof uploadDeps) => (uploadDeps = d),
+}));
+
 // jsdom 里 <audio> 永远不会触发 loadedmetadata，真读会挂在那儿。
 const readAudioDuration = vi.fn(async (_file: File) => 123.5);
 vi.mock('@/audio/player', () => ({
@@ -446,5 +455,37 @@ describe('isMaterialMissing（FR-3.4）', () => {
     expect(
       isMaterialMissing({ lessonId: 'l1', hasAudio: true, audioBytes: 10, fetchedAt: 0 }),
     ).toBe(false);
+  });
+});
+
+describe('音频上服务器（变更 69）', () => {
+  it('手动导入带音频：排一次上传；不带音频、DW 的课都不排', async () => {
+    await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT });
+    await useLessonStore.getState().createLesson({ title: 'B', plainText: TEXT, audioFile: audioFile(), dwLessonId: '1' });
+    expect(scheduleAudioUpload).not.toHaveBeenCalled();
+    await useLessonStore.getState().createLesson({ title: 'C', plainText: TEXT, audioFile: audioFile() });
+    expect(scheduleAudioUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it('给手动课绑音频也排（换了一份音频就要传新的那份）', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT });
+    await useLessonStore.getState().attachAudio(id, audioFile());
+    expect(scheduleAudioUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it('上传成功后写回 audioRef：进标注层、排一次同步，别的设备据此下载', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT, audioFile: audioFile() });
+    scheduleLessonSync.mockClear();
+    const ref = { sha256: 'a'.repeat(64), bytes: 1024 };
+    await uploadDeps!.saveAudioRef(id, ref);
+    expect((await getLesson(id))?.audioRef).toEqual(ref);
+    expect(scheduleLessonSync).toHaveBeenCalledWith(id);
+  });
+
+  it('有 audioRef 的手动课可以自动补齐（清缓存无损）；没有的不行', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT, audioFile: audioFile() });
+    const stored = (await getLesson(id))!;
+    expect(isRehydratable(stored)).toBe(false);
+    expect(isRehydratable({ ...stored, audioRef: { sha256: 'a'.repeat(64), bytes: 1024 } })).toBe(true);
   });
 });

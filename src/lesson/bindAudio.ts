@@ -1,7 +1,8 @@
 // FR-3.6 / FR-3.6a / FR-1.8：给手动导入的课绑本地音频 —— 单课与整组两个入口共用这一份。
 //
-// 手动导入的课音频不同步（它来自本机磁盘，没有下载地址），所以换一台设备总要再选一次文件。
-// 这件事以前有两个问题：
+// 手动导入的课音频来自本机磁盘，本来没有下载地址，换一台设备总要再选一次文件。
+// 变更 69 之后登录了同步的会传一份到服务器（`Lesson.audioRef`，下面的 restoreServerAudio 照它下载）；
+// 没传上去的照旧走这里的「自己选文件」。这件事以前有两个问题：
 //   1. 绑完**无条件**重对齐 —— 桌面对好、同步过来的时间戳，在手机上被送去服务器再算两分钟、
 //      原样盖回去。和变更 43 是同一类问题，只是这条路 DW 的课不走，所以之前没暴露。
 //   2. 拼过的课（一个 Aufgabe 好几轨）要按同一顺序、同一批文件重新拼，否则时长对不上。
@@ -10,6 +11,7 @@ import { useLessonStore, type AttachOutcome } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { hasTimings } from '@/align/apply';
 import { concatAudioFiles, pickListedFiles } from '@/audio/concat';
+import { downloadAudio } from '@/sync/audio';
 import type { Lesson } from '@/types/models';
 
 /** 这一课当初用的是哪几个文件（按拼接顺序）。只记了一个名字或一个都没记时返回它能给的。 */
@@ -30,7 +32,7 @@ export function shouldRealign(lesson: Lesson, outcome: AttachOutcome): boolean {
 }
 
 export type BindResult =
-  | { ok: true; outcome: AttachOutcome; realigned: boolean; method: 'bytes' | 'wav'; fileName: string }
+  | { ok: true; outcome: AttachOutcome; realigned: boolean; method: 'bytes' | 'mp3'; fileName: string }
   | { ok: false; missing: string[] };
 
 /**
@@ -80,4 +82,19 @@ export function matchGroupFiles(
     }
   }
   return { matched, unmatched };
+}
+
+/**
+ * 变更 69：照 audioRef 从同步服务器下载这一课的音频并绑上。字节与上传的那份逐位一致，
+ * 所以 attachAudio 按字节数一比就知道没换（FR-3.6a）—— 桌面对好的时间戳原样留着，不重对。
+ */
+export async function restoreServerAudio(lesson: Lesson): Promise<{ outcome: AttachOutcome; realigned: boolean }> {
+  if (!lesson.audioRef) throw new Error('这一课的音频没有传到服务器上');
+  const blob = await downloadAudio(lesson.audioRef);
+  const name = lesson.source.type === 'manual' ? (lesson.source.audioFileName ?? 'audio') : 'audio';
+  const file = new File([blob], name, { type: blob.type || 'audio/mpeg' });
+  const outcome = await useLessonStore.getState().attachAudio(lesson.id, file);
+  const realigned = shouldRealign(lesson, outcome);
+  if (realigned) useAlignStore.getState().enqueue(lesson.id);
+  return { outcome, realigned };
 }

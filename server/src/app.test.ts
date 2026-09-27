@@ -1,10 +1,15 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp } from './app.ts';
 import { Store } from './db.ts';
 import { GoogleTokenError, type GoogleVerifier } from './googleToken.ts';
 import type { Config } from './config.ts';
 import { signSession } from './session.ts';
 import type { AiExplainer } from './ai.ts';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createFileAudioStore, type AudioStore } from './audioStore.ts';
 
 const SECRET = new TextEncoder().encode('0123456789abcdef0123456789abcdef');
 
@@ -33,6 +38,7 @@ const config: Config = {
   ai: {
     model: 'claude-haiku-4-5-20251001',
   },
+  audio: { maxBytes: 1000, quotaBytes: 5000 },
 };
 
 /** 假校验器：token 就是邮箱本身，前缀 bad- 表示一张伪造的票。 */
@@ -61,9 +67,9 @@ function memoryDiag() {
   };
 }
 
-function setup(overrides: { ai?: AiExplainer; diag?: ReturnType<typeof memoryDiag>['sink'] } = {}) {
+function setup(overrides: { ai?: AiExplainer; diag?: ReturnType<typeof memoryDiag>['sink']; audio?: AudioStore } = {}) {
   const store = new Store(':memory:');
-  const app = createApp({ store, config, verifyGoogleIdToken, ai: overrides.ai, diag: overrides.diag });
+  const app = createApp({ store, config, verifyGoogleIdToken, ai: overrides.ai, diag: overrides.diag, audio: overrides.audio });
   return { store, app };
 }
 
@@ -362,5 +368,96 @@ describe('/v1/diag', () => {
     const { token } = await login(app);
     const res = await app.request('/v1/diag', authed(token, { method: 'POST', body: '{}' }));
     expect(res.status).toBe(503);
+  });
+});
+
+describe('手动导入的课的音频（变更 69）', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'audio-app-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const bytes = new Uint8Array([0xff, 0xfb, 0x50, 0xc4, 1, 2, 3, 4]);
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  const withAudio = () => setup({ audio: createFileAudioStore(root, config.audio) });
+  const put = (token: string, body: Uint8Array) =>
+    ({
+      method: 'PUT',
+      body,
+      headers: { authorization: 'Bearer ' + token, 'content-type': 'audio/mpeg' },
+    }) as RequestInit;
+
+  it('没登录：读、写、问在不在都是 401 —— 没有不登录就能读的路（SPEC §2.6.7）', async () => {
+    const { app } = withAudio();
+    expect((await app.request(`/v1/audio/${hash}`)).status).toBe(401);
+    expect((await app.request(`/v1/audio/${hash}`, { method: 'HEAD' })).status).toBe(401);
+    expect((await app.request(`/v1/audio/${hash}`, { method: 'PUT', body: bytes })).status).toBe(401);
+  });
+
+  it('传上去（201）→ HEAD 说在 → GET 原样拿回来；再传一次 200', async () => {
+    const { app } = withAudio();
+    const { token } = await login(app);
+    expect((await app.request(`/v1/audio/${hash}`, { method: 'HEAD', headers: { authorization: 'Bearer ' + token } })).status).toBe(404);
+
+    const created = await app.request(`/v1/audio/${hash}`, put(token, bytes));
+    expect(created.status).toBe(201);
+    const head = await app.request(`/v1/audio/${hash}`, { method: 'HEAD', headers: { authorization: 'Bearer ' + token } });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(bytes.length));
+
+    const got = await app.request(`/v1/audio/${hash}`, { headers: { authorization: 'Bearer ' + token } });
+    expect(got.status).toBe(200);
+    expect(got.headers.get('content-type')).toBe('audio/mpeg');
+    expect(new Uint8Array(await got.arrayBuffer())).toEqual(bytes);
+
+    expect((await app.request(`/v1/audio/${hash}`, put(token, bytes))).status).toBe(200);
+  });
+
+  it('另一个账号拿不到', async () => {
+    const twoUsers = { ...config, allowedEmails: ['tao@example.com', 'other@example.com'] };
+    const app = createApp({ store: new Store(':memory:'), config: twoUsers, verifyGoogleIdToken, audio: createFileAudioStore(root, config.audio) });
+    const { token } = await login(app);
+    await app.request(`/v1/audio/${hash}`, put(token, bytes));
+    const other = (await login(app, 'other@example.com')).token;
+    expect((await app.request(`/v1/audio/${hash}`, { headers: { authorization: 'Bearer ' + other } })).status).toBe(404);
+  });
+
+  it('哈希对不上 400；声明的长度超限直接 413，不读 body', async () => {
+    const { app } = withAudio();
+    const { token } = await login(app);
+    const wrong = createHash('sha256').update('x').digest('hex');
+    expect((await app.request(`/v1/audio/${wrong}`, put(token, bytes))).status).toBe(400);
+    const tooBig = await app.request(`/v1/audio/${hash}`, {
+      ...put(token, bytes),
+      headers: { authorization: 'Bearer ' + token, 'content-length': String(config.audio.maxBytes + 1) },
+    });
+    expect(tooBig.status).toBe(413);
+  });
+
+  it('名字不是哈希：400', async () => {
+    const { app } = withAudio();
+    const { token } = await login(app);
+    expect((await app.request('/v1/audio/not-a-hash', { headers: { authorization: 'Bearer ' + token } })).status).toBe(400);
+  });
+
+  it('没开音频存储：503 + code，客户端据此退回「每台设备自己选文件」', async () => {
+    const { app } = setup();
+    const { token } = await login(app);
+    const res = await app.request(`/v1/audio/${hash}`, put(token, bytes));
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { code: string }).code).toBe('audio_off');
+  });
+
+  it('CORS 放行 HEAD 与 Range，并把 Content-Range 暴露给页面', async () => {
+    const { app } = withAudio();
+    const res = await app.request(`/v1/audio/${hash}`, {
+      method: 'OPTIONS',
+      headers: { origin: config.allowedOrigins[0], 'access-control-request-method': 'HEAD', 'access-control-request-headers': 'range,authorization' },
+    });
+    expect(res.headers.get('access-control-allow-methods')).toContain('HEAD');
+    expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('range');
   });
 });
