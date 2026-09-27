@@ -11,6 +11,8 @@
 // 加这一页顶上一行可点的入口。列表从第一屏就开始。
 //
 // FR-1.9（2026-09-26）：有分组名的课（教材）收进各自的折叠组，其余照旧平铺在最上面。
+// 2026-09-27：DW 的课也进折叠组（按来源；以前导的没记来源，归「DW Alltagsdeutsch」），
+// 教材组里再按章折叠一层（标题前缀「Kapitel 7 · 」）。
 
 import { useMemo, useState } from 'react';
 import { href, lessonHref, navigate } from '@/app/router';
@@ -21,7 +23,7 @@ import { useDueCount } from '@/components/AppNav';
 import { manualExportStage } from '@/components/SyncChip';
 import { Banner, Button, Chip, EmptyState, FilePicker, Note, formatBytes, formatTime } from '@/components/ui';
 import { bindPickedAudio, listedAudioFiles, matchGroupFiles, restoreServerAudio } from '@/lesson/bindAudio';
-import { hasServerAudio } from '@/sync/audio';
+import { hasServerAudio, needsUpload } from '@/sync/audio';
 import { isSyncConfigured } from '@/sync/config';
 import type { Lesson } from '@/types/models';
 
@@ -92,8 +94,19 @@ export function LessonsPage() {
 const collator = new Intl.Collator('de', { numeric: true, sensitivity: 'base' });
 
 /**
- * FR-1.9：分组。组内按标题自然排序（`Kapitel 2` 在 `Kapitel 10` 前面）—— 教材的顺序
+ * 没记来源的 DW 课归到这一组。按来源记 collection 是 2026-09-27 才开始的；在那之前从列表能导进来的
+ * DW 系列实际上只有 Alltagsdeutsch（Sprachbar 的 RSS 已下线、LGN 与 Top-Thema 是变更 66 才接上的）。
+ */
+export const DW_FALLBACK_GROUP = 'DW Alltagsdeutsch';
+
+function groupOf(lesson: Lesson): string | undefined {
+  return lesson.collection ?? (lesson.source.type === 'dw' ? DW_FALLBACK_GROUP : undefined);
+}
+
+/**
+ * FR-1.9：分组。教材组内按标题自然排序（`Kapitel 2` 在 `Kapitel 10` 前面）—— 教材的顺序
  * 就写在标题里；按导入时间排的话，先导第 5 章再导第 1 章，列表就是倒的。
+ * 全是 DW 的组按导入时间新的在上（DW 的标题是文章名，按字母排没有意义）。
  * 组与组之间按名字排。没分组的课保持原来的顺序（新的在上）。
  */
 export function groupLessons(lessons: readonly Lesson[]): {
@@ -103,31 +116,69 @@ export function groupLessons(lessons: readonly Lesson[]): {
   const ungrouped: Lesson[] = [];
   const byName = new Map<string, Lesson[]>();
   for (const lesson of lessons) {
-    if (!lesson.collection) {
+    const name = groupOf(lesson);
+    if (!name) {
       ungrouped.push(lesson);
       continue;
     }
-    const list = byName.get(lesson.collection) ?? [];
+    const list = byName.get(name) ?? [];
     list.push(lesson);
-    byName.set(lesson.collection, list);
+    byName.set(name, list);
   }
   const groups = [...byName.entries()]
     .sort(([a], [b]) => collator.compare(a, b))
-    .map(([name, list]): [string, Lesson[]] => [name, [...list].sort((a, b) => collator.compare(a.title, b.title))]);
+    .map(([name, list]): [string, Lesson[]] => [
+      name,
+      list.every((l) => l.source.type === 'dw')
+        ? [...list].sort((a, b) => b.createdAt - a.createdAt)
+        : [...list].sort((a, b) => collator.compare(a.title, b.title)),
+    ]);
   return { ungrouped, groups };
 }
 
-function LessonList({ lessons }: { lessons: Lesson[] }) {
+const CHAPTER_RE = /^(Kapitel \d+) · (.+)$/u;
+
+/**
+ * 教材组里按章再分一层：标题是 `sectionTitle()` 生成的「Kapitel 7 · Modul 4 Aufgabe 3」。
+ * 不到两章时不分（一章也套一层折叠只是多点一下）；没有章前缀的课放在各章前面。
+ * 输入已经按标题自然排好序，章的顺序跟着它走。
+ */
+export function splitChapters(lessons: readonly Lesson[]): {
+  loose: Lesson[];
+  chapters: Array<[string, Lesson[]]>;
+} {
+  const loose: Lesson[] = [];
+  const byChapter = new Map<string, Lesson[]>();
+  for (const lesson of lessons) {
+    const chapter = CHAPTER_RE.exec(lesson.title)?.[1];
+    if (!chapter) {
+      loose.push(lesson);
+      continue;
+    }
+    const list = byChapter.get(chapter) ?? [];
+    list.push(lesson);
+    byChapter.set(chapter, list);
+  }
+  if (byChapter.size < 2) return { loose: [...lessons], chapters: [] };
+  return { loose, chapters: [...byChapter.entries()] };
+}
+
+/** 章里面那一行不必再把「Kapitel 7 · 」念一遍。 */
+function shortTitle(title: string): string {
+  return CHAPTER_RE.exec(title)?.[2] ?? title;
+}
+
+function LessonList({ lessons, short = false }: { lessons: Lesson[]; short?: boolean }) {
   return (
     <ul className="divide-y divide-line overflow-hidden rounded-box border border-line bg-raised">
       {lessons.map((lesson) => (
-        <LessonRow key={lesson.id} lesson={lesson} />
+        <LessonRow key={lesson.id} lesson={lesson} title={short ? shortTitle(lesson.title) : lesson.title} />
       ))}
     </ul>
   );
 }
 
-function LessonRow({ lesson }: { lesson: Lesson }) {
+function LessonRow({ lesson, title }: { lesson: Lesson; title: string }) {
   const cache = useLessonStore((s) => s.caches[lesson.id]);
   const removeLesson = useLessonStore((s) => s.removeLesson);
   const usable = lesson.sentences.filter((s) => !s.excluded);
@@ -136,7 +187,7 @@ function LessonRow({ lesson }: { lesson: Lesson }) {
   return (
     <li className="flex items-center gap-3 p-3">
       <a className="min-w-0 flex-1 hover:underline" href={lessonHref(lesson.id)}>
-        <span className="block font-medium">{lesson.title}</span>
+        <span className="block font-medium">{title}</span>
         <span className="tnum block text-note text-faint">
           {usable.length} 句 · 已对齐 {aligned} · 挖空 {blanks}
           {lesson.audioDuration ? ` · ${formatTime(lesson.audioDuration, 0)}` : ''}
@@ -195,13 +246,25 @@ function writeOpenGroups(names: string[]) {
   }
 }
 
+/** 展开状态：进一课再返回时不该又收起来。组和章共用一份表，章的键是「组名 › 章」。 */
+function useRememberedOpen(key: string): [boolean, (next: boolean) => void] {
+  const [open, setOpen] = useState(() => readOpenGroups().includes(key));
+  const onToggle = (next: boolean) => {
+    if (next === open) return;
+    setOpen(next);
+    const rest = readOpenGroups().filter((n) => n !== key);
+    writeOpenGroups(next ? [...rest, key] : rest);
+  };
+  return [open, onToggle];
+}
+
 /**
  * 一组课。默认折叠 —— 一本教材四五十课，展开着会把每周那篇 DW 挤到第二屏以下。
  * 展开状态记在本机（进一课再返回时不该又收起来），它是个人习惯，不同步。
  */
 function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] }) {
   const caches = useLessonStore((s) => s.caches);
-  const [open, setOpen] = useState(() => readOpenGroups().includes(name));
+  const [open, onToggle] = useRememberedOpen(name);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -209,18 +272,10 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
   // 变更 69：缺音频的课里，服务器上有的一键下载，没有的才要自己选文件
   const onServer = missing.filter(hasServerAudio);
   const needFiles = missing.filter((l) => !hasServerAudio(l));
-  /** 本机有音频、还没传到服务器（或传的不是本机这一份）的课。没配同步服务器的构建里压根不会传，不提。 */
-  const pendingUpload = !isSyncConfigured() ? 0 : lessons.filter(
-    (l) => l.source.type === 'manual' && caches[l.id]?.hasAudio && l.audioRef?.bytes !== caches[l.id]?.audioBytes,
-  ).length;
-  const aligned = lessons.filter((l) => l.sentences.some((s) => s.startTime !== undefined)).length;
-
-  const onToggle = (next: boolean) => {
-    if (next === open) return;
-    setOpen(next);
-    const rest = readOpenGroups().filter((n) => n !== name);
-    writeOpenGroups(next ? [...rest, name] : rest);
-  };
+  /** 本机有音频、还没传到服务器的课（判据与上传扫描同一个）。没配同步服务器的构建里压根不会传，不提。 */
+  const pendingUpload = !isSyncConfigured() ? 0 : lessons.filter((l) => needsUpload(l, caches[l.id])).length;
+  const aligned = countAligned(lessons);
+  const { loose, chapters } = useMemo(() => splitChapters(lessons), [lessons]);
 
   /** FR-3.6a：换设备后一次补齐整组的音频，每课按自己记着的文件名认领。 */
   const bindGroup = async (picked: File[]) => {
@@ -308,7 +363,37 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
           </Note>
         )}
         {message && <Note>{message}</Note>}
-        <LessonList lessons={lessons} />
+        {loose.length > 0 && <LessonList lessons={loose} />}
+        {chapters.map(([chapter, members]) => (
+          <ChapterGroup key={chapter} groupName={name} chapter={chapter} lessons={members} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function countAligned(lessons: readonly Lesson[]): number {
+  return lessons.filter((l) => l.sentences.some((s) => s.startTime !== undefined)).length;
+}
+
+/** 组里的一章。补音频 / 下载那些整组操作留在组头，这里只折叠。 */
+function ChapterGroup({ groupName, chapter, lessons }: { groupName: string; chapter: string; lessons: Lesson[] }) {
+  const caches = useLessonStore((s) => s.caches);
+  const [open, onToggle] = useRememberedOpen(`${groupName} › ${chapter}`);
+  // 与组头同一个口径：没记过文件名的课（只能在自己的课程页里选）不算
+  const missing = lessons.filter((l) => isMaterialMissing(caches[l.id]) && listedAudioFiles(l).length > 0).length;
+  return (
+    <details className="group/ch" open={open} onToggle={(e) => onToggle(e.currentTarget.open)}>
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-2 py-1">
+        <span className="inline-block w-3 text-muted transition-transform group-open/ch:rotate-90">›</span>
+        <span className="min-w-0 flex-1 truncate text-ui font-medium">{chapter}</span>
+        <span className="tnum shrink-0 text-note text-faint">
+          {lessons.length} 课 · 已对齐 {countAligned(lessons)}
+        </span>
+        {missing > 0 && <Chip tone="warn">{missing} 课缺音频</Chip>}
+      </summary>
+      <div className="pt-1 pl-5">
+        <LessonList lessons={lessons} short />
       </div>
     </details>
   );

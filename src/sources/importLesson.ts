@@ -72,6 +72,8 @@ export async function importFromDw(
   lessonId: string,
   onProgress?: (progress: ImportProgress) => void,
   sourceUrl?: string,
+  /** 从哪个来源的列表导进来的（registry 里的 name）—— 记成 collection，课程列表按它折叠（FR-1.9）。按 id 导入的没有 */
+  series?: string,
 ): Promise<ImportOutcome> {
   onProgress?.({ step: 'page' });
   const dw = await politely(() => fetchLesson(lessonId, sourceUrl));
@@ -111,6 +113,7 @@ export async function importFromDw(
     source: { type: 'dw', dwLessonId: lessonId, sourceUrl: dw.sourceUrl },
     // 音频本身不进备份，地址进（§0 变更 27）。抓失败时也记 —— 那正是最需要它的时候。
     audioSrc: dw.audio?.mp3Src,
+    ...(series ? { collection: series } : {}),
     audioDuration: dw.audio?.duration || undefined,
     // 补齐素材时拿它比「DW 换没换过音频」（§0 变更 43）。抓失败时没有这个数，
     // 那种课的第一次补齐会退回到比时长。

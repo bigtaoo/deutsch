@@ -52,7 +52,7 @@ test('整份文稿按题导入：勾一章、一题两轨、拼成一个音频�
   await expect(page.getByText('2 轨')).toBeVisible();
 
   await page
-    .locator('input[type="file"][accept="audio/*"]')
+    .locator('input[type="file"][accept="audio/*"]:not([webkitdirectory])')
     .setInputFiles([wav('1_04.wav'), wav('1_02.wav'), wav('1_03.wav')]); // 选的顺序乱，按文件名排
   await expect(page.getByText('1_02.wav、1_03.wav')).toBeVisible();
   await expect(page.getByText('1_04.wav', { exact: true })).toBeVisible();
@@ -131,7 +131,7 @@ test('换设备后一次选齐整组音频：按文件名各归各课，同步�
 
   // 多选进来一个不相干的文件，顺序也是乱的
   await group
-    .locator('input[type="file"][accept="audio/*"]')
+    .locator('input[type="file"][accept="audio/*"]:not([webkitdirectory])')
     .setInputFiles([wav('1_11.wav'), wav('fremd.wav'), wav('1_10.wav')]);
 
   await expect(group.getByText('补上了 1 课，时间戳都是同步来的，不用重对。')).toBeVisible();
@@ -148,7 +148,7 @@ test('单个文件的课在课程页上绑回同一份音频：提示时间戳�
   await importBackup(page, backup);
   await page.goto('/#/lesson/single-1/listen');
 
-  await page.locator('input[type="file"][accept="audio/*"]').setInputFiles([wav('solo.wav')]);
+  await page.locator('input[type="file"][accept="audio/*"]:not([webkitdirectory])').setInputFiles([wav('solo.wav')]);
   // 绑上之后「素材未下载」那块横幅整个消失（提示文字在它里面，跟着一起没了），播放器拿到了 2 秒的音频
   await expect(page.getByText('0:00.0 / 0:02')).toBeVisible();
   // 判据是**底部没有冒出对齐进度条**：排进队的话它在 enqueue 的同一帧就出现（反向验证过：
@@ -164,7 +164,7 @@ test('拼过的课在课程页上少选一轨：不绑，把缺的文件名报�
   await page.goto('/#/lesson/book-lesson-1/listen');
 
   await expect(page.getByText(/要把这几个文件一起选上：1_10\.wav、1_11\.wav/)).toBeVisible();
-  await page.locator('input[type="file"][accept="audio/*"]').setInputFiles([wav('1_10.wav')]);
+  await page.locator('input[type="file"][accept="audio/*"]:not([webkitdirectory])').setInputFiles([wav('1_10.wav')]);
   await expect(page.getByText(/还缺这几个文件：1_11\.wav/)).toBeVisible();
 });
 
@@ -221,7 +221,7 @@ test('直接选 PDF：构建产物里 pdf.js 的 worker 真能加载，页边轨
 
   // 乱序、夹一个练习册的轨
   await page
-    .locator('input[type="file"][accept="audio/*"]')
+    .locator('input[type="file"][accept="audio/*"]:not([webkitdirectory])')
     .setInputFiles([wav('LB_CD1 (4).wav'), wav('AB_12.wav'), wav('LB_CD1 (3).wav'), wav('LB_CD1 (2).wav')]);
   await expect(page.getByText('LB_CD1 (2).wav、LB_CD1 (3).wav')).toBeVisible();
   await expect(page.getByText('LB_CD1 (4).wav', { exact: true })).toBeVisible();

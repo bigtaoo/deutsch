@@ -18,7 +18,7 @@ import { getAllLessonCaches, getAudioBlob } from '@/db/cache';
 import { SYNC_API_BASE, isSyncConfigured } from './config';
 import { getSessionToken } from './session';
 import { SyncApiError, SyncAuthError } from './client';
-import type { Lesson } from '@/types/models';
+import type { Lesson, LessonCache } from '@/types/models';
 
 export async function sha256Hex(blob: Blob): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
@@ -95,12 +95,13 @@ export function registerAudioUploadDeps(d: UploadDeps): void {
  * 要传的课：手动导入、本机有音频，且「还没有 audioRef」或「本机这份是自己后来选的」。
  * audioRef 对不上本机、又不是本机新选的 = 别的设备换过音频，那边的为准，这里不回传。
  */
+export function needsUpload(lesson: Lesson, cache: LessonCache | undefined): boolean {
+  return lesson.source.type === 'manual' && cache?.hasAudio === true && (!lesson.audioRef || cache.audioPendingUpload === true);
+}
+
 export async function lessonsNeedingUpload(): Promise<Lesson[]> {
   const cached = new Map((await getAllLessonCaches()).map((c) => [c.lessonId, c]));
-  return (await getAllLessons()).filter((l) => {
-    const cache = cached.get(l.id);
-    return l.source.type === 'manual' && cache?.hasAudio === true && (!l.audioRef || cache.audioPendingUpload === true);
-  });
+  return (await getAllLessons()).filter((l) => needsUpload(l, cached.get(l.id)));
 }
 
 let inFlight: Promise<number> | null = null;

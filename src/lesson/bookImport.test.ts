@@ -1,7 +1,16 @@
 // FR-1.8：整份文稿按题目切段、音轨按顺序分给勾上的题。
 
 import { describe, expect, it } from 'vitest';
-import { assignByTrackNumber, assignTracks, parseBookSections, sectionTitle, sortByName, trackOfFile } from './bookImport';
+import {
+  assignByTrackNumber,
+  assignTracks,
+  audioFilesOnly,
+  parseBookSections,
+  sectionTitle,
+  sectionsWithFullAudio,
+  sortByName,
+  trackOfFile,
+} from './bookImport';
 import { unwrapPdfText } from './pdfText';
 
 const BOOK = [
@@ -226,4 +235,37 @@ describe('轨号落在题目标题前面（栏底 / 页底的轨号，它那一�
 
 it('全文最后一行是轨号：仍归最后一题', () => {
   expect(parseBookSections('Modul 1 Aufgabe 1\nText.\n[[1.9]]')[0].tracks).toEqual(['1.9']);
+});
+
+describe('sectionsWithFullAudio', () => {
+  const f = (n: string) => ({ name: n });
+  const sections = [
+    { id: 1, tracks: ['2.17'] },
+    { id: 2, tracks: ['2.21', '2.22'] },
+    { id: 3, tracks: [] },
+    { id: 4, tracks: ['3.2'] },
+  ];
+  it('轨全在的才算；缺一轨不算、一轨都不用的不算', () => {
+    const files = [f('605038_LB_CD2 (17).mp3'), f('605038_LB_CD2 (21).mp3')];
+    expect(sectionsWithFullAudio(sections, files)).toEqual([1]);
+    expect(sectionsWithFullAudio(sections, [...files, f('605038_LB_CD2 (22).mp3')])).toEqual([1, 2]);
+  });
+  it('已经导过的跳过', () => {
+    const files = [f('605038_LB_CD2 (17).mp3')];
+    expect(sectionsWithFullAudio(sections, files, (id) => id === 1)).toEqual([]);
+  });
+});
+
+describe('audioFilesOnly', () => {
+  it('按类型或扩展名认音频；PDF、说明文字、没扩展名的丢掉', () => {
+    const files = [
+      { name: 'a.MP3', type: '' },
+      { name: 'b.m4a', type: '' },
+      { name: 'c', type: 'audio/ogg' },
+      { name: 'Transkript.pdf', type: 'application/pdf' },
+      { name: 'LIESMICH.txt', type: 'text/plain' },
+      { name: 'README', type: '' },
+    ];
+    expect(audioFilesOnly(files).map((x) => x.name)).toEqual(['a.MP3', 'b.m4a', 'c']);
+  });
 });

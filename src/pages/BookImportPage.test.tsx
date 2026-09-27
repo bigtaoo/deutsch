@@ -365,3 +365,86 @@ describe('BookImportPage · 按轨号的其余分支', () => {
     expect(within(row('Modul 2 Aufgabe 2a')).queryByRole('button', { name: /^音轨 / })).toBeNull();
   });
 });
+
+// 2026-09-27：选了音频就替人勾题，不用一章一章点。
+describe('BookImportPage · 选音频替人勾题', () => {
+  function pickFolder(files: File[]) {
+    const input = document.querySelector('input[type="file"][webkitdirectory]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { value: files, configurable: true });
+    fireEvent.change(input);
+  }
+
+  it('一题没勾时选音频：轨全在的题自动勾上，缺轨的不勾，并说一声', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    expect(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox')).toBeChecked();
+    expect(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByText(/按选的音频勾上了 1 题/)).toBeInTheDocument();
+    expect(screen.getByText(/另外 1 题没勾：缺轨或已经导过/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '导入 1 课' })).toBeInTheDocument();
+  });
+
+  it('重放轨默认关着，不算「缺」：2.20 不在也照勾', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3', '605038_LB_CD2 (17).mp3']);
+    expect(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox')).toBeChecked();
+    expect(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('button', { name: '导入 2 课' })).toBeInTheDocument();
+  });
+
+  it('已经自己勾过题：选音频不动那些勾', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    fireEvent.click(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox'));
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    expect(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox')).toBeChecked();
+    expect(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox')).not.toBeChecked();
+    expect(screen.queryByText(/按选的音频勾上了/)).toBeNull();
+  });
+
+  it('这一组里已经导过的题不自动勾 —— 再导一遍就是两门课', () => {
+    useLessonStore.setState({ lessons: [existingLesson('Kapitel 7 · Modul 4 Aufgabe 3', 'Aspekte')] } as never);
+    render(<BookImportPage />);
+    setCollection('Aspekte');
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (17).mp3', '605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    expect(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox')).toBeChecked();
+    expect(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox')).not.toBeChecked();
+  });
+
+  it('「只勾音频齐全的」把手动勾乱的重置回去；「全部 N 题」一次全勾、再点全不勾', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    fireEvent.click(checkbox('全部 2 题'));
+    expect(screen.getByRole('button', { name: '导入 2 课' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '只勾音频齐全的' }));
+    expect(screen.getByRole('button', { name: '导入 1 课' })).toBeInTheDocument();
+    fireEvent.click(checkbox('全部 2 题'));
+    fireEvent.click(checkbox('全部 2 题'));
+    expect(screen.getByRole('button', { name: '导入 0 课' })).toBeDisabled();
+  });
+
+  it('选整个文件夹：非音频文件（PDF、说明）筛掉，照样按轨号配、替人勾题', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    pickFolder([
+      new File([], 'Transkript.pdf', { type: 'application/pdf' }),
+      new File([], 'LIESMICH.txt', { type: 'text/plain' }),
+      new File([], '605038_LB_CD2 (21).mp3', { type: 'audio/mpeg' }),
+      new File([], '605038_LB_CD2 (22).mp3'),
+    ]);
+    expect(screen.getByText('换音频（已选 2 个）')).toBeInTheDocument();
+    expect(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox')).toBeChecked();
+  });
+
+  it('粘贴的文字没有轨号：不猜，选了音频也不替人勾', () => {
+    render(<BookImportPage />);
+    paste();
+    pickFiles(['a.mp3', 'b.mp3', 'c.mp3']);
+    expect(screen.getByRole('button', { name: '导入 0 课' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '只勾音频齐全的' })).toBeNull();
+  });
+});

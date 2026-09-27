@@ -90,7 +90,7 @@ export function SourcesPage() {
             </Hint>
             <ul className="divide-y divide-line">
               {feed.items.map((item) => (
-                <FeedRow key={item.lessonId} item={item} imported={importedIds.has(item.lessonId)} />
+                <FeedRow key={item.lessonId} item={item} series={source.name} imported={importedIds.has(item.lessonId)} />
               ))}
             </ul>
             <BackfillPanel items={feed.items} importedIds={importedIds} />
@@ -140,7 +140,7 @@ function importProgressText(progress: ImportProgress): string {
   }
 }
 
-function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
+function FeedRow({ item, series, imported }: { item: FeedItem; series: string; imported: boolean }) {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const enqueueAlign = useAlignStore((s) => s.enqueue);
@@ -148,7 +148,7 @@ function FeedRow({ item, imported }: { item: FeedItem; imported: boolean }) {
   const run = async () => {
     setResult(null);
     try {
-      const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined);
+      const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined, series);
       // FR-15：音频一到位就立刻排对齐 —— 「下载完就能直接练」是它存在的理由。
       // 不等它跑完：几分钟的活儿不该把导入按钮和这一页钉在原地。
       if (outcome.hasAudio) enqueueAlign(outcome.lessonId);

@@ -8,6 +8,9 @@
 // FR-1.10：直接选 PDF 文件时音轨号有了位置（`pdfExtract.ts`），每题知道自己是哪几轨，
 // 音频按文件名里的轨号配对，「轨」的 −/+ 换成每一轨一个开关（重放轨默认关掉）。
 //
+// 2026-09-27：选了音频就替人勾题 —— 要用的轨全在选的文件里、这一组里还没有的题自动勾上
+// （sectionsWithFullAudio），不用再一章一章点；也可以直接选整个音频文件夹。
+//
 // 这一页和 ImportPage 一样是 FR-13 的地板：不碰 sources/ 里任何代码，只用浏览器自带能力。
 
 import { useMemo, useState } from 'react';
@@ -21,6 +24,8 @@ import { extractPdfText } from '@/lesson/pdfExtract';
 import {
   assignByTrackNumber,
   assignTracks,
+  audioFilesOnly,
+  sectionsWithFullAudio,
   parseBookSections,
   sectionTitle,
   sortByName,
@@ -56,6 +61,8 @@ export function BookImportPage() {
   const [pdfState, setPdfState] = useState<{ reading: boolean; error?: string }>({ reading: false });
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 选音频之后替人勾了几题 —— 说一声，免得以为是自己点的 */
+  const [autoChecked, setAutoChecked] = useState<number | null>(null);
 
   // 20000 字符以上不能卡（FR-1.2）：只在失焦时解析一次。
   const parse = (source = raw) => {
@@ -117,6 +124,32 @@ export function BookImportPage() {
   const { assigned, leftover, missing } = matched;
   const tracksWanted = selected.reduce((n, s) => n + (tracks.get(s.id) ?? 1), 0);
   const missingCount = [...missing.values()].reduce((n, l) => n + l.length, 0);
+
+  const fullAudioIds = (picked: readonly File[]) =>
+    sectionsWithFullAudio(
+      (parsed?.sections ?? []).map((s) => ({ id: s.id, tracks: usedTracks(s) })),
+      picked,
+      (id) => {
+        const section = parsed?.sections.find((s) => s.id === id);
+        return section ? existing.has(sectionTitle(section)) : false;
+      },
+    );
+
+  /** 选了音频：按轨号配对时，还一题没勾就替人把音频齐全的题全勾上；已经勾过的不动。 */
+  const pickAudio = (picked: File[]) => {
+    const audio = sortByName(audioFilesOnly(picked));
+    setFiles(audio);
+    if (byTrack && checked.size === 0 && audio.length > 0) {
+      const ids = fullAudioIds(audio);
+      setChecked(new Set(ids));
+      setAutoChecked(ids.length);
+    } else {
+      setAutoChecked(null);
+    }
+  };
+
+  const allIds = (parsed?.sections ?? []).map((s) => s.id);
+  const allChecked = allIds.length > 0 && allIds.every((id) => checked.has(id));
 
   const toggleTrack = (id: number, track: string) => {
     const next = new Map(skipped);
@@ -235,19 +268,50 @@ export function BookImportPage() {
         <Section
           title="选题与音频"
           aside={
-            <FilePicker accept="audio/*" onPickMany={(picked) => setFiles(sortByName(picked))}>
-              {files.length > 0 ? `换音频（已选 ${files.length} 个）` : '选这几题的音频…'}
-            </FilePicker>
+            <span className="flex flex-wrap gap-2">
+              <FilePicker accept="audio/*" onPickMany={pickAudio}>
+                {files.length > 0 ? `换音频（已选 ${files.length} 个）` : '选音频文件…'}
+              </FilePicker>
+              <FilePicker accept="audio/*" directory onPickMany={pickAudio}>
+                选整个文件夹…
+              </FilePicker>
+            </span>
           }
         >
           {byTrack ? (
             <Hint>
-              勾上要导的题，再一次选好音频（两个音频包的 mp3 可以一起全选）：按文件名里的轨号配给各题，练习册的音轨用不上会自动剩下。
+              直接选音频（两个音频包的 mp3 可以一起全选，或者选整个文件夹）：按文件名里的轨号配给各题，
+              还没勾题的话，音频齐全、这一组里还没有的题会自动勾上，缺轨的留着不勾。练习册的音轨用不上会自动剩下。
               每题下面是它的轨号，点一下关掉 / 打开那一轨。
             </Hint>
           ) : (
             <Hint>勾上要导的题，再一次选好它们的全部音轨：按文件名顺序依次分给勾上的题。一题跨几轨就把「轨」调成几。</Hint>
           )}
+
+          {autoChecked !== null && (
+            <Note>
+              按选的音频勾上了 {autoChecked} 题（要用的轨都在、这一组里还没有）
+              {autoChecked < allIds.length ? `，另外 ${allIds.length - autoChecked} 题没勾：缺轨或已经导过` : ''}。
+            </Note>
+          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex min-h-11 items-center gap-2 font-medium">
+              <input type="checkbox" checked={allChecked} onChange={(e) => toggle(allIds, e.target.checked)} />
+              全部 {allIds.length} 题
+            </label>
+            {byTrack && files.length > 0 && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  const ids = fullAudioIds(files);
+                  setChecked(new Set(ids));
+                  setAutoChecked(ids.length);
+                }}
+              >
+                只勾音频齐全的
+              </Button>
+            )}
+          </div>
 
           {chapters.map(([chapter, sections]) => {
             const ids = sections.map((s) => s.id);

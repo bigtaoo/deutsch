@@ -188,3 +188,24 @@ export function assignByTrackNumber<T extends { name: string }>(
   }
   return { assigned, missing, leftover: files.filter((f) => !used.has(f)) };
 }
+
+/**
+ * 选了音频之后替人勾题（§12.18，2026-09-27）：要用的轨**全都**在选的文件里的题。
+ * 缺轨的不勾（拼出来少一段、时间戳整段错位），一轨都不用的不勾（导进去也没法练听），
+ * 这一组里已经有同名课的不勾（再导一遍就是两门课）。
+ */
+export function sectionsWithFullAudio<T extends { name: string }>(
+  sections: ReadonlyArray<Pick<BookSection, 'id' | 'tracks'>>,
+  files: readonly T[],
+  isExisting: (id: number) => boolean = () => false,
+): number[] {
+  const { missing } = assignByTrackNumber(sections, files);
+  return sections
+    .filter((s) => s.tracks.length > 0 && (missing.get(s.id)?.length ?? 0) === 0 && !isExisting(s.id))
+    .map((s) => s.id);
+}
+
+/** 选整个文件夹时浏览器不看 accept：自己按类型 / 扩展名挑出音频。 */
+export function audioFilesOnly<T extends { name: string; type: string }>(files: readonly T[]): T[] {
+  return files.filter((f) => f.type.startsWith('audio/') || /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac)$/i.test(f.name));
+}

@@ -20,7 +20,9 @@ vi.mock('@/lesson/bindAudio', async (importOriginal) => ({
   restoreServerAudio: (lesson: Lesson) => restoreServerAudio(lesson),
 }));
 
-const { LessonsPage, groupBindSummary, groupDownloadSummary, groupLessons } = await import('./LessonsPage');
+const { LessonsPage, groupBindSummary, groupDownloadSummary, groupLessons, splitChapters, DW_FALLBACK_GROUP } = await import(
+  './LessonsPage'
+);
 
 function lesson(id: string, title: string, collection?: string, extra: Partial<Lesson> = {}): Lesson {
   return {
@@ -269,5 +271,104 @@ describe('分组块 · 音频在同步服务器上（变更 69）', () => {
   it('groupDownloadSummary：要重对的、失败的都报；一课都没下到时不说「不用重对」', () => {
     expect(groupDownloadSummary(3, 1, 0)).toBe('下载了 3 课，其中 1 课要重新对齐。');
     expect(groupDownloadSummary(0, 0, 2)).toBe('下载了 0 课，2 课没下下来，再点一次会接着下。');
+  });
+});
+
+// 2026-09-27：DW 的课也进折叠组；教材组里再按章折叠一层。
+const dw = (id: string, title: string, createdAt: number, collection?: string): Lesson =>
+  lesson(id, title, collection, { source: { type: 'dw', dwLessonId: id, sourceUrl: '' }, createdAt });
+
+describe('DW 的课分组', () => {
+  it('没记来源的 DW 课归「DW Alltagsdeutsch」；记了来源的各进各组；手动导入、没分组的照旧平铺', () => {
+    const { ungrouped, groups } = groupLessons([
+      dw('w1', 'Der deutsche Wald', 1),
+      dw('t1', 'Klimawandel', 2, 'DW Top-Thema'),
+      lesson('m', '自己粘的一课'),
+    ]);
+    expect(ungrouped.map((l) => l.id)).toEqual(['m']);
+    expect(groups.map(([name, list]) => [name, list.map((l) => l.id)])).toEqual([
+      [DW_FALLBACK_GROUP, ['w1']],
+      ['DW Top-Thema', ['t1']],
+    ]);
+  });
+
+  it('全是 DW 的组按导入时间新的在上 —— DW 的标题是文章名，按字母排没意义', () => {
+    const { groups } = groupLessons([dw('a', 'Apfel', 1), dw('z', 'Zug', 3), dw('m', 'Mond', 2)]);
+    expect(groups[0][1].map((l) => l.id)).toEqual(['z', 'm', 'a']);
+  });
+
+  it('页面上 DW 的课是一个折叠组，默认收起', () => {
+    seed([dw('w1', 'Der deutsche Wald', 1), dw('w2', 'Brot', 2)], { w1: cached('w1'), w2: cached('w2') });
+    render(<LessonsPage />);
+    expect(details(DW_FALLBACK_GROUP)).not.toHaveAttribute('open');
+    expect(within(summary(DW_FALLBACK_GROUP)).getByText('2 课 · 已对齐 0')).toBeInTheDocument();
+    expect(within(details(DW_FALLBACK_GROUP)).getByText('Brot')).toBeInTheDocument();
+  });
+});
+
+describe('教材组里按章折叠', () => {
+  const book = [
+    lesson('a', 'Kapitel 1 · Auftakt Aufgabe 2a', 'B'),
+    lesson('b', 'Kapitel 1 · Modul 2 Aufgabe 2', 'B'),
+    lesson('c', 'Kapitel 10 · Modul 4 Aufgabe 1', 'B'),
+    lesson('d', 'Kapitel 2 · Modul 1 Aufgabe 1', 'B'),
+  ];
+
+  it('splitChapters：按「Kapitel N · 」分章，顺序跟着自然排序走；没有章前缀的放在前面', () => {
+    const sorted = groupLessons([...book, lesson('x', 'Wortschatz', 'B')]).groups[0][1];
+    const { loose, chapters } = splitChapters(sorted);
+    expect(loose.map((l) => l.id)).toEqual(['x']);
+    expect(chapters.map(([c, list]) => [c, list.map((l) => l.id)])).toEqual([
+      ['Kapitel 1', ['a', 'b']],
+      ['Kapitel 2', ['d']],
+      ['Kapitel 10', ['c']],
+    ]);
+  });
+
+  it('只有一章时不再套一层（多点一下没意义）', () => {
+    const { loose, chapters } = splitChapters(book.slice(0, 2));
+    expect(chapters).toEqual([]);
+    expect(loose.map((l) => l.id)).toEqual(['a', 'b']);
+  });
+
+  it('页面上：章也是折叠块、默认收起、报课数；章里的行不再重复「Kapitel N · 」', () => {
+    const withFile = (l: Lesson): Lesson => ({ ...l, source: { type: 'manual', audioFileName: `${l.id}.mp3` } });
+    seed(book.map(withFile), { a: cached('a'), b: cached('b'), c: cached('c') });
+    render(<LessonsPage />);
+    const ch1 = details('Kapitel 1');
+    expect(ch1).not.toHaveAttribute('open');
+    expect(ch1.parentElement!.closest('details')).toBe(details('B'));
+    expect(within(summary('Kapitel 1')).getByText('2 课 · 已对齐 0')).toBeInTheDocument();
+    expect(within(ch1).getByText('Auftakt Aufgabe 2a')).toBeInTheDocument();
+    expect(screen.queryByText('Kapitel 1 · Auftakt Aufgabe 2a')).toBeNull();
+    expect(within(summary('Kapitel 2')).getByText('1 课缺音频')).toBeInTheDocument();
+  });
+
+  it('章的展开状态单独记，键是「组名 › 章」，不和同名的组混', () => {
+    seed(book, {});
+    const first = render(<LessonsPage />);
+    const ch = details('Kapitel 2');
+    ch.open = true;
+    fireEvent(ch, new Event('toggle'));
+    expect(JSON.parse(store.get('lessons.openGroups')!)).toEqual(['B › Kapitel 2']);
+    first.unmount();
+    render(<LessonsPage />);
+    expect(details('Kapitel 2')).toHaveAttribute('open');
+    expect(details('Kapitel 1')).not.toHaveAttribute('open');
+    expect(details('B')).not.toHaveAttribute('open');
+  });
+});
+
+describe('「还没传到同步服务器」与上传扫描同一个判据', () => {
+  it('audioRef 被别的设备改过、本机这份不是新选的：不算还没传（不会回传，也就不该一直挂着这条）', () => {
+    seed(
+      [
+        lesson('a', 'A', 'X', { audioRef: { sha256: 'a'.repeat(64), bytes: 999 } }),
+        lesson('b', 'B', 'X', { audioRef: { sha256: 'b'.repeat(64), bytes: 999 } }),
+      ],
+      { a: cached('a'), b: { ...cached('b'), audioPendingUpload: true } },
+    );
+    render(<LessonsPage />);
+    expect(within(details('X')).getByText(/^1 课的音频还没传到同步服务器/)).toBeInTheDocument();
   });
 });

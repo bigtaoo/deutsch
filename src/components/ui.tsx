@@ -202,12 +202,15 @@ export function FilePicker({
   children,
   onPick,
   onPickMany,
+  directory = false,
 }: {
   accept: string;
   children: ReactNode;
   onPick?: (file: File | undefined) => void;
   /** 给了它就是多选（FR-1.8：教材一个 Aufgabe 跨好几轨）。 */
   onPickMany?: (files: File[]) => void;
+  /** 选整个文件夹（连同子文件夹）。浏览器此时不看 accept，调用方自己筛；配 onPickMany 用。 */
+  directory?: boolean;
 }) {
   return (
     <label
@@ -218,6 +221,7 @@ export function FilePicker({
         type="file"
         accept={accept}
         multiple={Boolean(onPickMany)}
+        {...(directory ? ({ webkitdirectory: '' } as Record<string, string>) : {})}
         className="sr-only"
         onChange={(e) => {
           if (onPickMany) onPickMany([...(e.target.files ?? [])]);
