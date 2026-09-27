@@ -89,6 +89,18 @@ describe('uploadAudio', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: '音频总量超过上限' }), { status: 507 }));
     await expect(audio.uploadAudio(new Blob([new Uint8Array([1])]))).rejects.toThrow('音频总量超过上限');
   });
+
+  it('HEAD 本身出错（不是 404）：报错，不去 PUT', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    await expect(audio.uploadAudio(new Blob([new Uint8Array([1])]))).rejects.toThrow('HTTP 500');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('没有类型的 Blob：按 application/octet-stream 传，服务器自己认格式', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 404 })).mockResolvedValueOnce(new Response('{}', { status: 201 }));
+    await audio.uploadAudio(new Blob([new Uint8Array([1])]));
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ 'Content-Type': 'application/octet-stream' });
+  });
 });
 
 describe('downloadAudio', () => {
@@ -103,6 +115,28 @@ describe('downloadAudio', () => {
     const bytes = new Uint8Array([5, 6, 7]);
     fetchMock.mockResolvedValueOnce(new Response(bytes.subarray(0, 2), { status: 200 }));
     await expect(audio.downloadAudio({ sha256: await hashOf(bytes), bytes: 3 })).rejects.toThrow('对不上');
+  });
+
+  it('字节数对得上、内容不一样：照样报错 —— 光比长度不够', async () => {
+    const bytes = new Uint8Array([5, 6, 7]);
+    fetchMock.mockResolvedValueOnce(new Response(new Uint8Array([5, 6, 8]), { status: 200 }));
+    await expect(audio.downloadAudio({ sha256: await hashOf(bytes), bytes: 3 })).rejects.toThrow('对不上');
+  });
+
+  it('下载也带令牌 —— 服务器上的音频只有本人读得到', async () => {
+    const bytes = new Uint8Array([1]);
+    fetchMock.mockResolvedValueOnce(new Response(bytes, { status: 200 }));
+    const sha256 = await hashOf(bytes);
+    await audio.downloadAudio({ sha256, bytes: 1 });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(`${BASE}/v1/audio/${sha256}`);
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer tok' });
+  });
+
+  it('没登录：不发请求，直接 SyncAuthError', async () => {
+    getSessionToken.mockResolvedValue(undefined);
+    await expect(audio.downloadAudio({ sha256: 'a'.repeat(64), bytes: 1 })).rejects.toBeInstanceOf(SyncAuthError);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('服务器上没有：404 报出来', async () => {
@@ -188,6 +222,94 @@ describe('uploadPendingAudio', () => {
     const first = audio.uploadPendingAudio();
     expect(audio.uploadPendingAudio()).toBe(first);
     await first;
+  });
+
+  it('上一趟因登录过期停下之后，下一趟照常重扫 —— 单飞锁不能把自己锁死', async () => {
+    const saveAudioRef = vi.fn(async () => {});
+    audio.registerAudioUploadDeps({ saveAudioRef });
+    lessons.push(lesson('a'));
+    cached('a', new Uint8Array([1]));
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 401 }));
+    expect(await audio.uploadPendingAudio()).toBe(0);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    expect(await audio.uploadPendingAudio()).toBe(1);
+    expect(saveAudioRef).toHaveBeenCalledWith('a', expect.anything());
+  });
+
+  it('写回 audioRef 失败：这一课算没传，下一趟还会扫到它', async () => {
+    const saveAudioRef = vi.fn(async () => {}).mockRejectedValueOnce(new Error('写库失败'));
+    audio.registerAudioUploadDeps({ saveAudioRef });
+    lessons.push(lesson('a'));
+    cached('a', new Uint8Array([1]));
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await audio.uploadPendingAudio()).toBe(0);
+    expect(await audio.uploadPendingAudio()).toBe(1);
+  });
+
+  it('缓存表说有音频、却读不出来：跳过这一课，不发请求也不报错', async () => {
+    const saveAudioRef = vi.fn(async () => {});
+    audio.registerAudioUploadDeps({ saveAudioRef });
+    lessons.push(lesson('gone'), lesson('b'));
+    caches.push({ lessonId: 'gone', hasAudio: true, audioBytes: 5, fetchedAt: 0 });
+    cached('b', new Uint8Array([2]));
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    expect(await audio.uploadPendingAudio()).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(saveAudioRef).toHaveBeenCalledWith('b', expect.anything());
+  });
+
+  it('没注入 saveAudioRef（store 还没加载）：什么都不做 —— 传了也写不回去', async () => {
+    lessons.push(lesson('a'));
+    cached('a', new Uint8Array([1]));
+    expect(await audio.uploadPendingAudio()).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('从服务器下回来的那份（audioRef 与本机字节数一致）不再传回去', async () => {
+    audio.registerAudioUploadDeps({ saveAudioRef: vi.fn(async () => {}) });
+    const bytes = new Uint8Array([3, 3]);
+    lessons.push(lesson('a', { audioRef: { sha256: await hashOf(bytes), bytes: 2 } }));
+    cached('a', bytes);
+    expect(await audio.lessonsNeedingUpload()).toEqual([]);
+    expect(await audio.uploadPendingAudio()).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduleAudioUpload', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('几秒内调好几次（一次导几十课）只扫一趟，而且要等到最后一次之后', async () => {
+    vi.useFakeTimers();
+    audio.registerAudioUploadDeps({ saveAudioRef: vi.fn(async () => {}) });
+    lessons.push(lesson('a'));
+    cached('a', new Uint8Array([1]));
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+
+    audio.scheduleAudioUpload(3000);
+    await vi.advanceTimersByTimeAsync(2000);
+    audio.scheduleAudioUpload(3000);
+    await vi.advanceTimersByTimeAsync(2000);
+    audio.scheduleAudioUpload(3000);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('reset 之后排着的那一趟不再跑（测试之间不串）', async () => {
+    vi.useFakeTimers();
+    audio.registerAudioUploadDeps({ saveAudioRef: vi.fn(async () => {}) });
+    lessons.push(lesson('a'));
+    cached('a', new Uint8Array([1]));
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    audio.scheduleAudioUpload(1000);
+    audio.resetAudioSyncForTests();
+    audio.registerAudioUploadDeps({ saveAudioRef: vi.fn(async () => {}) }); // 只验「计时器被清掉」，不靠 deps 被清
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
