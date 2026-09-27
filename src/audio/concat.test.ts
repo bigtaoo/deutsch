@@ -10,6 +10,7 @@ import {
   parseFrameHeader,
   pickListedFiles,
   scanMp3,
+  yieldToEventLoop,
   toInt16,
 } from './concat';
 
@@ -252,5 +253,20 @@ describe('pickListedFiles', () => {
 
   it('缺的逐个列出来', () => {
     expect(pickListedFiles([f('a.mp3')], ['a.mp3', 'b.mp3', 'c.mp3']).missing).toEqual(['b.mp3', 'c.mp3']);
+  });
+});
+
+// 2026-09-27：后台标签页里 setTimeout(0) 被压到每秒 / 每分钟一次，导入时切走一下转码就停摆。
+describe('yieldToEventLoop', () => {
+  it('不靠定时器：定时器全冻住（假时钟、一步不走）也照样让出去再回来', async () => {
+    vi.useFakeTimers();
+    try {
+      let done = false;
+      const p = yieldToEventLoop().then(() => (done = true));
+      await p;
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

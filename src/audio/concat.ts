@@ -184,6 +184,24 @@ export function toInt16(samples: Float32Array): Int16Array {
 type Mp3Encoder = { encodeBuffer(pcm: Int16Array): Uint8Array; flush(): Uint8Array };
 
 /**
+ * 每编一块让一下主线程，界面才能刷进度。**不用 `setTimeout(0)`**（2026-09-27）：标签页切到后台时
+ * Chrome 把它压到每秒一次、藏久了每分钟一次 —— 一轨 9 分钟的音频要编几十块，导入时切走一下
+ * 就从几十秒拖成半小时以上（实测：后台标签页里一轨 8MB 的 mp3 4 分钟还是 0/1）。
+ * MessageChannel 的消息不受这种节流。
+ */
+export function yieldToEventLoop(): Promise<void> {
+  if (typeof MessageChannel === 'undefined') return new Promise((r) => setTimeout(r, 0));
+  return new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => {
+      port1.close();
+      resolve();
+    };
+    port2.postMessage(null);
+  });
+}
+
+/**
  * 流式编码：几轨一段一段喂进同一个编码器，拼接处没有缝；一次只在内存里放一轨的 PCM
  * （Aspekte 最长一轨 12 分钟 ≈ 127MB Float32，整题一次性解码要翻几倍）。
  * lamejs（LGPL-3.0，纯 JS 约 150KB）只有真要转码时才加载。
@@ -199,7 +217,7 @@ export async function createMp3Stream(): Promise<{
     async push(samples) {
       for (let i = 0; i < samples.length; i += CHUNK) {
         chunks.push(encoder.encodeBuffer(toInt16(samples.subarray(i, i + CHUNK))));
-        await new Promise((r) => setTimeout(r, 0));
+        await yieldToEventLoop();
       }
     },
     finish() {
