@@ -135,9 +135,10 @@ describe('restoreServerAudio（变更 69）', () => {
   it('照 audioRef 下载、按记着的文件名绑上；同一份音频不重对', async () => {
     const result = await restoreServerAudio(lesson({ audioRef: ref }));
     expect(downloadAudio).toHaveBeenCalledWith(ref);
-    const [id, bound] = attachAudio.mock.calls[0] as [string, File];
+    const [id, bound, opts] = attachAudio.mock.calls[0] as [string, File, { fromServer?: boolean }];
     expect(id).toBe('l1');
     expect(bound.name).toBe('a.mp3');
+    expect(opts).toEqual({ fromServer: true }); // 不带「待上传」标记，否则会回传、和别的设备来回改
     expect(bound.type).toBe('audio/mpeg');
     expect(result.realigned).toBe(false);
     expect(enqueue).not.toHaveBeenCalled();

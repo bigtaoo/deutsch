@@ -72,7 +72,7 @@ interface LessonState {
   resegmentLesson: (lessonId: string, plainText: string, manuscriptHtml?: string) => Promise<ResegmentResult>;
 
   /** FR-1.3 / FR-3.6：绑定本地音频文件。 */
-  attachAudio: (lessonId: string, file: File) => Promise<AttachOutcome>;
+  attachAudio: (lessonId: string, file: File, opts?: { fromServer?: boolean }) => Promise<AttachOutcome>;
 
   /** FR-3.8 / FR-3.9：清除单课缓存（标注层不动）。 */
   clearCache: (lessonId: string) => Promise<void>;
@@ -156,6 +156,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       plainText: input.plainText,
       hasAudio: Boolean(input.audioFile),
       audioBytes,
+      ...(input.audioFile && !input.dwLessonId ? { audioPendingUpload: true } : {}),
       fetchedAt: now,
     };
 
@@ -248,7 +249,7 @@ export const useLessonStore = create<LessonState>((set, get) => ({
     return result;
   },
 
-  attachAudio: async (lessonId, file) => {
+  attachAudio: async (lessonId, file, opts = {}) => {
     const lesson = get().lessons.find((l) => l.id === lessonId) ?? (await getLesson(lessonId));
     if (!lesson) throw new Error('课程不存在');
 
@@ -265,6 +266,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
       ...cache,
       hasAudio: true,
       audioBytes: file.size,
+      // 变更 69：本机选的手动课音频要传；从服务器下回来的那份不用
+      audioPendingUpload: lesson.source.type === 'manual' && !opts.fromServer,
       fetchedAt: Date.now(),
     };
     await putLessonCache(nextCache);
@@ -293,8 +296,8 @@ export const useLessonStore = create<LessonState>((set, get) => ({
         audioBytes: file.size,
       });
     }
-    // 变更 69：从服务器下回来的那份 audioRef 对得上，扫的时候会跳过；本机新选的才会真的传
-    if (lesson.source.type === 'manual') scheduleAudioUpload();
+    // 变更 69：本机新选的才传；从服务器下回来的那份不回传
+    if (nextCache.audioPendingUpload) scheduleAudioUpload();
     return { duration, mismatch, audioChanged };
   },
 
@@ -320,5 +323,13 @@ export function isRehydratable(lesson: Lesson): boolean {
 }
 
 registerAudioUploadDeps({
-  saveAudioRef: (lessonId, ref) => useLessonStore.getState().patchLesson(lessonId, (l) => ({ ...l, audioRef: ref })),
+  saveAudioRef: async (lessonId, ref) => {
+    await useLessonStore.getState().patchLesson(lessonId, (l) => ({ ...l, audioRef: ref }));
+    // 传的途中又换了一份（字节数变了）就留着标记，下一趟再传新的
+    const cache = await getLessonCache(lessonId);
+    if (!cache?.audioPendingUpload || cache.audioBytes !== ref.bytes) return;
+    const next = { ...cache, audioPendingUpload: false };
+    await putLessonCache(next);
+    useLessonStore.setState({ caches: { ...useLessonStore.getState().caches, [lessonId]: next } });
+  },
 });

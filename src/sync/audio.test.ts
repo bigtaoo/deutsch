@@ -39,9 +39,9 @@ function lesson(id: string, patch: Partial<Lesson> = {}): Lesson {
     ...patch,
   } as Lesson;
 }
-function cached(id: string, bytes: Uint8Array<ArrayBuffer>) {
+function cached(id: string, bytes: Uint8Array<ArrayBuffer>, audioPendingUpload?: boolean) {
   blobs.set(id, new Blob([bytes], { type: 'audio/mpeg' }));
-  caches.push({ lessonId: id, hasAudio: true, audioBytes: bytes.length, fetchedAt: 0 });
+  caches.push({ lessonId: id, hasAudio: true, audioBytes: bytes.length, fetchedAt: 0, audioPendingUpload });
 }
 const hashOf = async (bytes: Uint8Array<ArrayBuffer>) => audio.sha256Hex(new Blob([bytes]));
 
@@ -146,7 +146,7 @@ describe('downloadAudio', () => {
 });
 
 describe('uploadPendingAudio', () => {
-  it('只传「手动课 + 本机有音频 + 没传过这一份」的；传完写回 audioRef', async () => {
+  it('只传「手动课 + 本机有音频 +（没有 audioRef 或本机新选的）」的；传完写回 audioRef', async () => {
     const saveAudioRef = vi.fn(async () => {});
     audio.registerAudioUploadDeps({ saveAudioRef });
     const a = new Uint8Array([1, 1]);
@@ -154,13 +154,15 @@ describe('uploadPendingAudio', () => {
     lessons.push(
       lesson('todo'),
       lesson('done', { audioRef: { sha256: 'x'.repeat(64), bytes: 3 } }),
-      lesson('changed', { audioRef: { sha256: 'y'.repeat(64), bytes: 99 } }), // 记着的不是本机这一份
+      lesson('changed', { audioRef: { sha256: 'y'.repeat(64), bytes: 99 } }), // 本机后来换了一份（带标记）
+      lesson('remote', { audioRef: { sha256: 'z'.repeat(64), bytes: 99 } }), // 别的设备换过：那边为准
       lesson('dw', { source: { type: 'dw', dwLessonId: '1', sourceUrl: '' } }),
       lesson('noaudio'),
     );
     cached('todo', a);
     cached('done', b);
-    cached('changed', b);
+    cached('changed', b, true);
+    cached('remote', b);
     cached('dw', a);
     fetchMock.mockImplementation(async (_url, init) => new Response(null, { status: init?.method === 'HEAD' ? 404 : 201 }));
 
@@ -274,6 +276,33 @@ describe('uploadPendingAudio', () => {
     expect(await audio.lessonsNeedingUpload()).toEqual([]);
     expect(await audio.uploadPendingAudio()).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('两台设备本地音频不同（变更 69 的「来回改」）', () => {
+  it('audioRef 被别的设备改成它那份之后，这台不回传 —— 否则每次同步两边互相覆盖一遍', async () => {
+    const saveAudioRef = vi.fn(async () => {});
+    audio.registerAudioUploadDeps({ saveAudioRef });
+    const mine = new Uint8Array([1, 2, 3]);
+    const theirs = new Uint8Array([4, 5, 6, 7]);
+    // 这台早就传过自己那份（标记已清），随后同步过来的 audioRef 指向另一台的那份
+    lessons.push(lesson('a', { audioRef: { sha256: await hashOf(theirs), bytes: theirs.length } }));
+    cached('a', mine);
+    expect(await audio.lessonsNeedingUpload()).toEqual([]);
+    expect(await audio.uploadPendingAudio()).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saveAudioRef).not.toHaveBeenCalled();
+  });
+
+  it('这台之后自己又选了一份（带标记）：照传、覆盖 audioRef —— 后选的为准，只改一次', async () => {
+    const saveAudioRef = vi.fn(async () => {});
+    audio.registerAudioUploadDeps({ saveAudioRef });
+    const mine = new Uint8Array([1, 2, 3]);
+    lessons.push(lesson('a', { audioRef: { sha256: 'f'.repeat(64), bytes: 4 } }));
+    cached('a', mine, true);
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    expect(await audio.uploadPendingAudio()).toBe(1);
+    expect(saveAudioRef).toHaveBeenCalledWith('a', { sha256: await hashOf(mine), bytes: 3 });
   });
 });
 

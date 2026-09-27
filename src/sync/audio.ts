@@ -4,7 +4,8 @@
 // 缓存层里放音频本身。有地址的课打开就自动补齐（LessonPage 的 MissingMaterialBanner）。
 //
 // ── 上传：扫一遍，而不是排队 ──
-// 「本机有音频、却还没有 audioRef（或 audioRef 对不上本机这份）」的手动课就是要传的。
+// 「本机有音频、却还没有 audioRef，或本机这份是自己选的、还没传过（LessonCache.audioPendingUpload）」的手动课就是要传的。
+// 不拿「audioRef 和本机字节数对不上」当判据：两台设备本地音频不同时，那样会各传各的、每次同步互相改一遍 audioRef。
 // 这个判据本身是幂等的：传到一半关了页面、断了网、服务器 503，下一次扫到它还在那儿，
 // 于是不需要一个持久化的队列来记「还有谁没传」—— 状态就在数据里。
 // 扫的时机：启动 / 回前台 / 网络恢复（跟着 syncNow），以及导入或绑音频之后（scheduleAudioUpload）。
@@ -90,12 +91,15 @@ export function registerAudioUploadDeps(d: UploadDeps): void {
   deps = d;
 }
 
-/** 要传的课：手动导入、本机有音频、服务器上还没有这一份（或记着的不是本机这一份）。 */
+/**
+ * 要传的课：手动导入、本机有音频，且「还没有 audioRef」或「本机这份是自己后来选的」。
+ * audioRef 对不上本机、又不是本机新选的 = 别的设备换过音频，那边的为准，这里不回传。
+ */
 export async function lessonsNeedingUpload(): Promise<Lesson[]> {
   const cached = new Map((await getAllLessonCaches()).map((c) => [c.lessonId, c]));
   return (await getAllLessons()).filter((l) => {
     const cache = cached.get(l.id);
-    return l.source.type === 'manual' && cache?.hasAudio && l.audioRef?.bytes !== cache.audioBytes;
+    return l.source.type === 'manual' && cache?.hasAudio === true && (!l.audioRef || cache.audioPendingUpload === true);
   });
 }
 

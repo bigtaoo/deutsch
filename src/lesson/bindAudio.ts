@@ -93,7 +93,7 @@ export async function restoreServerAudio(lesson: Lesson): Promise<{ outcome: Att
   const blob = await downloadAudio(lesson.audioRef);
   const name = lesson.source.type === 'manual' ? (lesson.source.audioFileName ?? 'audio') : 'audio';
   const file = new File([blob], name, { type: blob.type || 'audio/mpeg' });
-  const outcome = await useLessonStore.getState().attachAudio(lesson.id, file);
+  const outcome = await useLessonStore.getState().attachAudio(lesson.id, file, { fromServer: true });
   const realigned = shouldRealign(lesson, outcome);
   if (realigned) useAlignStore.getState().enqueue(lesson.id);
   return { outcome, realigned };

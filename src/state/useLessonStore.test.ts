@@ -482,6 +482,36 @@ describe('音频上服务器（变更 69）', () => {
     expect(scheduleLessonSync).toHaveBeenCalledWith(id);
   });
 
+  it('本机选的音频带「待上传」标记；从服务器下回来的那份不带、也不排上传', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT, audioFile: audioFile() });
+    expect((await getLessonCache(id))?.audioPendingUpload).toBe(true);
+    scheduleAudioUpload.mockClear();
+    await useLessonStore.getState().attachAudio(id, audioFile(), { fromServer: true });
+    expect((await getLessonCache(id))?.audioPendingUpload).toBe(false);
+    expect(useLessonStore.getState().caches[id]?.audioPendingUpload).toBe(false);
+    expect(scheduleAudioUpload).not.toHaveBeenCalled();
+    await useLessonStore.getState().attachAudio(id, audioFile());
+    expect((await getLessonCache(id))?.audioPendingUpload).toBe(true);
+    expect(scheduleAudioUpload).toHaveBeenCalledTimes(1);
+  });
+
+  it('DW 的课绑音频不带标记 —— 它有自己的下载地址，不上我们的服务器', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'B', plainText: TEXT, audioFile: audioFile(), dwLessonId: '1' });
+    expect((await getLessonCache(id))?.audioPendingUpload).toBeUndefined();
+    await useLessonStore.getState().attachAudio(id, audioFile());
+    expect((await getLessonCache(id))?.audioPendingUpload).toBe(false);
+  });
+
+  it('写回 audioRef 时清掉标记；传的途中又换了一份（字节数不同）就留着，下一趟传新的', async () => {
+    const id = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT, audioFile: audioFile() });
+    const size = audioFile().size;
+    await uploadDeps!.saveAudioRef(id, { sha256: 'a'.repeat(64), bytes: size + 1 });
+    expect((await getLessonCache(id))?.audioPendingUpload).toBe(true);
+    await uploadDeps!.saveAudioRef(id, { sha256: 'b'.repeat(64), bytes: size });
+    expect((await getLessonCache(id))?.audioPendingUpload).toBe(false);
+    expect(useLessonStore.getState().caches[id]?.audioPendingUpload).toBe(false);
+  });
+
   it('有 audioRef 的手动课可以自动补齐（清缓存无损）；没有的不行', async () => {
     const id = await useLessonStore.getState().createLesson({ title: 'A', plainText: TEXT, audioFile: audioFile() });
     const stored = (await getLesson(id))!;

@@ -368,6 +368,12 @@ export interface LessonCache {
   plainText?: string; // 转换后的纯文本，Sentence.charStart/charEnd 的基准
   hasAudio: boolean;
   audioBytes: number; // 占用统计（FR-3.8），读它不必载入 Blob
+  /**
+   * 变更 69：这份音频是**本机选的**、还没传上同步服务器（手动导入的课才有）。从服务器下回来的那份不是。
+   * 上传扫描认它而不认「audioRef 和本机字节数对不上」—— 后者在两台设备本地音频不同时会互相覆盖、
+   * 每次同步来回改一遍 audioRef；有了它，别的设备改过的 audioRef 只会被这台设备后来自己选的文件覆盖。
+   */
+  audioPendingUpload?: boolean;
   fetchedAt: number;
 }
 
