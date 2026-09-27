@@ -15,6 +15,7 @@
 
 import { useMemo, useState } from 'react';
 import { useLessonStore } from '@/state/useLessonStore';
+import { isEmptyShell } from '@/lesson/emptyShell';
 import { useAlignStore } from '@/state/useAlignStore';
 import { concatAudioFiles } from '@/audio/concat';
 import { unwrapPdfText } from '@/lesson/pdfText';
@@ -32,6 +33,7 @@ import {
   type BookSection,
 } from '@/lesson/bookImport';
 import { navigate } from '@/app/router';
+import type { Lesson } from '@/types/models';
 import { SpeakerPicker, defaultSpeakers } from '@/components/SpeakerPicker';
 import { Banner, Button, FilePicker, Hint, Note, Section, field } from '@/components/ui';
 import { useCollections } from './ImportPage';
@@ -46,6 +48,9 @@ interface Parsed {
 export function BookImportPage() {
   const createLesson = useLessonStore((s) => s.createLesson);
   const lessons = useLessonStore((s) => s.lessons);
+  const caches = useLessonStore((s) => s.caches);
+  const attachAudio = useLessonStore((s) => s.attachAudio);
+  const patchLesson = useLessonStore((s) => s.patchLesson);
   const enqueueAlign = useAlignStore((s) => s.enqueue);
   const collections = useCollections();
 
@@ -109,8 +114,20 @@ export function BookImportPage() {
   /** 这一组里已经有同名的课 —— 标出来，免得同一题导两遍（同步之后两门课各自一套标注）。 */
   const existing = useMemo(() => {
     const name = collection.trim();
-    return new Set(lessons.filter((l) => l.collection === name).map((l) => l.title));
-  }, [lessons, collection]);
+    return new Set(lessons.filter((l) => l.collection === name && !isEmptyShell(l, caches[l.id])).map((l) => l.title));
+  }, [lessons, caches, collection]);
+  /**
+   * 同名但只是个空壳的课（2026-09-27：先不带音频导过一遍）：再导时把音频补进它，不另起一门。
+   * 它不算「已经有了」—— 选了音频时照样替人勾上。
+   */
+  const shells = useMemo(() => {
+    const name = collection.trim();
+    const out = new Map<string, Lesson>();
+    for (const l of lessons) {
+      if (l.collection === name && isEmptyShell(l, caches[l.id]) && !out.has(l.title)) out.set(l.title, l);
+    }
+    return out;
+  }, [lessons, caches, collection]);
 
   const selected = (parsed?.sections ?? []).filter((s) => checked.has(s.id));
   const byTrack = parsed?.byTrack ?? false;
@@ -184,6 +201,24 @@ export function BookImportPage() {
       for (const [i, section] of selected.entries()) {
         const audioFiles = assigned.get(section.id) ?? [];
         const joined = audioFiles.length > 0 ? await concatAudioFiles(audioFiles) : undefined;
+        const shell = shells.get(sectionTitle(section));
+        if (shell) {
+          // 空壳在：有音频就补进去，没音频就什么都不做（再建一门同样的空壳只是重复）
+          if (joined) {
+            await attachAudio(shell.id, joined.file);
+            await patchLesson(shell.id, (l) => ({
+              ...l,
+              source: {
+                type: 'manual',
+                audioFileName: audioFiles[0].name,
+                ...(audioFiles.length > 1 ? { audioFiles: audioFiles.map((f) => f.name) } : {}),
+              },
+            }));
+            enqueueAlign(shell.id);
+          }
+          setProgress({ done: i + 1, total: selected.length });
+          continue;
+        }
         const id = await createLesson({
           title: sectionTitle(section),
           plainText: section.body,
@@ -352,6 +387,7 @@ export function BookImportPage() {
                           )}
                         </div>
                         {existing.has(sectionTitle(section)) && <Note tone="warn">这一组里已经有这一课了，再导一遍会是两门课。</Note>}
+                        {shells.has(sectionTitle(section)) && <Note>这一组里有这一课但还没有音频：导入会把音频补进那一课，不另起一门。</Note>}
                         {on && byTrack && section.tracks.length > 0 && (
                           <div className="flex flex-wrap gap-1">
                             {section.tracks.map((t) => {

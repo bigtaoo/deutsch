@@ -39,8 +39,18 @@ const TRANSCRIPT = [
 const createLesson = vi.fn(async (_input: unknown) => `id-${createLesson.mock.calls.length}`);
 const enqueue = vi.fn();
 
+/** 已经导过、有音频（在服务器上）的课。没音频的空壳走另一条路（补进去），见下面「空壳」那组。 */
 function existingLesson(title: string, collection: string): Lesson {
-  return { id: title, title, collection, source: { type: 'manual' }, sentences: [], createdAt: 0, updatedAt: 0 };
+  return {
+    id: title,
+    title,
+    collection,
+    source: { type: 'manual' },
+    sentences: [],
+    audioRef: { sha256: 'h', bytes: 1 },
+    createdAt: 0,
+    updatedAt: 0,
+  } as Lesson;
 }
 
 beforeEach(() => {
@@ -446,5 +456,70 @@ describe('BookImportPage · 选音频替人勾题', () => {
     pickFiles(['a.mp3', 'b.mp3', 'c.mp3']);
     expect(screen.getByRole('button', { name: '导入 0 课' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '只勾音频齐全的' })).toBeNull();
+  });
+});
+
+// 2026-09-27：他先不带音频导了一遍整本，再带音频导一遍，每题成了两门。空壳要补，不另起。
+describe('BookImportPage · 同名空壳补音频', () => {
+  const attachAudio = vi.fn(async (_id: string, _file: File) => ({ duration: 1, mismatch: false, audioChanged: true }));
+  const patchLesson = vi.fn(async (_id: string, _updater: (l: Lesson) => Lesson) => {});
+  function shell(title: string, collection = 'Aspekte'): Lesson {
+    return { id: `shell:${title}`, title, collection, source: { type: 'manual' }, sentences: [], createdAt: 0, updatedAt: 0 };
+  }
+  beforeEach(() => useLessonStore.setState({ attachAudio, patchLesson } as never));
+
+  it('空壳不算「已经导过」：选了音频照样替人勾上，行里说会补进去', () => {
+    useLessonStore.setState({ lessons: [shell('Kapitel 7 · Modul 4 Aufgabe 3')] } as never);
+    render(<BookImportPage />);
+    setCollection('Aspekte');
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    expect(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox')).toBeChecked();
+    expect(within(row('Modul 4 Aufgabe 3')).getByText(/导入会把音频补进那一课/)).toBeInTheDocument();
+    expect(within(row('Modul 4 Aufgabe 3')).queryByText(/再导一遍会是两门课/)).toBeNull();
+  });
+
+  it('导入：音频补进空壳、记下文件名、排对齐 —— 不新建', async () => {
+    useLessonStore.setState({ lessons: [shell('Kapitel 7 · Modul 4 Aufgabe 3')] } as never);
+    render(<BookImportPage />);
+    setCollection('Aspekte');
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    fireEvent.click(screen.getByRole('button', { name: '导入 1 课' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    expect(createLesson).not.toHaveBeenCalled();
+    expect(attachAudio).toHaveBeenCalledWith('shell:Kapitel 7 · Modul 4 Aufgabe 3', expect.any(File));
+    const updater = patchLesson.mock.calls[0][1];
+    expect(updater(shell('x')).source).toEqual({
+      type: 'manual',
+      audioFileName: '605038_LB_CD2 (21).mp3',
+      audioFiles: ['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3'],
+    });
+    expect(enqueue).toHaveBeenCalledWith('shell:Kapitel 7 · Modul 4 Aufgabe 3');
+  });
+
+  it('别的组里的同名空壳不碰：照常新建', async () => {
+    useLessonStore.setState({ lessons: [shell('Kapitel 7 · Modul 4 Aufgabe 3', 'Anderes Buch')] } as never);
+    render(<BookImportPage />);
+    setCollection('Aspekte');
+    paste(TRACKED);
+    pickFiles(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    fireEvent.click(screen.getByRole('button', { name: '导入 1 课' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    expect(attachAudio).not.toHaveBeenCalled();
+    expect(createLesson).toHaveBeenCalledTimes(1);
+  });
+
+  it('这次也没音频：空壳在就什么都不做，不再建一门同样的空壳', async () => {
+    useLessonStore.setState({ lessons: [shell('Kapitel 7 · Modul 4 Aufgabe 3')] } as never);
+    render(<BookImportPage />);
+    setCollection('Aspekte');
+    paste(TRACKED);
+    fireEvent.click(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: '导入 1 课' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+    expect(createLesson).not.toHaveBeenCalled();
+    expect(attachAudio).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
   });
 });

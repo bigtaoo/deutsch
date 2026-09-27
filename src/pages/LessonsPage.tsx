@@ -24,6 +24,7 @@ import { manualExportStage } from '@/components/SyncChip';
 import { Banner, Button, Chip, EmptyState, FilePicker, Note, formatBytes, formatTime } from '@/components/ui';
 import { bindPickedAudio, listedAudioFiles, matchGroupFiles, restoreServerAudio } from '@/lesson/bindAudio';
 import { hasServerAudio, needsUpload } from '@/sync/audio';
+import { emptyDuplicates } from '@/lesson/emptyShell';
 import { isSyncConfigured } from '@/sync/config';
 import type { Lesson } from '@/types/models';
 
@@ -264,6 +265,8 @@ function useRememberedOpen(key: string): [boolean, (next: boolean) => void] {
  */
 function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] }) {
   const caches = useLessonStore((s) => s.caches);
+  const removeLesson = useLessonStore((s) => s.removeLesson);
+  const vocab = useVocabStore((s) => s.entries);
   const [open, onToggle] = useRememberedOpen(name);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -276,6 +279,19 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
   const pendingUpload = !isSyncConfigured() ? 0 : lessons.filter((l) => needsUpload(l, caches[l.id])).length;
   const aligned = countAligned(lessons);
   const { loose, chapters } = useMemo(() => splitChapters(lessons), [lessons]);
+  const duplicates = useMemo(
+    () => emptyDuplicates(lessons, caches, new Set(vocab.flatMap((v) => (v.lessonId ? [v.lessonId] : [])))),
+    [lessons, caches, vocab],
+  );
+
+  /** 2026-09-27：同名的另一门已经有音频的空壳，一次删掉。 */
+  const removeDuplicates = async () => {
+    if (!confirm(`删除这 ${duplicates.length} 门空课？它们没有音频、没对齐、没挖空，同名的另一门都还在。`)) return;
+    setBusy(true);
+    for (const lesson of duplicates) await removeLesson(lesson.id);
+    setBusy(false);
+    setMessage(`删掉了 ${duplicates.length} 门重复的空课。`);
+  };
 
   /** FR-3.6a：换设备后一次补齐整组的音频，每课按自己记着的文件名认领。 */
   const bindGroup = async (picked: File[]) => {
@@ -332,6 +348,18 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
         {missing.length > 0 && <Chip tone="warn">{missing.length} 课缺音频</Chip>}
       </summary>
       <div className="space-y-2 border-t border-line p-2">
+        {duplicates.length > 0 && (
+          <Note
+            tone="warn"
+            action={
+              <Button disabled={busy} onClick={() => void removeDuplicates()}>
+                删掉这 {duplicates.length} 门
+              </Button>
+            }
+          >
+            有 {duplicates.length} 门课导了两遍：一门有音频，另一门只有文字、什么都没做过。空的那一门可以删掉。
+          </Note>
+        )}
         {onServer.length > 0 && (
           <Note
             tone="warn"

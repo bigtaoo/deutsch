@@ -372,3 +372,40 @@ describe('「还没传到同步服务器」与上传扫描同一个判据', () =
     expect(within(details('X')).getByText(/^1 课的音频还没传到同步服务器/)).toBeInTheDocument();
   });
 });
+
+// 2026-09-27：整本导了两遍（先不带音频、再带音频），每题两门。空的那门组头一键删。
+describe('组头：重复的空课一键删', () => {
+  it('报数、点了确认才删、删的只是空的那几门，完了说一声', async () => {
+    const removeLesson = vi.fn(async () => {});
+    seed(
+      [
+        lesson('old', 'Kapitel 1 · A', 'Aspekte'),
+        lesson('new', 'Kapitel 1 · A', 'Aspekte'),
+        lesson('solo', 'Kapitel 1 · B', 'Aspekte'),
+      ],
+      { new: cached('new') },
+    );
+    useLessonStore.setState({ removeLesson } as never);
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    render(<LessonsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '删掉这 1 门' }));
+    expect(confirm).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText('删掉了 1 门重复的空课。')).toBeInTheDocument());
+    expect(removeLesson.mock.calls).toEqual([['old']]);
+  });
+
+  it('取消确认：一门都不删；没有成对的空壳时不出这条', () => {
+    const removeLesson = vi.fn(async () => {});
+    seed([lesson('old', 'Kapitel 1 · A', 'Aspekte'), lesson('new', 'Kapitel 1 · A', 'Aspekte')], { new: cached('new') });
+    useLessonStore.setState({ removeLesson } as never);
+    vi.stubGlobal('confirm', () => false);
+    const { unmount } = render(<LessonsPage />);
+    fireEvent.click(screen.getByRole('button', { name: '删掉这 1 门' }));
+    expect(removeLesson).not.toHaveBeenCalled();
+    unmount();
+    seed([lesson('a', 'Kapitel 1 · A', 'Aspekte'), lesson('b', 'Kapitel 1 · A', 'Aspekte')]);
+    render(<LessonsPage />);
+    expect(screen.queryByRole('button', { name: /^删掉这/ })).toBeNull();
+  });
+});
