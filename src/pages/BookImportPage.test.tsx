@@ -18,6 +18,9 @@ const concatAudioFiles = vi.fn(async (files: File[]) => ({
 }));
 vi.mock('@/audio/concat', () => ({ concatAudioFiles: (files: File[]) => concatAudioFiles(files) }));
 
+const extractPdfText = vi.fn(async (_file: Blob) => '');
+vi.mock('@/lesson/pdfExtract', () => ({ extractPdfText: (file: Blob) => extractPdfText(file) }));
+
 const { BookImportPage } = await import('./BookImportPage');
 
 const TRANSCRIPT = [
@@ -57,7 +60,7 @@ function setCollection(name: string) {
 }
 
 function pickFiles(names: string[]) {
-  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const input = document.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
   const files = names.map((n) => new File([], n));
   Object.defineProperty(input, 'files', { value: files, configurable: true });
   fireEvent.change(input);
@@ -221,5 +224,87 @@ describe('BookImportPage', () => {
     expect(screen.getByText(/IndexedDB 满了/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '导入 2 课' })).toBeEnabled();
     expect(navigate).not.toHaveBeenCalled();
+  });
+});
+
+// FR-1.10：从 PDF 文件读进来的文稿带 `[[2.20]]` 行 —— 按轨号配对，每轨一个开关。
+const TRACKED = [
+  'Kapitel 7 Recht so!',
+  'Modul 2 Aufgabe 3a',
+  '[[2.17]]',
+  ' ●  Guten Tag.',
+  'Modul 4 Aufgabe 3',
+  '[[2.20]]',
+  '(Text wie Track 2.21-2.22)',
+  '[[2.21]]',
+  'Person 1',
+  'Ich arbeite gern.',
+  '[[2.22]]',
+  'Person 2',
+  'Ich nicht.',
+].join('\n');
+
+function pickPdf() {
+  const input = document.querySelector('input[type="file"][accept^="application/pdf"]') as HTMLInputElement;
+  Object.defineProperty(input, 'files', { value: [new File([], 'Transkript.pdf')], configurable: true });
+  fireEvent.change(input);
+}
+
+describe('BookImportPage · 按轨号（FR-1.10）', () => {
+  it('选 PDF 文件：读出来的文字进文本框并解析', async () => {
+    extractPdfText.mockResolvedValueOnce(TRACKED);
+    render(<BookImportPage />);
+    pickPdf();
+    expect(await screen.findByText('1 章 · 2 题')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('把整份 Transkript 粘贴到这里…')).toHaveValue(TRACKED);
+  });
+
+  it('PDF 读不出来：横幅说原因，给粘贴这条退路', async () => {
+    extractPdfText.mockRejectedValueOnce(new Error('Invalid PDF structure'));
+    render(<BookImportPage />);
+    pickPdf();
+    expect(await screen.findByText('PDF 读不出来')).toBeInTheDocument();
+    expect(screen.getByText(/Invalid PDF structure/)).toBeInTheDocument();
+  });
+
+  it('没有 −/+，换成每轨一个开关；重放轨默认关掉并说明', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    fireEvent.click(checkbox('Kapitel 7 Recht so!'));
+    const r = row('Modul 4 Aufgabe 3');
+    expect(within(r).queryByRole('button', { name: '多一轨' })).toBeNull();
+    expect(within(r).getByRole('button', { name: '音轨 2.20' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(r).getByRole('button', { name: '音轨 2.21' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(r).getByText(/2\.20 是把后面几轨连起来先放一遍/)).toBeInTheDocument();
+  });
+
+  it('按文件名里的轨号配给各题，选进来的顺序无关；缺的轨号、剩下的文件都报出来', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    fireEvent.click(checkbox('Kapitel 7 Recht so!'));
+    pickFiles(['605038_LB_CD2 (22).mp3', '605038_AB_30.mp3', '605038_LB_CD2 (21).mp3']);
+    expect(within(row('Modul 4 Aufgabe 3')).getByText('605038_LB_CD2 (21).mp3、605038_LB_CD2 (22).mp3')).toBeInTheDocument();
+    expect(within(row('Modul 2 Aufgabe 3a')).getByText(/选的文件里没有 2\.17/)).toBeInTheDocument();
+    expect(screen.getByText(/有 1 轨在选的文件里找不到/)).toBeInTheDocument();
+    expect(screen.getByText(/1 个文件没配上任何一题/)).toBeInTheDocument();
+  });
+
+  it('点开重放轨它就被配进来，点掉一轨它就不用；导入时按题里的顺序拼', async () => {
+    render(<BookImportPage />);
+    setCollection('Aspekte neu C1');
+    paste(TRACKED);
+    fireEvent.click(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox'));
+    pickFiles(['605038_LB_CD2 (22).mp3', '605038_LB_CD2 (21).mp3', '605038_LB_CD2 (20).mp3']);
+    const r = row('Modul 4 Aufgabe 3');
+    fireEvent.click(within(r).getByRole('button', { name: '音轨 2.20' }));
+    fireEvent.click(within(r).getByRole('button', { name: '音轨 2.22' }));
+    expect(within(r).getByRole('button', { name: '音轨 2.22' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(screen.getByRole('button', { name: '导入 1 课' }));
+    await waitFor(() => expect(createLesson).toHaveBeenCalled());
+    expect(concatAudioFiles.mock.calls[0][0].map((f) => f.name)).toEqual([
+      '605038_LB_CD2 (20).mp3',
+      '605038_LB_CD2 (21).mp3',
+    ]);
+    expect(createLesson.mock.calls[0][0]).toMatchObject({ plainText: 'Person 1\nIch arbeite gern.\nPerson 2\nIch nicht.' });
   });
 });

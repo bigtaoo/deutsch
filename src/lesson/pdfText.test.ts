@@ -113,3 +113,21 @@ describe('isHeading / isChapterHeading —— 正文里碰巧以这些词开头�
     );
   });
 });
+
+describe('unwrapPdfText 与轨号行（FR-1.10）', () => {
+  it('段落中间换轨：轨号提到这一段前面，段落照样并下去', () => {
+    expect(unwrapPdfText('● Das ist ein\n[[2.18]]\nlanger Satz.')).toBe('[[2.18]]\n● Das ist ein langer Satz.');
+  });
+
+  it('下一行本来就是新段（换说话人）：先收掉当前段，轨号落在新段前面', () => {
+    expect(unwrapPdfText('● Erste Rede.\n[[2.19]]\n○ Zweite Rede.')).toBe('● Erste Rede.\n[[2.19]]\n○ Zweite Rede.');
+  });
+
+  it('轨号不挡「下一行小写开头 = 折行」的判断', () => {
+    expect(unwrapPdfText('Kapitel 3 zeigt uns\n[[1.4]]\nden Weg.')).toBe('[[1.4]]\nKapitel 3 zeigt uns den Weg.');
+  });
+
+  it('章名里的逗号不妨碍认成章标题', () => {
+    expect(isChapterHeading('Kapitel 8 Du bist, was du bist')).toBe(true);
+  });
+});

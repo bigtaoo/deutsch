@@ -1,7 +1,8 @@
 // FR-1.8：整份文稿按题目切段、音轨按顺序分给勾上的题。
 
 import { describe, expect, it } from 'vitest';
-import { assignTracks, parseBookSections, sectionTitle, sortByName } from './bookImport';
+import { assignByTrackNumber, assignTracks, parseBookSections, sectionTitle, sortByName, trackOfFile } from './bookImport';
+import { unwrapPdfText } from './pdfText';
 
 const BOOK = [
   'Inhalt', // 第一个标题之前的东西不属于任何一题
@@ -120,5 +121,93 @@ describe('assignTracks', () => {
 
   it('没选文件时每题都是空的', () => {
     expect(assignTracks([{ id: 1, tracks: 3 }], []).assigned.get(1)).toEqual([]);
+  });
+});
+
+// FR-1.10：从 PDF 文件读进来的文稿带 `[[2.15]]` 行（pdfExtract.ts），每题知道自己是哪几轨。
+const TRACKED = [
+  'Kapitel 7 Arbeit und Beruf',
+  'Modul 2 Aufgabe 3a',
+  '[[2.17]]',
+  '● Guten Tag, ich',
+  'möchte fragen …',
+  'Modul 4 Aufgabe 3',
+  '[[2.20]]',
+  '(Text wie Track 2.21-2.24)',
+  '[[2.21]]',
+  'Person 1',
+  'Ich arbeite gern.',
+  '[[2.22]]',
+  'Person 2',
+  'Ich nicht.',
+].join('\n');
+
+describe('音轨号（FR-1.10）', () => {
+  const sections = parseBookSections(unwrapPdfText(TRACKED));
+
+  it('轨号记到它所在的题上，不进正文；轨号在段落中间也不把话劈开', () => {
+    expect(sections.map((s) => s.tracks)).toEqual([['2.17'], ['2.20', '2.21', '2.22']]);
+    expect(sections[0].body).toBe('● Guten Tag, ich möchte fragen …');
+    expect(sections[1].body).not.toContain('[[');
+  });
+
+  it('占位所在的那一轨是重放轨；默认轨数把它扣掉', () => {
+    expect(sections[1].replayTracks).toEqual(['2.20']);
+    expect(sections[1].suggestedTracks).toBe(2);
+    expect(sections[0].replayTracks).toEqual([]);
+  });
+
+  it('粘贴的文字没有轨号：tracks 为空，照旧按 Person 数给默认值', () => {
+    const pasted = parseBookSections(BOOK);
+    expect(pasted.every((s) => s.tracks.length === 0 && s.replayTracks.length === 0)).toBe(true);
+    expect(pasted[0].suggestedTracks).toBe(2);
+  });
+});
+
+describe('trackOfFile', () => {
+  it.each([
+    ['605038_LB_CD2 (15).mp3', '2.15'],
+    ['605037_LB_CD1 (2).mp3', '1.2'],
+    ['CD03_Track05.mp3', '3.5'],
+    ['1_02.mp3', '1.2'],
+    ['Track 1.12.mp3', '1.12'],
+    ['1-12 Modul 4.mp3', '1.12'],
+  ])('%s → %s', (name, track) => {
+    expect(trackOfFile(name)).toBe(track);
+  });
+
+  it.each(['605038_AB_38.mp3', 'Lied.mp3', 'Track 7.mp3'])('%s 认不出', (name) => {
+    expect(trackOfFile(name)).toBeNull();
+  });
+});
+
+describe('assignByTrackNumber', () => {
+  const f = (name: string) => ({ name });
+
+  it('每题按自己的轨号顺序拿文件，与文件选进来的顺序无关；练习册的剩下', () => {
+    const files = [f('605038_LB_CD2 (22).mp3'), f('605038_AB_30.mp3'), f('605038_LB_CD2 (17).mp3'), f('605038_LB_CD2 (21).mp3')];
+    const { assigned, missing, leftover } = assignByTrackNumber(
+      [
+        { id: 0, tracks: ['2.17'] },
+        { id: 1, tracks: ['2.21', '2.22'] },
+      ],
+      files,
+    );
+    expect(assigned.get(0)!.map((x) => x.name)).toEqual(['605038_LB_CD2 (17).mp3']);
+    expect(assigned.get(1)!.map((x) => x.name)).toEqual(['605038_LB_CD2 (21).mp3', '605038_LB_CD2 (22).mp3']);
+    expect(missing.get(1)).toEqual([]);
+    expect(leftover.map((x) => x.name)).toEqual(['605038_AB_30.mp3']);
+  });
+
+  it('找不到的轨号报出来，其余照配', () => {
+    const { assigned, missing } = assignByTrackNumber([{ id: 5, tracks: ['3.1', '3.2'] }], [f('605038_LB_CD3 (1).mp3')]);
+    expect(assigned.get(5)!.map((x) => x.name)).toEqual(['605038_LB_CD3 (1).mp3']);
+    expect(missing.get(5)).toEqual(['3.2']);
+  });
+
+  it('同一轨号两个文件：用排序靠前的那个，另一个算剩下', () => {
+    const { assigned, leftover } = assignByTrackNumber([{ id: 0, tracks: ['1.2'] }], [f('b/1_02.mp3'), f('a/1_02.mp3')]);
+    expect(assigned.get(0)!.map((x) => x.name)).toEqual(['a/1_02.mp3']);
+    expect(leftover.map((x) => x.name)).toEqual(['b/1_02.mp3']);
   });
 });

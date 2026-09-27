@@ -16,6 +16,14 @@
 
 import { isSpeakerSymbol } from './speakers';
 
+/**
+ * FR-1.10：直接读 PDF 时（`pdfExtract.ts`）音轨号有了确切位置，写成单独一行 `[[2.15]]`，
+ * 放在那一轨第一行正文前面。整理断行时它**不打断段落**：原样提到当前这一段的前面。
+ * 粘贴进来的文字里不会有这种行。
+ */
+export const trackToken = (track: string) => `[[${track}]]`;
+export const TRACK_TOKEN_RE = /^\[\[(\d{1,2}\.\d{1,2})\]\]$/;
+
 /** 整行丢掉的：页码、页边音轨号、页眉页脚。 */
 const NOISE_LINES: RegExp[] = [
   /^\d{1,3}$/, // 页码
@@ -31,7 +39,9 @@ const NOISE_LINES: RegExp[] = [
 // 旧写法只看开头，会凭空开出一个假章节、把那句话劈成两半。判据是标题里没有逗号句号
 // 这类正文标点，且题目标题必须以 `Aufgabe N` 收尾。剩下的歧义（`Kapitel 3 zeigt uns`
 // 折行、下一行小写开头）由 unwrapPdfText 看下一行来排除。
-const CHAPTER_RE = /^Kapitel\s+\d+(?:\s+[^.,;:]{1,50})?$/u;
+// 章名里可以有逗号（Aspekte neu C1 的 `Kapitel 8 Du bist, was du bist`），但只在大写开头时 ——
+// `Kapitel 3 zeigt, wie das …` 是正文折行。题目标题里一律不行。
+const CHAPTER_RE = /^Kapitel\s+\d+(?:\s+(?:\p{Lu}[^.;:]{0,49}|[^.,;:]{1,50}))?$/u;
 const TASK_RE =
   /^(?:Auftakt|Modul\s+\d+|Porträt|Aussprache|Film|Sprachtraining|Strategie)(?:\s+[^.,;:!?]{1,20})?\s+Aufgabe\s*\d+[a-z]?$/u;
 const TRACK_RE = /^(?:Track|Hörtext)\s+\d+(?:[.:]\d+)?(?:\s+[^.,;:]{1,40})?$/u;
@@ -100,7 +110,7 @@ export function unwrapPdfText(text: string): string {
     for (let j = from + 1; j < lines.length; j++) {
       const next = lines[j];
       if (next.length === 0) return false;
-      if (NOISE_LINES.some((re) => re.test(next))) continue;
+      if (NOISE_LINES.some((re) => re.test(next)) || TRACK_TOKEN_RE.test(next)) continue;
       return /^\p{Ll}/u.test(next);
     }
     return false;
@@ -112,6 +122,14 @@ export function unwrapPdfText(text: string): string {
       continue;
     }
     if (NOISE_LINES.some((re) => re.test(line))) continue;
+    if (TRACK_TOKEN_RE.test(line)) {
+      // 下一行本来就另起一段（换说话人、标题）：先收掉当前段，轨号正好落在新段前面。
+      // 否则是段落中间换了轨：current 先不收，轨号落在当前段前面，段落照样往下并。
+      const next = lines.slice(i + 1).find((l) => l.length > 0 && !TRACK_TOKEN_RE.test(l));
+      if (current !== null && next !== undefined && (isStandalone(next) || startsBlock(next, current))) flush();
+      out.push(line);
+      continue;
+    }
 
     if (isStandalone(line) && !continuesLowercase(i)) {
       flush();

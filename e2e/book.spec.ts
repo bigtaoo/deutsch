@@ -167,3 +167,69 @@ test('拼过的课在课程页上少选一轨：不绑，把缺的文件名报�
   await page.locator('input[type="file"][accept="audio/*"]').setInputFiles([wav('1_10.wav')]);
   await expect(page.getByText(/还缺这几个文件：1_11\.wav/)).toBeVisible();
 });
+
+/**
+ * 手搓一份两栏、页边带轨号的 PDF（版式照 Aspekte neu C1 Transkript 的坐标，内容是编的）。
+ * 只用 Helvetica + ASCII，免得还要嵌字体。每行 `[字号, x, y, 文字]`。
+ */
+function transcriptPdf(): Buffer {
+  const lines: Array<[number, number, number, string]> = [
+    [15, 57, 780, 'Kapitel 1 Alltaegliches'],
+    [12, 57, 750, 'Modul 2 Aufgabe 2a'],
+    [7, 35, 737, '1.2'],
+    [10, 57, 730, 'Hallo und herzlich willkommen bei uns.'],
+    [7, 35, 713, '1.3'],
+    [10, 57, 706, 'Das ist schon der zweite Teil.'],
+    [12, 305, 780, 'Modul 4 Aufgabe 2c'],
+    [7, 549, 767, '1.4'],
+    [10, 305, 760, 'Gibt es goldene Regeln? Ja, die gibt es.'],
+  ];
+  const content = lines.map(([size, x, y, text]) => `BT /F1 ${size} Tf 1 0 0 1 ${x} ${y} Tm (${text}) Tj ET`).join('\n');
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets = objects.map((body, i) => {
+    const at = out.length;
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`;
+    return at;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  out += offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('');
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+
+test('直接选 PDF：构建产物里 pdf.js 的 worker 真能加载，页边轨号配上文件名里的轨号（FR-1.10）', async ({ page }) => {
+  await openApp(page);
+  await page.goto('/#/import-book');
+  await page.getByPlaceholder('Aspekte neu C1').fill('Aspekte neu C1');
+
+  await page
+    .locator('input[type="file"][accept^="application/pdf"]')
+    .setInputFiles({ name: 'Transkript.pdf', mimeType: 'application/pdf', buffer: transcriptPdf() });
+  await expect(page.getByText('1 章 · 2 题')).toBeVisible();
+
+  await page.getByRole('checkbox', { name: 'Kapitel 1 Alltaegliches' }).check();
+  await expect(page.getByRole('button', { name: '音轨 1.2' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '音轨 1.4' })).toBeVisible();
+
+  // 乱序、夹一个练习册的轨
+  await page
+    .locator('input[type="file"][accept="audio/*"]')
+    .setInputFiles([wav('LB_CD1 (4).wav'), wav('AB_12.wav'), wav('LB_CD1 (3).wav'), wav('LB_CD1 (2).wav')]);
+  await expect(page.getByText('LB_CD1 (2).wav、LB_CD1 (3).wav')).toBeVisible();
+  await expect(page.getByText('LB_CD1 (4).wav', { exact: true })).toBeVisible();
+  await expect(page.getByText(/1 个文件没配上任何一题/)).toBeVisible();
+
+  await page.getByRole('button', { name: '导入 2 课' }).click();
+  await expect(page).toHaveURL(/#\/lessons$/);
+  const group = page.locator('details', { hasText: 'Aspekte neu C1' });
+  await group.locator('summary').click();
+  await expect(group.getByRole('link', { name: /Kapitel 1 · Modul 2 Aufgabe 2a/ })).toContainText('0:04');
+});

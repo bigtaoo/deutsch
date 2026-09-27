@@ -36,6 +36,7 @@
     "@capgo/capacitor-updater": "^8.51.20",
     "@huggingface/transformers": "^4.2.0",
     "idb": "^8.0.3",
+    "pdfjs-dist": "^4.10.38",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "ts-fsrs": "^5.4.1",

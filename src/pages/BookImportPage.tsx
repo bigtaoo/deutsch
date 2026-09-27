@@ -5,6 +5,9 @@
 // 导入。音轨号在文稿里已经丢了位置（印在页边，复制出来挤到页尾），
 // 所以「哪几轨属于哪一题」只能由人在这一页上对一眼，这里不猜。
 //
+// FR-1.10：直接选 PDF 文件时音轨号有了位置（`pdfExtract.ts`），每题知道自己是哪几轨，
+// 音频按文件名里的轨号配对，「轨」的 −/+ 换成每一轨一个开关（重放轨默认关掉）。
+//
 // 这一页和 ImportPage 一样是 FR-13 的地板：不碰 sources/ 里任何代码，只用浏览器自带能力。
 
 import { useMemo, useState } from 'react';
@@ -14,7 +17,15 @@ import { concatAudioFiles } from '@/audio/concat';
 import { unwrapPdfText } from '@/lesson/pdfText';
 import { segmentSentences } from '@/lesson/segment';
 import { detectSpeakers } from '@/lesson/speakers';
-import { assignTracks, parseBookSections, sectionTitle, sortByName, type BookSection } from '@/lesson/bookImport';
+import { extractPdfText } from '@/lesson/pdfExtract';
+import {
+  assignByTrackNumber,
+  assignTracks,
+  parseBookSections,
+  sectionTitle,
+  sortByName,
+  type BookSection,
+} from '@/lesson/bookImport';
 import { navigate } from '@/app/router';
 import { SpeakerPicker, defaultSpeakers } from '@/components/SpeakerPicker';
 import { Banner, Button, FilePicker, Hint, Note, Section, field } from '@/components/ui';
@@ -23,6 +34,8 @@ import { useCollections } from './ImportPage';
 interface Parsed {
   text: string;
   sections: BookSection[];
+  /** 文稿里带了音轨号（从 PDF 文件读进来的）：按轨号配对，不按顺序数 */
+  byTrack: boolean;
 }
 
 export function BookImportPage() {
@@ -37,19 +50,36 @@ export function BookImportPage() {
   const [speakers, setSpeakers] = useState<string[]>([]);
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [tracks, setTracks] = useState<Map<number, number>>(new Map());
+  /** 按轨号配对时，每题关掉的那几轨（默认是重放轨） */
+  const [skipped, setSkipped] = useState<Map<number, Set<string>>>(new Map());
   const [files, setFiles] = useState<File[]>([]);
+  const [pdfState, setPdfState] = useState<{ reading: boolean; error?: string }>({ reading: false });
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 20000 字符以上不能卡（FR-1.2）：只在失焦时解析一次。
-  const parse = () => {
-    if (!raw.trim()) return setParsed(null);
-    const text = unwrapPdfText(raw);
+  const parse = (source = raw) => {
+    if (!source.trim()) return setParsed(null);
+    const text = unwrapPdfText(source);
     const sections = parseBookSections(text).filter((s) => s.body.length > 0);
-    setParsed({ text, sections });
+    setParsed({ text, sections, byTrack: sections.some((s) => s.tracks.length > 0) });
     setSpeakers(defaultSpeakers(detectSpeakers(text)));
     setTracks(new Map(sections.map((s) => [s.id, s.suggestedTracks])));
+    setSkipped(new Map(sections.map((s) => [s.id, new Set(s.replayTracks)])));
     setChecked(new Set());
+  };
+
+  const pickPdf = async (file: File | undefined) => {
+    if (!file) return;
+    setPdfState({ reading: true });
+    try {
+      const text = await extractPdfText(file);
+      setRaw(text);
+      parse(text);
+      setPdfState({ reading: false });
+    } catch (err) {
+      setPdfState({ reading: false, error: err instanceof Error ? err.message : String(err) });
+    }
   };
 
   const candidates = useMemo(() => (parsed ? detectSpeakers(parsed.text) : []), [parsed]);
@@ -76,11 +106,26 @@ export function BookImportPage() {
   }, [lessons, collection]);
 
   const selected = (parsed?.sections ?? []).filter((s) => checked.has(s.id));
-  const { assigned, leftover } = assignTracks(
-    selected.map((s) => ({ id: s.id, tracks: tracks.get(s.id) ?? 1 })),
-    files,
-  );
+  const byTrack = parsed?.byTrack ?? false;
+  const usedTracks = (s: BookSection) => s.tracks.filter((t) => !skipped.get(s.id)?.has(t));
+  const matched = byTrack
+    ? assignByTrackNumber(
+        selected.map((s) => ({ id: s.id, tracks: usedTracks(s) })),
+        files,
+      )
+    : { ...assignTracks(selected.map((s) => ({ id: s.id, tracks: tracks.get(s.id) ?? 1 })), files), missing: new Map<number, string[]>() };
+  const { assigned, leftover, missing } = matched;
   const tracksWanted = selected.reduce((n, s) => n + (tracks.get(s.id) ?? 1), 0);
+  const missingCount = [...missing.values()].reduce((n, l) => n + l.length, 0);
+
+  const toggleTrack = (id: number, track: string) => {
+    const next = new Map(skipped);
+    const set = new Set(next.get(id));
+    if (set.has(track)) set.delete(track);
+    else set.add(track);
+    next.set(id, set);
+    setSkipped(next);
+  };
 
   const toggle = (ids: number[], on: boolean) => {
     const next = new Set(checked);
@@ -160,10 +205,24 @@ export function BookImportPage() {
           className={`${field} h-56 w-full p-3 font-mono leading-relaxed`}
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
-          onBlur={parse}
+          onBlur={() => parse()}
           placeholder="把整份 Transkript 粘贴到这里…"
         />
-        <Hint>从 PDF 里全选复制即可：断行、页码、页边的音轨号会自动整理掉，按「Modul 4 Aufgabe 2c」这类标题切成一题一课。</Hint>
+        <div className="flex flex-wrap items-center gap-2">
+          <FilePicker accept="application/pdf,.pdf" onPick={(f) => void pickPdf(f)}>
+            {pdfState.reading ? '正在读 PDF…' : '直接选 PDF 文件…'}
+          </FilePicker>
+          <span className="text-note text-muted">推荐：音轨号从页边读出来，音频按轨号自动配对</span>
+        </div>
+        {pdfState.error && (
+          <Banner tone="warn" title="PDF 读不出来">
+            <p>{pdfState.error}。可以在 PDF 阅读器里全选复制，粘贴到上面。</p>
+          </Banner>
+        )}
+        <Hint>
+          也可以从 PDF 里全选复制粘贴：断行、页码、页边的音轨号会自动整理掉，按「Modul 4 Aufgabe 2c」这类标题切成一题一课
+          —— 只是这样音轨号的位置就丢了，每题几轨要自己对。
+        </Hint>
         {parsed && parsed.sections.length === 0 && (
           <Banner tone="warn" title="没认出题目标题">
             <p>这一页按「Kapitel 1 …」「Modul 2 Aufgabe 3a」「Track 1.05」这类单独一行的标题切分。没有这种标题的文稿请用单课导入。</p>
@@ -181,7 +240,14 @@ export function BookImportPage() {
             </FilePicker>
           }
         >
-          <Hint>勾上要导的题，再一次选好它们的全部音轨：按文件名顺序依次分给勾上的题。一题跨几轨就把「轨」调成几。</Hint>
+          {byTrack ? (
+            <Hint>
+              勾上要导的题，再一次选好音频（两个音频包的 mp3 可以一起全选）：按文件名里的轨号配给各题，练习册的音轨用不上会自动剩下。
+              每题下面是它的轨号，点一下关掉 / 打开那一轨。
+            </Hint>
+          ) : (
+            <Hint>勾上要导的题，再一次选好它们的全部音轨：按文件名顺序依次分给勾上的题。一题跨几轨就把「轨」调成几。</Hint>
+          )}
 
           {chapters.map(([chapter, sections]) => {
             const ids = sections.map((s) => s.id);
@@ -209,7 +275,7 @@ export function BookImportPage() {
                             <span className="truncate">{section.heading}</span>
                             <span className="tnum shrink-0 text-note text-faint">{sentenceCounts.get(section.id)} 句</span>
                           </label>
-                          {on && (
+                          {on && !byTrack && (
                             <span className="flex items-center gap-1">
                               <Button variant="ghost" aria-label="少一轨" onClick={() => setTrackCount(section.id, n - 1)}>
                                 −
@@ -222,8 +288,45 @@ export function BookImportPage() {
                           )}
                         </div>
                         {existing.has(sectionTitle(section)) && <Note tone="warn">这一组里已经有这一课了，再导一遍会是两门课。</Note>}
+                        {on && byTrack && section.tracks.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {section.tracks.map((t) => {
+                              const off = skipped.get(section.id)?.has(t) ?? false;
+                              return (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  aria-pressed={!off}
+                                  aria-label={`音轨 ${t}`}
+                                  onClick={() => toggleTrack(section.id, t)}
+                                  className={`tnum rounded-ctl border px-2 py-0.5 text-note ${
+                                    off ? 'border-line text-faint line-through' : 'border-accent text-accent'
+                                  }`}
+                                >
+                                  {t}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {on && byTrack && section.replayTracks.length > 0 && (
+                          <Note>
+                            {section.replayTracks.join('、')} 是把后面几轨连起来先放一遍（文稿只印了一次），默认不用，免得同一段话拼进去两次。
+                          </Note>
+                        )}
                         {section.references.length > 0 && <Note>{section.references.join(' ')}</Note>}
-                        {on && files.length > 0 && (
+                        {on && byTrack && files.length > 0 && (
+                          <p className="text-note break-all text-muted">
+                            {got.map((f) => f.name).join('、')}
+                            {(missing.get(section.id)?.length ?? 0) > 0 && (
+                              <span className="text-warn">
+                                {got.length > 0 ? '；' : ''}选的文件里没有 {missing.get(section.id)!.join('、')}
+                              </span>
+                            )}
+                            {got.length === 0 && (missing.get(section.id)?.length ?? 0) === 0 && '没有要用的轨，可以之后再补音频'}
+                          </p>
+                        )}
+                        {on && !byTrack && files.length > 0 && (
                           <p className="text-note break-all text-muted">
                             {got.length === 0 ? '分不到音频（文件不够），可以之后再补' : got.map((f) => f.name).join('、')}
                             {got.length > 0 && got.length < n ? `（还差 ${n - got.length} 轨）` : ''}
@@ -237,7 +340,13 @@ export function BookImportPage() {
             );
           })}
 
-          {selected.length > 0 && files.length > 0 && tracksWanted !== files.length && (
+          {byTrack && selected.length > 0 && files.length > 0 && (missingCount > 0 || leftover.length > 0) && (
+            <Note tone={missingCount > 0 ? 'warn' : 'neutral'}>
+              {missingCount > 0 ? `有 ${missingCount} 轨在选的文件里找不到，那几题可以先导、之后再补音频。` : ''}
+              {leftover.length > 0 ? `${leftover.length} 个文件没配上任何一题（练习册的音轨、没勾的题），不会用到。` : ''}
+            </Note>
+          )}
+          {!byTrack && selected.length > 0 && files.length > 0 && tracksWanted !== files.length && (
             <Note tone="warn">
               勾上的题一共要 {tracksWanted} 轨，选了 {files.length} 个文件
               {leftover.length > 0 ? `，多出来的 ${leftover.length} 个不会用到` : ''}。对一下每题的轨数。
