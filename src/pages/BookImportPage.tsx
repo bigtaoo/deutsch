@@ -293,7 +293,7 @@ export function BookImportPage() {
         </Hint>
         {parsed && parsed.sections.length === 0 && (
           <Banner tone="warn" title="没认出题目标题">
-            <p>这一页按「Kapitel 1 …」「Modul 2 Aufgabe 3a」「Track 1.05」这类单独一行的标题切分。没有这种标题的文稿请用单课导入。</p>
+            <p>这一页按「Kapitel 1 …」「Modul 2 Aufgabe 3a」「Modul 3 Übung 1」「Track 1.05」这类单独一行的标题切分。没有这种标题的文稿请用单课导入。</p>
           </Banner>
         )}
         {parsed && <SpeakerPicker candidates={candidates} selected={speakers} onChange={setSpeakers} />}
@@ -316,7 +316,7 @@ export function BookImportPage() {
           {byTrack ? (
             <Hint>
               直接选音频（两个音频包的 mp3 可以一起全选，或者选整个文件夹）：按文件名里的轨号配给各题，
-              还没勾题的话，音频齐全、这一组里还没有的题会自动勾上，缺轨的留着不勾。练习册的音轨用不上会自动剩下。
+              还没勾题的话，音频齐全、这一组里还没有的题会自动勾上，缺轨的留着不勾。课本和练习册的音轨混在一个文件夹里也没关系：各配各的文稿，另一本的自动剩下。
               每题下面是它的轨号，点一下关掉 / 打开那一轨。
             </Hint>
           ) : (
@@ -443,7 +443,7 @@ export function BookImportPage() {
           {byTrack && selected.length > 0 && files.length > 0 && (missingCount > 0 || leftover.length > 0) && (
             <Note tone={missingCount > 0 ? 'warn' : 'neutral'}>
               {missingCount > 0 ? `有 ${missingCount} 轨在选的文件里找不到，那几题可以先导、之后再补音频。` : ''}
-              {leftover.length > 0 ? `${leftover.length} 个文件没配上任何一题（练习册的音轨、没勾的题），不会用到。` : ''}
+              {leftover.length > 0 ? `${leftover.length} 个文件没配上任何一题（另一本书的音轨、没勾的题），不会用到。` : ''}
             </Note>
           )}
           {!byTrack && selected.length > 0 && files.length > 0 && tracksWanted !== files.length && (

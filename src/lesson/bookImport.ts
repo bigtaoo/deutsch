@@ -147,10 +147,13 @@ export function assignTracks<T>(
  * 从文件名里认出音轨号，规整成 `CD.轨`（去掉前导零）：
  *   - `605038_LB_CD2 (15).mp3` → `2.15`（Klett 音频包的命名）
  *   - `1_02.mp3`、`Track 1.12.mp3`、`1-12 Modul 4.mp3` → `1.2` / `1.12` / `1.12`
- * 认不出返回 null。练习册的 `605038_AB_38.mp3` 认不出 —— 这正好：它本来就不属于课本的任何一题。
+ *   - `605038_AB_38.mp3`、`605037_AB_ 4.mp3` → `38` / `4`（练习册：文稿里的轨号是整数，2026-09-27）
+ * 认不出返回 null。两种轨号互不相撞：导课本文稿时练习册的文件一个也配不上，反过来也一样。
  */
 export function trackOfFile(name: string): string | null {
   const base = name.replace(/\.[^.]+$/, '');
+  const ab = /(?:^|[^A-Za-z])AB[_\s-]*0*(\d{1,3})$/iu.exec(base);
+  if (ab) return String(Number(ab[1]));
   const cd = /CD\s*0*(\d{1,2})\D{0,8}?0*(\d{1,2})\D*$/iu.exec(base);
   if (cd) return `${Number(cd[1])}.${Number(cd[2])}`;
   const pair = /(?:^|\D)0*(\d{1,2})[._\- ]0*(\d{1,2})(?:\D|$)/u.exec(base);

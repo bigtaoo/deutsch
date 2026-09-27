@@ -158,3 +158,37 @@ describe('layoutPage · 轨号的几个边角', () => {
     ]);
   });
 });
+
+// 2026-09-27：练习册文稿 —— 页边轨号是 7pt 的整数或范围，每个印两遍；说话人符号是控制字符。
+describe('layoutPage · 练习册文稿', () => {
+  it('小号整数轨号：和那一轨第一行正文同一高度也认（不要求独占一行），印两遍只算一次', () => {
+    const lines = layoutPage([body('Aussprache Übung 1', 700, 68), marker('15', 685, 49), marker('15', 685, 49), body('A normal', 685, 68)], W);
+    expect(lines).toEqual(['Aussprache Übung 1', '[[15]]', 'A normal']);
+  });
+
+  it('范围 `12--13`、`19–21` 展开成一轨一行', () => {
+    expect(layoutPage([marker('12--13', 162, 540), body('Ah!', 160, 305)], W)).toEqual(['[[12]]', '[[13]]', 'Ah!']);
+    expect(layoutPage([marker('19–21', 429, 540), body('acht', 425, 305)], W)).toEqual(['[[19]]', '[[20]]', '[[21]]', 'acht']);
+  });
+
+  it('正文字号的整数（课本文稿的页码）、页边以外的小号数字：都不是轨号', () => {
+    const pageNo = { str: '12', x: 57, y: 35, width: 10, size: 10 };
+    const inText = { str: '3', x: 200, y: 600, width: 5, size: 7 };
+    const lines = layoutPage([body('Text', 700), pageNo, inText], W);
+    expect(lines.some((l) => l.startsWith('[['))).toBe(false);
+  });
+
+  it('说话人符号字体读出来的控制字符换成 ● / ○，别的控制字符丢掉', () => {
+    const lines = layoutPage(
+      [
+        { str: '\u001e', x: 57, y: 700, width: 5, size: 10 },
+        body('Guten Tag.', 700, 64),
+        { str: '\u001d', x: 57, y: 688, width: 5, size: 10 },
+        body('Hallo.', 688, 64),
+        { str: '\u001f\u001e\u001f', x: 300, y: 500, width: 5, size: 10 },
+      ],
+      W,
+    );
+    expect(lines).toEqual(['● Guten Tag.', '○ Hallo.']);
+  });
+});

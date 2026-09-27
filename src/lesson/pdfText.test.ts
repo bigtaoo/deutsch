@@ -131,3 +131,27 @@ describe('unwrapPdfText 与轨号行（FR-1.10）', () => {
     expect(isChapterHeading('Kapitel 8 Du bist, was du bist')).toBe(true);
   });
 });
+
+// 2026-09-27：练习册文稿 —— 题目叫 Übung、可以几小题并一个标题，轨号是整数。
+describe('练习册文稿', () => {
+  it.each(['Modul 3 Übung 1', 'Aussprache Übung 1a', 'Aussprache Übung 2a und b', 'Aussprache Übung 1b, c und d', 'Aussprache Übung 1a, b und c'])(
+    '标题：%s',
+    (line) => {
+      expect(isHeading(line)).toBe(true);
+    },
+  );
+
+  it.each(['Modul 2 Übung 3 war schwer.', 'Aussprache Übung 1 und dann'])('正文：%s', (line) => {
+    expect(isHeading(line)).toBe(false);
+  });
+
+  it('题目标题后面跟小写行（发音题的词表）照样是标题，不并进上一题', () => {
+    expect(unwrapPdfText('1. Reisekostenabrechnung\nAussprache Übung 1d\n[[32]]\ndie Vorlage\ndie Entscheidungsvorlage')).toBe(
+      '1. Reisekostenabrechnung\nAussprache Übung 1d\n[[32]]\ndie Vorlage die Entscheidungsvorlage',
+    );
+  });
+
+  it('整数轨号行和 CD.轨 一样认、一样不进正文', () => {
+    expect(unwrapPdfText('● Das ist ein\n[[15]]\nlanger Satz.')).toBe('[[15]]\n● Das ist ein langer Satz.');
+  });
+});

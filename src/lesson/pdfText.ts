@@ -22,7 +22,8 @@ import { isSpeakerSymbol } from './speakers';
  * 粘贴进来的文字里不会有这种行。
  */
 export const trackToken = (track: string) => `[[${track}]]`;
-export const TRACK_TOKEN_RE = /^\[\[(\d{1,2}\.\d{1,2})\]\]$/;
+/** 课本文稿是 `2.15`（CD.轨），练习册文稿是整数 `12`（2026-09-27）。 */
+export const TRACK_TOKEN_RE = /^\[\[(\d{1,2}(?:\.\d{1,2})?)\]\]$/;
 
 /** 整行丢掉的：页码、页边音轨号、页眉页脚。 */
 const NOISE_LINES: RegExp[] = [
@@ -37,13 +38,13 @@ const NOISE_LINES: RegExp[] = [
 // 三种都要求「整行就是一个标题」，而不只是「以某个词开头」—— 正文里完全可能有一行
 // 恰好从 `Kapitel 3 zeigt, …` 或 `Track 5 hat mir …` 开始（PDF 折行把它甩到了行首），
 // 旧写法只看开头，会凭空开出一个假章节、把那句话劈成两半。判据是标题里没有逗号句号
-// 这类正文标点，且题目标题必须以 `Aufgabe N` 收尾。剩下的歧义（`Kapitel 3 zeigt uns`
+// 这类正文标点，且题目标题必须以 `Aufgabe N` 或 `Übung N`（练习册，可带 `1a, b und c` 这种并列）收尾。剩下的歧义（`Kapitel 3 zeigt uns`
 // 折行、下一行小写开头）由 unwrapPdfText 看下一行来排除。
 // 章名里可以有逗号（Aspekte neu C1 的 `Kapitel 8 Du bist, was du bist`），但只在大写开头时 ——
 // `Kapitel 3 zeigt, wie das …` 是正文折行。题目标题里一律不行。
 const CHAPTER_RE = /^Kapitel\s+\d+(?:\s+(?:\p{Lu}[^.;:]{0,49}|[^.,;:]{1,50}))?$/u;
 const TASK_RE =
-  /^(?:Auftakt|Modul\s+\d+|Porträt|Aussprache|Film|Sprachtraining|Strategie)(?:\s+[^.,;:!?]{1,20})?\s+Aufgabe\s*\d+[a-z]?$/u;
+  /^(?:Auftakt|Modul\s+\d+|Porträt|Aussprache|Film|Sprachtraining|Strategie)(?:\s+[^.,;:!?]{1,20})?\s+(?:Aufgabe|Übung)\s*\d+[a-z]?(?:(?:,\s*[a-z])*\s+und\s+[a-z])?$/u;
 const TRACK_RE = /^(?:Track|Hörtext)\s+\d+(?:[.:]\d+)?(?:\s+[^.,;:]{1,40})?$/u;
 
 export function isChapterHeading(line: string): boolean {
@@ -131,7 +132,9 @@ export function unwrapPdfText(text: string): string {
       continue;
     }
 
-    if (isStandalone(line) && !continuesLowercase(i)) {
+    // 题目标题（以 Aufgabe / Übung N 收尾）后面跟小写行也照样是标题：练习册的发音题正文就是一串小写的词
+    // （`Aussprache Übung 1d` / `die Gesetzesänderungsentscheidungsvorlage`），而正文折行恰好整行是这种形状几乎不可能。
+    if (isStandalone(line) && (TASK_RE.test(line) || !continuesLowercase(i))) {
       flush();
       out.push(line); // 标题自成一行，后面那行也不许并上来
       continue;

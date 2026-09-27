@@ -181,11 +181,14 @@ describe('trackOfFile', () => {
     ['1_02.mp3', '1.2'],
     ['Track 1.12.mp3', '1.12'],
     ['1-12 Modul 4.mp3', '1.12'],
+    // 练习册：文稿里的轨号是整数（2026-09-27）
+    ['605038_AB_38.mp3', '38'],
+    ['605037_AB_ 4.mp3', '4'],
   ])('%s → %s', (name, track) => {
     expect(trackOfFile(name)).toBe(track);
   });
 
-  it.each(['605038_AB_38.mp3', 'Lied.mp3', 'Track 7.mp3'])('%s 认不出', (name) => {
+  it.each(['Lied.mp3', 'Track 7.mp3', 'TAB 3.mp3'])('%s 认不出', (name) => {
     expect(trackOfFile(name)).toBeNull();
   });
 });
