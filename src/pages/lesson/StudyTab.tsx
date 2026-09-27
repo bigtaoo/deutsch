@@ -1,4 +1,4 @@
-// FR-7 生词标记与挖空 + FR-14 Glossar 候选词的落点。
+// FR-7 生词标记与挖空 + FR-14 Glossar 候选词的落点 + FR-9.13~9.15 课上加生词（§12.20）。
 //
 // §3.3 R1：挖空只允许在**有时间戳**的句子上做 —— 挖了空却没有音频，
 // 听写和带音频的复习卡都无从谈起。没时间戳的句子上点词时给一键「自动对齐这一课」。
@@ -14,6 +14,8 @@ import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { GlossaryCandidates, acceptCandidate } from './GlossaryCandidates';
+import { VocabCandidates } from './VocabCandidates';
+import { queueZhGloss } from '@/ai/gloss';
 import { Banner, Button, Hint, field } from '@/components/ui';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence, VocabEntry } from '@/types/models';
 
@@ -23,6 +25,8 @@ export function StudyTab({ lesson }: { lesson: Lesson; cache: LessonCache | unde
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [selection, setSelection] = useState<Token[]>([]);
+  // FR-9.14：默认点 = 加；开着「连选」（或按住 Shift）才回到「选中 → 标记」两步，给搭配用
+  const [multi, setMulti] = useState(false);
 
   const visible = lesson.sentences.filter((s) => !s.excluded);
 
@@ -44,12 +48,27 @@ export function StudyTab({ lesson }: { lesson: Lesson; cache: LessonCache | unde
 
   return (
     <div className="space-y-4">
-      <Hint>
-        点词标记生词：连点多个词可以标搭配，中间隔着别的词也行（`hing … ab`）。
-        标记会同时在句子上挖空、在生词本里建草稿。
-      </Hint>
+      <VocabCandidates lesson={lesson} />
 
       <GlossaryCandidates lesson={lesson} />
+
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <Hint>
+            {multi
+              ? '连选：点几个词标成一个搭配，中间隔着别的词也行（`hing … ab`），再点「标记为生词并挖空」。'
+              : '点一个词就加进生词本（同时在句子上挖空）；要标搭配打开「连选」或按住 Shift 点。'}
+          </Hint>
+        </div>
+        <Button
+          className="shrink-0"
+          variant={multi ? 'primary' : 'ghost'}
+          aria-pressed={multi}
+          onClick={() => { setMulti(!multi); setSelection([]); }}
+        >
+          连选
+        </Button>
+      </div>
 
       <div className="space-y-3">
         {visible.map((sentence) => (
@@ -63,6 +82,7 @@ export function StudyTab({ lesson }: { lesson: Lesson; cache: LessonCache | unde
             selection={activeIndex === sentence.index ? selection : []}
             candidates={candidatesBySentence.get(sentence.index) ?? []}
             audioReady={audio.status === 'ready'}
+            multi={multi}
             onActivate={() => { setActiveIndex(sentence.index); setSelection([]); }}
             onSelectionChange={setSelection}
           />
@@ -81,6 +101,7 @@ function SentenceRow({
   selection,
   candidates,
   audioReady,
+  multi,
   onActivate,
   onSelectionChange,
 }: {
@@ -92,6 +113,7 @@ function SentenceRow({
   selection: Token[];
   candidates: GlossaryCandidate[];
   audioReady: boolean;
+  multi: boolean;
   onActivate: () => void;
   onSelectionChange: (tokens: Token[]) => void;
 }) {
@@ -105,12 +127,25 @@ function SentenceRow({
   const candidateAt = (token: Token): GlossaryCandidate | undefined =>
     candidates.find((c) => c.ranges.some((r) => token.start >= r.start && token.end <= r.end));
 
-  const toggle = (token: Token) => {
+  const [added, setAdded] = useState<QuickAdded | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const toggle = (token: Token, shift: boolean) => {
     if (!token.isWord) return;
     // 候选词一点即接受（FR-14.2），不用先选中再确认 —— 词条信息 DW 已经给全了。
     const candidate = candidateAt(token);
     if (candidate && selection.length === 0 && !isSelected(blankRanges, token)) {
       void acceptCandidate(lesson.id, candidate);
+      return;
+    }
+    // FR-9.14：点 = 加。已经挖了空的词再点什么都不做（取消走下面列表里的「取消挖空」）；
+    // 没时间戳的句子落到下面那条 R1 提示上 —— 与原来选中之后看到的是同一块
+    if (!multi && !shift && selection.length === 0 && hasTimestamp) {
+      if (isSelected(blankRanges, token)) return;
+      setAddError(null);
+      void quickAdd(lesson.id, sentence.index, toRanges(sentence.text, [token])).then(setAdded, (err: unknown) =>
+        setAddError(err instanceof Error ? err.message : String(err)),
+      );
       return;
     }
     onActivate();
@@ -133,7 +168,7 @@ function SentenceRow({
             return (
               <span
                 key={token.start}
-                onClick={() => toggle(token)}
+                onClick={(e) => toggle(token, e.shiftKey)}
                 title={candidate ? `Glossar：${candidate.title}（点一下接受）` : undefined}
                 className={`cursor-pointer rounded-ctl px-0.5 ${
                   picked
@@ -189,6 +224,25 @@ function SentenceRow({
         )
       )}
 
+      {addError && <Hint tone="danger">{addError}</Hint>}
+      {added && sentence.blanks.some((b) => b.id === added.blankId) && (
+        <p className="mt-2 text-note text-muted">
+          {added.attached ? `「${added.surface}」生词本里已有，挂到了原词条上` : `已加「${added.surface}」`}
+          {' · '}
+          <button
+            type="button"
+            className="underline hover:text-ink"
+            onClick={() => {
+              // 撤销 = FR-7.5 的「一起删」；挂到已有词条的那种只取消挖空，不动原词条
+              void useVocabStore.getState().removeBlank(lesson.id, sentence.index, added.blankId, !added.attached);
+              setAdded(null);
+            }}
+          >
+            撤销
+          </button>
+        </p>
+      )}
+
       {sentence.blanks.length > 0 && (
         <ul className="mt-2 space-y-1 border-t border-line pt-2">
           {sentence.blanks.map((blank) => {
@@ -196,7 +250,10 @@ function SentenceRow({
             return (
               <li key={blank.id} className="flex items-center gap-2 text-ui">
                 <span className="font-medium">{blank.surface}</span>
-                <span className="text-muted">{entry?.meaning ?? '（释义待填）'}</span>
+                <span className="min-w-0 text-muted">
+                  {entry?.meaning ?? '（释义待填）'}
+                  {entry?.meaningZh && <span className="ml-2 text-ink">{entry.meaningZh}</span>}
+                </span>
                 <BlankRemoveButton lesson={lesson} sentence={sentence} blankId={blank.id} />
               </li>
             );
@@ -205,6 +262,40 @@ function SentenceRow({
       )}
     </div>
   );
+}
+
+interface QuickAdded {
+  surface: string;
+  blankId: string;
+  /** 挂到了生词本里已有的词条上（FR-9.3 的「合并」）—— 撤销时不删那个词条 */
+  attached: boolean;
+}
+
+/**
+ * FR-9.14 点词秒加：挖空 + 词条 + 词典自动填，不弹确认、不开编辑框。
+ * 已有这个词就挂到已有词条上 —— FR-9.3 三个选项里只留「合并」当默认（理由见 SPEC）。
+ */
+async function quickAdd(lessonId: string, sentenceIndex: number, ranges: Range[]): Promise<QuickAdded> {
+  const vocab = useVocabStore.getState();
+  const lesson = useLessonStore.getState().lessons.find((l) => l.id === lessonId);
+  const sentence = lesson?.sentences[sentenceIndex];
+  if (!lesson || !sentence) throw new Error('这一句在重新切句后已不存在');
+  const surface = surfaceOf(sentence.text, ranges);
+  const duplicates = await vocab.findDuplicates(surface);
+  let entryId: string;
+  if (duplicates.length > 0) {
+    entryId = duplicates[0].id;
+    await vocab.attachToExisting({ lesson, sentence, ranges, entryId });
+  } else {
+    entryId = (await vocab.createFromSelection({ lesson, sentence, ranges })).id;
+    queueZhGloss([entryId]); // FR-9.15
+  }
+  const blank = useLessonStore
+    .getState()
+    .lessons.find((l) => l.id === lessonId)
+    ?.sentences[sentenceIndex]?.blanks.find((b) => b.vocabEntryId === entryId && b.ranges[0]?.start === ranges[0]?.start);
+  if (!blank) throw new Error('挖空没有写进去');
+  return { surface, blankId: blank.id, attached: duplicates.length > 0 };
 }
 
 /** FR-7.5：取消挖空 → 询问是否同时删除生词条目。 */
@@ -256,7 +347,9 @@ function MarkPanel({
   const create = async () => {
     setError(null);
     try {
-      setCreated(await createFromSelection({ lesson, sentence, ranges }));
+      const entry = await createFromSelection({ lesson, sentence, ranges });
+      queueZhGloss([entry.id]); // FR-9.15
+      setCreated(entry);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

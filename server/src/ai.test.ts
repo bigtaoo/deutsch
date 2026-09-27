@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAiExplainer } from './ai.ts';
+import { createAiExplainer, parseGlossOutput } from './ai.ts';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -63,5 +63,46 @@ describe('createAiExplainer', () => {
   it('返回体里没有文本 → 抛错，而不是把空字符串当成一份解释存进 note', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ content: [] })));
     await expect(createAiExplainer('sk-test', 'model').explain({ word: 'Zug' })).rejects.toThrow('没有返回文本');
+  });
+});
+
+describe('gloss（FR-9.15）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('一次请求问一整批：词和原句都在提示词里，回来的数组按位置对上', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ content: [{ type: 'text', text: '["一步棋","信心"]' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await createAiExplainer('sk-test', 'model').gloss!([
+      { word: 'Zug', context: 'Das war ein kluger Zug.' },
+      { word: 'Zuversicht' },
+    ]);
+
+    expect(out).toEqual(['一步棋', '信心']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const prompt = (JSON.parse(init.body as string) as { messages: Array<{ content: string }> }).messages[0].content;
+    expect(prompt).toContain('Das war ein kluger Zug.');
+    expect(prompt).toContain('Zuversicht');
+  });
+});
+
+describe('parseGlossOutput', () => {
+  it('容忍前后多话与 ```json 围栏', () => {
+    expect(parseGlossOutput('好的：\n```json\n["a", "b"]\n```', 2)).toEqual(['a', 'b']);
+  });
+
+  it('非字符串项当成认不出（空串），过长的截断', () => {
+    expect(parseGlossOutput(`[1, null, "${'长'.repeat(100)}"]`, 3)).toEqual(['', '', '长'.repeat(60)]);
+  });
+
+  it('长度对不上整批作废 —— 按位置对齐，错一位就全错', () => {
+    expect(() => parseGlossOutput('["a"]', 2)).toThrow('要的是 2 条');
+  });
+
+  it('根本没有数组 → 抛错', () => {
+    expect(() => parseGlossOutput('我不知道', 1)).toThrow('没有返回数组');
   });
 });

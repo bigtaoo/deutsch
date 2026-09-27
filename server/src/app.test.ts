@@ -288,6 +288,53 @@ describe('AI 补充解释', () => {
   });
 });
 
+describe('课上加词的一句话中文（FR-9.15）', () => {
+  const post = (token: string, body: unknown) =>
+    authed(token, { method: 'POST', body: JSON.stringify(body) });
+
+  it('explainer 没有 gloss（没配 key）→ 503 code=ai_off', async () => {
+    const { app } = setup({ ai: { explain: async () => 'x' } });
+    const { token } = await login(app);
+    const res = await app.request('/v1/ai/gloss', post(token, { items: [{ word: 'Zug' }] }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'ai_off' });
+  });
+
+  it('要登录', async () => {
+    const { app } = setup({ ai: { explain: async () => 'x', gloss: async () => ['火车'] } });
+    const res = await app.request('/v1/ai/gloss', { method: 'POST', body: JSON.stringify({ items: [{ word: 'Zug' }] }) });
+    expect(res.status).toBe(401);
+  });
+
+  it('空批、超过 40 个、有缺 word 的 → 400，不去问模型', async () => {
+    const gloss = vi.fn();
+    const { app } = setup({ ai: { explain: async () => 'x', gloss } });
+    const { token } = await login(app);
+    for (const body of [{}, { items: [] }, { items: Array.from({ length: 41 }, () => ({ word: 'a' })) }, { items: [{ word: 'a' }, { context: 'b' }] }]) {
+      expect((await app.request('/v1/ai/gloss', post(token, body))).status).toBe(400);
+    }
+    expect(gloss).not.toHaveBeenCalled();
+  });
+
+  it('词与原句 trim 后按顺序交给 gloss，结果原样回去', async () => {
+    const gloss = vi.fn().mockResolvedValue(['一步棋', '']);
+    const { app } = setup({ ai: { explain: async () => 'x', gloss } });
+    const { token } = await login(app);
+    const res = await app.request('/v1/ai/gloss', post(token, { items: [{ word: ' Zug ', context: ' Ein kluger Zug. ' }, { word: 'Xyz', context: '  ' }] }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ glosses: ['一步棋', ''] });
+    expect(gloss).toHaveBeenCalledWith([{ word: 'Zug', context: 'Ein kluger Zug.' }, { word: 'Xyz', context: undefined }]);
+  });
+
+  it('上游失败 → 502 code=ai_failed', async () => {
+    const { app } = setup({ ai: { explain: async () => 'x', gloss: async () => { throw new Error('AI 返回了 1 条，要的是 2 条'); } } });
+    const { token } = await login(app);
+    const res = await app.request('/v1/ai/gloss', post(token, { items: [{ word: 'a' }, { word: 'b' }] }));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ code: 'ai_failed', error: 'AI 返回了 1 条，要的是 2 条' });
+  });
+});
+
 describe('CORS', () => {
   it('白名单里的 origin 拿得到放行头，别的拿不到', async () => {
     const { app } = setup();

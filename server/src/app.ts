@@ -11,7 +11,10 @@ import { extensionOf, type Engine } from './align/engine.ts';
 import type { JobQueue } from './align/jobs.ts';
 import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
 import { serveWeights } from './align/weights.ts';
-import type { AiExplainer } from './ai.ts';
+import type { AiExplainer, AiGlossItem } from './ai.ts';
+
+/** FR-9.15：一批的上限。前端按这个切批，改了两边一起改（src/ai/gloss.ts）。 */
+const GLOSS_MAX_ITEMS = 40;
 import type { DiagSink } from './diag.ts';
 import { AudioRejected, SHA256_RE, type AudioStore } from './audioStore.ts';
 
@@ -342,6 +345,34 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     } catch (err) {
       // 上游是网络问题还是账单问题，客户端不需要知道 —— 一律「暂时不可用」，
       // 让用户过一会儿再试，而不是把一段可能带敏感信息的报错原样展示出去。
+      return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
+    }
+  });
+
+  // ── 课上加词的一句话中文（FR-9.15）─────────────────────────────────────
+  //
+  // 与 explain 分开一个接口：要的东西不同（一句话 vs 一段讲解），而且是**一批**——
+  // 候选列表一次加二三十个词，逐个问就是二三十次往返。
+  app.post('/v1/ai/gloss', async (c) => {
+    if (!deps.ai?.gloss) {
+      return c.json({ error: '这台服务器没有开 AI 解释（缺 ANTHROPIC_API_KEY）', code: 'ai_off' }, 503);
+    }
+    const payload = (await c.req.json().catch(() => null)) as { items?: unknown } | null;
+    const rawItems = payload && Array.isArray(payload.items) ? payload.items : null;
+    if (!rawItems || rawItems.length === 0) return c.json({ error: '缺少 items' }, 400);
+    if (rawItems.length > GLOSS_MAX_ITEMS) return c.json({ error: `一次最多 ${GLOSS_MAX_ITEMS} 个词` }, 400);
+    const items: AiGlossItem[] = [];
+    for (const it of rawItems) {
+      const r = it && typeof it === 'object' ? (it as Record<string, unknown>) : {};
+      if (typeof r.word !== 'string' || !r.word.trim()) return c.json({ error: 'items 里有缺 word 的' }, 400);
+      items.push({
+        word: r.word.trim().slice(0, 200),
+        context: typeof r.context === 'string' && r.context.trim() ? r.context.trim().slice(0, 500) : undefined,
+      });
+    }
+    try {
+      return c.json({ glosses: await deps.ai.gloss(items) });
+    } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
     }
   });

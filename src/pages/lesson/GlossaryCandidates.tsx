@@ -7,6 +7,7 @@
 import { useMemo, useState } from 'react';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
+import { queueZhGloss } from '@/ai/gloss';
 import { Button, Hint, Section } from '@/components/ui';
 import type { GlossaryCandidate, Lesson } from '@/types/models';
 
@@ -32,7 +33,7 @@ export async function acceptCandidate(lessonId: string, candidate: GlossaryCandi
 
   try {
     // FR-14.3：surface / lemma / gender / plural / meaning 一次填满，省掉手工录入。
-    await useVocabStore.getState().createFromSelection({
+    const entry = await useVocabStore.getState().createFromSelection({
       lesson,
       sentence,
       ranges: candidate.ranges,
@@ -44,6 +45,7 @@ export async function acceptCandidate(lessonId: string, candidate: GlossaryCandi
         dwKnowledgeId: candidate.dwKnowledgeId,
       },
     });
+    queueZhGloss([entry.id]); // FR-9.15：Glossar 给的是德德释义，中文照样补
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

@@ -9,7 +9,7 @@
     "build:native": "tsc -b && vite build --mode native",
     "build:ota": "npm run build:native && node scripts/build-ota.mjs",
     "stage:align": "node scripts/stage-align-assets.mjs",
-    "build:dict": "node scripts/build-dict.mjs",
+    "build:dict": "node scripts/build-dict.mjs && node scripts/build-common-forms.mjs",
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
