@@ -94,10 +94,11 @@ describe('connectStudyClock', () => {
     connectStudyClock();
     await practiceAndFlush();
 
+    // 重读是异步的（IndexedDB），机器忙时一个 setTimeout(0) 等不到它 —— 等条件本身（2026-09-27 本机全量跑时抖过一次）
+    await vi.waitFor(() => expect(scheduleStudySync).toHaveBeenCalled());
     expect(useStudyStore.getState().loaded).toBe(true);
     // 落库的是计时器，store 只是重读 —— 读到的秒数必须是真的写进去的那份。
     expect(useStudyStore.getState().stats.totalSeconds).toBeGreaterThan(0);
-    expect(scheduleStudySync).toHaveBeenCalled();
   });
 
   it('推同步排在重读之后 —— 顺序反了会把还没落库的秒数漏掉', async () => {
