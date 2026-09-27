@@ -170,16 +170,50 @@ export function readAudioDuration(file: Blob): Promise<number> {
     const url = URL.createObjectURL(file);
     const probe = document.createElement('audio');
     probe.preload = 'metadata';
-    const cleanup = () => URL.revokeObjectURL(url);
+    let settled = false;
+    const cleanup = () => {
+      settled = true;
+      URL.revokeObjectURL(url);
+      document.removeEventListener('visibilitychange', onHidden);
+    };
     probe.addEventListener('loadedmetadata', () => {
+      if (settled) return;
       const duration = Number.isFinite(probe.duration) ? probe.duration : 0;
       cleanup();
       resolve(duration);
     });
     probe.addEventListener('error', () => {
+      if (settled) return;
       cleanup();
       reject(new Error('无法读取音频时长，文件可能不是浏览器支持的格式'));
     });
+
+    // 2026-09-27：标签页在后台时 Chrome 推迟加载 <audio>，loadedmetadata 永远不来（实测 readyState 一直是 0），
+    // 整本导入就卡在「正在导入 0/N」直到切回来。后台时改走解码（OfflineAudioContext 不受影响），谁先到用谁。
+    let decoding = false;
+    function onHidden() {
+      if (settled || decoding || document.visibilityState !== 'hidden') return;
+      decoding = true;
+      void decodeDuration(file).then(
+        (duration) => {
+          if (settled) return;
+          cleanup();
+          resolve(duration);
+        },
+        () => {
+          decoding = false; // 解不了就还等元素那条路（切回前台时它会来）
+        },
+      );
+    }
+    document.addEventListener('visibilitychange', onHidden);
+    onHidden();
     probe.src = url;
   });
+}
+
+async function decodeDuration(file: Blob): Promise<number> {
+  const Ctx = globalThis.OfflineAudioContext;
+  if (!Ctx) throw new Error('没有 OfflineAudioContext');
+  const buffer = await new Ctx(1, 1, 44100).decodeAudioData(await file.arrayBuffer());
+  return buffer.duration;
 }
