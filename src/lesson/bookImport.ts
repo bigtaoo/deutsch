@@ -72,9 +72,17 @@ export function parseBookSections(text: string): BookSection[] {
     current = null;
   };
 
+  // 轨号先攒着，看它后面第一行是什么再定归谁：轨号印在栏底、它那一轨从下一栏的新题开始时，
+  // 排版出来轨号在新题标题**前面**（pdfExtract 把栏里找不到正文行的轨号放在栏尾）—— 那它属于新题。
+  let pending: string[] = [];
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
+    const token = TRACK_TOKEN_RE.exec(line);
+    if (token) {
+      pending.push(token[1]);
+      continue;
+    }
     if (isChapterHeading(line)) {
       flush();
       chapter = line;
@@ -82,13 +90,13 @@ export function parseBookSections(text: string): BookSection[] {
     }
     if (isHeading(line)) {
       flush();
-      current = { heading: line, lines: [], references: [], tracks: [], replayTracks: [] };
+      current = { heading: line, lines: [], references: [], tracks: pending, replayTracks: [] };
+      pending = [];
       continue;
     }
-    const token = TRACK_TOKEN_RE.exec(line);
-    if (token) {
-      current?.tracks.push(token[1]);
-      continue;
+    if (current && pending.length > 0) {
+      current.tracks.push(...pending);
+      pending = [];
     }
     if (!current) continue; // 第一个标题之前的东西（封面、目录）不属于任何一题
     if (PLACEHOLDER_RE.test(line)) {
@@ -99,6 +107,7 @@ export function parseBookSections(text: string): BookSection[] {
     }
     current.lines.push(line);
   }
+  if (current && pending.length > 0) (current as { tracks: string[] }).tracks.push(...pending);
   flush();
   return sections;
 }

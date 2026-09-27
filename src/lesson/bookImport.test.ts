@@ -211,3 +211,19 @@ describe('assignByTrackNumber', () => {
     expect(leftover.map((x) => x.name)).toEqual(['b/1_02.mp3']);
   });
 });
+
+describe('轨号落在题目标题前面（栏底 / 页底的轨号，它那一轨从下一栏的新题开始）', () => {
+  it('归下一题，不归上一题', () => {
+    const text = ['Modul 1 Aufgabe 1', '[[1.2]]', 'Erste Rede.', '[[1.3]]', 'Modul 1 Aufgabe 2', 'Zweite Rede.'].join('\n');
+    expect(parseBookSections(text).map((s) => s.tracks)).toEqual([['1.2'], ['1.3']]);
+  });
+
+  it('跨章标题也一样', () => {
+    const text = ['Modul 4 Aufgabe 3', '[[2.24]]', 'Ende.', '[[3.1]]', 'Kapitel 8 Du bist, was du bist', 'Auftakt Aufgabe 1', 'Anfang.'].join('\n');
+    expect(parseBookSections(text).map((s) => s.tracks)).toEqual([['2.24'], ['3.1']]);
+  });
+});
+
+it('全文最后一行是轨号：仍归最后一题', () => {
+  expect(parseBookSections('Modul 1 Aufgabe 1\nText.\n[[1.9]]')[0].tracks).toEqual(['1.9']);
+});

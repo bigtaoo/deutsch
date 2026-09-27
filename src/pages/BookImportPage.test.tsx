@@ -308,3 +308,60 @@ describe('BookImportPage · 按轨号（FR-1.10）', () => {
     expect(createLesson.mock.calls[0][0]).toMatchObject({ plainText: 'Person 1\nIch arbeite gern.\nPerson 2\nIch nicht.' });
   });
 });
+
+describe('BookImportPage · 按轨号的其余分支', () => {
+  it('读 PDF 的时候按钮说「正在读 PDF…」，读完恢复', async () => {
+    let resolve!: (text: string) => void;
+    extractPdfText.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    render(<BookImportPage />);
+    pickPdf();
+    expect(await screen.findByText('正在读 PDF…')).toBeInTheDocument();
+    resolve(TRACKED);
+    expect(await screen.findByText('直接选 PDF 文件…')).toBeInTheDocument();
+  });
+
+  it('一题的轨全关掉：说「没有要用的轨」，导入时不拼、不排对齐', async () => {
+    render(<BookImportPage />);
+    setCollection('X');
+    paste(TRACKED);
+    fireEvent.click(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox'));
+    pickFiles(['605038_LB_CD2 (17).mp3']);
+    fireEvent.click(within(row('Modul 2 Aufgabe 3a')).getByRole('button', { name: '音轨 2.17' }));
+    expect(within(row('Modul 2 Aufgabe 3a')).getByText(/没有要用的轨/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '导入 1 课' }));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ name: 'lessons' }));
+    expect(concatAudioFiles).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(createLesson.mock.calls[0][0]).toMatchObject({ audioFile: undefined });
+  });
+
+  it('全都配上、一个不剩：区块末尾不出那条提示', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    fireEvent.click(within(row('Modul 2 Aufgabe 3a')).getByRole('checkbox'));
+    pickFiles(['605038_LB_CD2 (17).mp3']);
+    expect(within(row('Modul 2 Aufgabe 3a')).getByText('605038_LB_CD2 (17).mp3')).toBeInTheDocument();
+    expect(screen.queryByText(/轨在选的文件里找不到/)).toBeNull();
+    expect(screen.queryByText(/没配上任何一题/)).toBeNull();
+  });
+
+  it('改了文本框再失焦：重新解析，关掉的轨回到默认（只关重放轨）', () => {
+    render(<BookImportPage />);
+    paste(TRACKED);
+    fireEvent.click(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox'));
+    fireEvent.click(within(row('Modul 4 Aufgabe 3')).getByRole('button', { name: '音轨 2.21' }));
+    paste(`${TRACKED}\n`);
+    fireEvent.click(within(row('Modul 4 Aufgabe 3')).getByRole('checkbox'));
+    const r = row('Modul 4 Aufgabe 3');
+    expect(within(r).getByRole('button', { name: '音轨 2.21' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(r).getByRole('button', { name: '音轨 2.20' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('粘贴的文字没有轨号：照旧是 −/+，没有轨号开关', () => {
+    render(<BookImportPage />);
+    paste();
+    fireEvent.click(within(row('Modul 2 Aufgabe 2a')).getByRole('checkbox'));
+    expect(within(row('Modul 2 Aufgabe 2a')).getByRole('button', { name: '多一轨' })).toBeInTheDocument();
+    expect(within(row('Modul 2 Aufgabe 2a')).queryByRole('button', { name: /^音轨 / })).toBeNull();
+  });
+});
