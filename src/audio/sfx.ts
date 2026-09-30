@@ -19,6 +19,12 @@
 // 这个模块里没有一件事值得让复习页报错：没有 AudioContext（jsdom、老 WebView）、
 // 取不到文件、解不出来 —— 结果都只是「这一下没声音」。所以每个出口都是 return，
 // 不抛，也不往界面上写一个字。
+//
+// ── 静音开关 ──
+// WebKit 把「只有 Web Audio 在响」归成环境音，跟着静音开关走（课文的 `<audio>` 不受影响）。
+// 所以每次响之前都声明一次 playback 会话，见 session.ts。
+
+import { preferPlaybackSession } from './session';
 
 /** 三个音效。名字是用途，不是文件名 —— 换音效只改 FILES 那张表。 */
 export type SfxName = 'tap' | 'right' | 'wrong';
@@ -51,6 +57,7 @@ function audioContext(): AudioContext | null {
   if (ctx) return ctx;
   const Ctor = contextCtor();
   if (!Ctor) return null;
+  preferPlaybackSession();
   try {
     ctx = new Ctor();
     gain = ctx.createGain();
@@ -105,6 +112,7 @@ export function playSfx(name: SfxName): void {
   const buffer = buffers.get(name);
   const destination = gain;
   if (!context || !destination || !buffer) return;
+  preferPlaybackSession();
   const start = (): void => {
     try {
       const source = context.createBufferSource();

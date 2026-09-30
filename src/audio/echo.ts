@@ -21,6 +21,7 @@
 import type { EchoRecorder } from './shadowing';
 import { nativePlatform } from '@/platform/native';
 import { askBridgeVerbose, versionAtLeast } from '@/platform/nativeUpdate';
+import { enterRecordingSession, leaveRecordingSession } from './session';
 
 /** 第一个带 NSMicrophoneUsageDescription 的 iOS 壳。 */
 export const ECHO_MIN_IOS = '0.7.0';
@@ -72,14 +73,23 @@ export class MicEcho implements EchoRecorder {
     // 先 resume 再要麦克风：权限弹窗一出来，这次点击的手势就算用掉了。
     await this.ctx?.resume().catch(() => {});
     if (this.stream) return;
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      // 回声消除必须开：原句是外放的，不开的话录进去的有一半是原句本身。
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    // playback 会话开不了麦克风（session.ts）：音效那边把它设成了 playback。
+    enterRecordingSession();
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        // 回声消除必须开：原句是外放的，不开的话录进去的有一半是原句本身。
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (err) {
+      // 没开成就别把会话留在录音档上，否则静音时音效又哑了。
+      leaveRecordingSession();
+      throw err;
+    }
   }
 
   close(): void {
     this.halt();
+    if (this.stream) leaveRecordingSession();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
   }
