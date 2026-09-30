@@ -76,4 +76,8 @@ export const META_KEYS = {
   studyDevice: 'studyDevice',
   // 变更 49：AI 补充解释缓存（归一化词 → 解释），标注层，备份 + 同步（见 ai/cache.ts）。
   aiCache: 'aiCache',
+  // FR-22 速背：进度 / 我加的词 / 标记 / 偏好。标注层，备份 + 同步（见 drill/state.ts）。
+  drill: 'drill',
+  // FR-22.3：从服务器拿到的词库副本。**缓存层**，不备份不同步 —— 丢了再拉一次。
+  drillWordbank: 'drillWordbank',
 } as const;

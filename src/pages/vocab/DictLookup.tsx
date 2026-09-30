@@ -29,6 +29,7 @@ import { syncVocabNow } from '@/sync/trigger';
 import { Button, Card, Chip, Hint, Note, Section, field } from '@/components/ui';
 import type { DictLookup, DictPos } from '@/dict/types';
 import type { VocabEntry } from '@/types/models';
+import { AddToDrill } from '../drill/AddToDrill';
 
 /** 德语键盘不在手边时的四个字母。查词不区分大小写（`normalizeKey` 会小写），所以不给大写。 */
 const UMLAUTS = ['ä', 'ö', 'ü', 'ß'];
@@ -433,6 +434,8 @@ function ResultCard({
       <AiBlock aiState={aiState} onAsk={onAskAi} />
 
       <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={result.head} />
+      {/* FR-22.10：与「加入生词本」并列 —— 进不进复习与进不进速背是两个决定 */}
+      <AddToDrill word={result.head} pos={first?.pos} gender={first?.gender} zh={first?.zh[0]} />
     </Card>
   );
 }
@@ -546,6 +549,7 @@ function NotFound({
         </a>
       </div>
       <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={query} noDict aiState={aiState} />
+      <AddToDrill word={query} />
     </Card>
   );
 }

@@ -14,11 +14,13 @@ import { getSettings, putSettings } from '@/db/meta';
 import type { MergeSummary } from '@/backup/types';
 import { getStudyLog, mergeStudyLogs, putStudyLog, type StudyLog } from '@/study/log';
 import { getAiCache, mergeAiCaches, putAiCache, type AiCache } from '@/ai/cache';
+import { getDrillState, mergeDrillStates, normalizeDrillState, putDrillState } from '@/drill/state';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { getSessionToken } from './session';
 import { SyncAuthError } from './client';
 import {
   AI_CACHE_DOC_ID,
+  DRILL_DOC_ID,
   SETTINGS_DOC_ID,
   STUDY_DOC_ID,
   VOCAB_DOC_ID,
@@ -38,6 +40,7 @@ export interface RestoreResult {
   studyRestored: boolean;
   /** 远端那份 AI 缓存里有本地没有（或更新）的词，已经合进本地（变更 49） */
   aiCacheRestored: boolean;
+  drillRestored: boolean;
   /** 单个文档坏掉不该让整次恢复失败：坏的记在这里，好的照常写入。 */
   failures: string[];
 }
@@ -52,6 +55,7 @@ export async function restoreFromServer(): Promise<RestoreResult> {
   let incomingSettings: Settings | undefined;
   let incomingStudy: StudyLog | undefined;
   let incomingAiCache: AiCache | undefined;
+  let incomingDrill: unknown;
 
   for (const meta of await listRemoteDocs(token)) {
     try {
@@ -83,6 +87,14 @@ export async function restoreFromServer(): Promise<RestoreResult> {
         const doc = await getRemoteDoc<AiCache>(token, meta.id);
         if (doc?.body?.entries) {
           incomingAiCache = doc.body;
+          await rememberVersion(meta.id, doc.version);
+        }
+        continue;
+      }
+      if (meta.id === DRILL_DOC_ID) {
+        const doc = await getRemoteDoc<unknown>(token, meta.id);
+        if (doc) {
+          incomingDrill = doc.body;
           await rememberVersion(meta.id, doc.version);
         }
         continue;
@@ -133,6 +145,16 @@ export async function restoreFromServer(): Promise<RestoreResult> {
     }
   }
 
+  // 速背同理：逐键比 ts（drill/state.ts）。
+  let drillRestored = false;
+  if (incomingDrill !== undefined) {
+    const { merged, changed } = mergeDrillStates(await getDrillState(), normalizeDrillState(incomingDrill));
+    if (changed) {
+      await putDrillState(merged);
+      drillRestored = true;
+    }
+  }
+
   await Promise.all([
     ...result.lessons.map((lesson) => putLesson(lesson)),
     ...result.vocab.map((entry) => putVocabEntry(entry)),
@@ -148,6 +170,7 @@ export async function restoreFromServer(): Promise<RestoreResult> {
     settingsRestored,
     studyRestored,
     aiCacheRestored,
+    drillRestored,
     failures,
   };
 }

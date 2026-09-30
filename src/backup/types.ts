@@ -1,5 +1,6 @@
 import type { Lesson, VocabEntry, Settings } from '@/types/models';
 import type { StudyLog } from '@/study/log';
+import type { DrillState } from '@/drill/types';
 
 /**
  * 全量备份文件 —— FR-11.11。
@@ -17,6 +18,8 @@ export interface BackupFile {
    * 而 formatVersion 不为它涨 —— 少一个可选字段不影响任何老文件的读取。
    */
   studyLog?: StudyLog;
+  /** FR-22.11 速背的进度 / 手动词 / 标记。可选，理由同 studyLog。 */
+  drill?: DrillState;
 }
 
 export interface MergeSummary {
@@ -31,6 +34,8 @@ export interface MergeSummary {
   settingsUpdated?: boolean;
   /** 导入的那份学习记录里有本机没有的格子（FR-18，逐格取 max） */
   studyUpdated?: boolean;
+  /** 导入的那份速背状态里有本机没有（或更新）的键（FR-22.11，逐键比 ts） */
+  drillUpdated?: boolean;
 }
 
 export interface MergeResult {
@@ -40,5 +45,7 @@ export interface MergeResult {
   settings?: Settings;
   /** 合并后的学习记录。只有 `summary.studyUpdated` 为真时才需要写回。 */
   studyLog?: StudyLog;
+  /** 合并后的速背状态。只有 `summary.drillUpdated` 为真时才需要写回。 */
+  drill?: DrillState;
   summary: MergeSummary;
 }

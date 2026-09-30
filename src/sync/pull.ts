@@ -43,11 +43,19 @@ import {
   putAiCache,
   type AiCache,
 } from '@/ai/cache';
+import {
+  drillNeedsPush as localDrillNeedsPush,
+  getDrillState,
+  mergeDrillStates,
+  normalizeDrillState,
+  putDrillState,
+} from '@/drill/state';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { SyncAuthError } from './client';
 import { getSessionToken } from './session';
 import {
   AI_CACHE_DOC_ID,
+  DRILL_DOC_ID,
   SETTINGS_DOC_ID,
   STUDY_DOC_ID,
   VOCAB_DOC_ID,
@@ -72,11 +80,14 @@ export interface PullResult {
   studyWritten: boolean;
   /** 远端那份 AI 缓存里有本地没有（或更新）的词，已经合进本地库（变更 49） */
   aiCacheWritten: boolean;
+  /** 远端那份速背状态里有本地没有（或更新）的键，已经合进本地库（FR-22.11） */
+  drillWritten: boolean;
   /** 本地有远端没有（或本地更新）的生词 —— 调用方该回推一次 */
   vocabNeedsPush: boolean;
   settingsNeedsPush: boolean;
   studyNeedsPush: boolean;
   aiCacheNeedsPush: boolean;
+  drillNeedsPush: boolean;
   /** 本地这几课比远端新（多半是两台设备的钟差）—— 同样要回推，否则它们停在这台设备上 */
   lessonsNeedPush: string[];
   /** 单个文档坏掉不该让整次拉取失败：坏的记在这里，好的照常写入。 */
@@ -92,10 +103,12 @@ function emptyResult(): PullResult {
     settingsWritten: false,
     studyWritten: false,
     aiCacheWritten: false,
+    drillWritten: false,
     vocabNeedsPush: false,
     settingsNeedsPush: false,
     studyNeedsPush: false,
     aiCacheNeedsPush: false,
+    drillNeedsPush: false,
     lessonsNeedPush: [],
     failures: [],
   };
@@ -108,7 +121,8 @@ export function pullWroteData(result: PullResult): boolean {
     result.vocabWritten > 0 ||
     result.settingsWritten ||
     result.studyWritten ||
-    result.aiCacheWritten
+    result.aiCacheWritten ||
+    result.drillWritten
   );
 }
 
@@ -142,6 +156,8 @@ export async function pullFromServer(options: { force?: boolean } = {}): Promise
         await pullStudy(token, meta.id, result);
       } else if (meta.id === AI_CACHE_DOC_ID) {
         await pullAiCache(token, meta.id, result);
+      } else if (meta.id === DRILL_DOC_ID) {
+        await pullDrill(token, meta.id, result);
       } else if (lessonIdFromDocId(meta.id) !== null) {
         await pullLesson(token, meta.id, result);
       }
@@ -246,6 +262,25 @@ async function pullAiCache(token: string, docId: string, result: PullResult): Pr
   await rememberVersion(docId, doc.version);
   // 同一份数据上「远端赢了」和「本地要回推」也能同时成立：两边各问过对方没问过的词。
   if (localAiCacheNeedsPush(local, remote)) result.aiCacheNeedsPush = true;
+}
+
+// ── 速背（FR-22.11）──────────────────────────────────────────────────────
+
+async function pullDrill(token: string, docId: string, result: PullResult): Promise<void> {
+  const doc = await getRemoteDoc<unknown>(token, docId);
+  if (!doc) return;
+  result.fetched++;
+
+  const local = await getDrillState();
+  const remote = normalizeDrillState(doc.body);
+  const { merged, changed } = mergeDrillStates(local, remote);
+  if (changed) {
+    await putDrillState(merged);
+    result.drillWritten = true;
+  }
+  await rememberVersion(docId, doc.version);
+  // 与 AI 缓存同理：两台设备各背过对方没背过的词，两件事同时成立。
+  if (localDrillNeedsPush(local, remote)) result.drillNeedsPush = true;
 }
 
 // ── 「上次拉取」的时刻 ────────────────────────────────────────────────────

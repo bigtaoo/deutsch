@@ -24,6 +24,7 @@ import { LessonPage } from '@/pages/LessonPage';
 import { SourcesPage } from '@/pages/SourcesPage';
 import { VocabPage } from '@/pages/VocabPage';
 import { ReviewPage } from '@/pages/ReviewPage';
+import { DrillPage } from '@/pages/DrillPage';
 import { CachePage } from '@/pages/CachePage';
 import { RecordPage } from '@/pages/RecordPage';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -131,6 +132,7 @@ function App() {
         {route.name === 'lesson' && <LessonPage lessonId={route.lessonId} tab={route.tab} />}
         {route.name === 'vocab' && <VocabPage />}
         {route.name === 'review' && <ReviewPage />}
+        {route.name === 'drill' && <DrillPage />}
         {route.name === 'cache' && <CachePage />}
         {route.name === 'record' && <RecordPage />}
         {route.name === 'settings' && <SettingsPage />}

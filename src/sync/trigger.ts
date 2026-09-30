@@ -6,6 +6,7 @@
 //   syncVocabNow()          —— 每次复习会话结束调用，不去抖（FR-11.6，不可重建的数据不过夜）
 //   scheduleSettingsSync()  —— 改过设置后调用，5s 去抖（§0 变更 28）
 //   scheduleStudySync()     —— 学习记录落库后调用，60s 去抖（FR-18.3）
+//   scheduleDrillSync()     —— 速背每答一题 / 改一次标记后调用，10s 去抖（FR-22.11）
 //   syncLessonDeletion(id)  —— 本地删掉一课，远端也删掉
 //   drainSyncQueue()        —— 网络恢复、回前台或启动时调用，把排队的补推出去（FR-11.10）
 //
@@ -26,11 +27,14 @@ import { debounceByKey } from '@/lib/debounce';
 import { mergeSettings, mergeVocabEntries } from '@/backup/merge';
 import { getStudyLog, mergeStudyLogs, putStudyLog, type StudyLog } from '@/study/log';
 import { getAiCache, mergeAiCaches, putAiCache, type AiCache } from '@/ai/cache';
+import { getDrillState, mergeDrillStates, normalizeDrillState, putDrillState } from '@/drill/state';
+import { refreshWordbank } from '@/drill/wordbank';
 import type { Lesson, Settings, VocabEntry } from '@/types/models';
 import { SyncAuthError, SyncConflictError } from './client';
 import { getSessionToken } from './session';
 import {
   AI_CACHE_DOC_ID,
+  DRILL_DOC_ID,
   SETTINGS_DOC_ID,
   STUDY_DOC_ID,
   VOCAB_DOC_ID,
@@ -69,6 +73,11 @@ const STUDY_DEBOUNCE_MS = 60_000;
  * 而用户问完一个词之后确实可能立刻想在另一台设备上看到答案（比如手机上问完想在电脑上接着抄）。
  */
 const AI_CACHE_DEBOUNCE_MS = 5_000;
+/**
+ * 速背一题几秒，一轮二十题。每答一题推一次是二十次往返；攒 10 秒，
+ * 一轮做完、放下手机之前那一趟也就推上去了（离开页面时还会再推一次）。
+ */
+const DRILL_DEBOUNCE_MS = 10_000;
 
 export interface SyncHooks {
   /** UI 用来刷新 pendingCount / lastSuccessAt / 错误横幅。 */
@@ -233,6 +242,31 @@ async function pushAiCache(token: string): Promise<void> {
   await recordSuccess();
 }
 
+// ── 速背（FR-22.11）──────────────────────────────────────────────────────
+
+async function pushDrill(token: string): Promise<void> {
+  const local = await getDrillState();
+  const docId = DRILL_DOC_ID;
+
+  try {
+    const { version } = await putRemoteDoc(token, docId, await getKnownVersion(docId), local);
+    await rememberVersion(docId, version);
+  } catch (err) {
+    if (!(err instanceof SyncConflictError)) throw err;
+
+    // 409：另一台设备也在背。逐键比 ts，见 drill/state.ts。
+    const { merged, changed } = mergeDrillStates(local, normalizeDrillState(err.body));
+    if (changed) {
+      await putDrillState(merged);
+      hooks.onRemoteDataWritten?.();
+    }
+    const { version } = await putRemoteDoc(token, docId, err.version, merged);
+    await rememberVersion(docId, version);
+  }
+
+  await recordSuccess();
+}
+
 // ── 统一的「试一次，失败就进队列」外壳 ───────────────────────────────────
 
 async function runPush(item: QueuedPush): Promise<void> {
@@ -242,6 +276,7 @@ async function runPush(item: QueuedPush): Promise<void> {
   if (item.kind === 'settings') return pushSettings(token);
   if (item.kind === 'study') return pushStudyLog(token);
   if (item.kind === 'aiCache') return pushAiCache(token);
+  if (item.kind === 'drill') return pushDrill(token);
   if (!item.lessonId) return;
   if (item.kind === 'lesson') return pushLesson(token, item.lessonId);
   return pushLessonDeletion(token, item.lessonId);
@@ -285,6 +320,8 @@ const studyDebouncer = debounceByKey<'study', []>(() => attempt('study'), STUDY_
 
 const aiCacheDebouncer = debounceByKey<'aiCache', []>(() => attempt('aiCache'), AI_CACHE_DEBOUNCE_MS);
 
+const drillDebouncer = debounceByKey<'drill', []>(() => attempt('drill'), DRILL_DEBOUNCE_MS);
+
 /**
  * 去抖窗口一开始就把这一项标脏落库（§0 变更 43）。
  *
@@ -326,12 +363,25 @@ export function scheduleAiCacheSync(): void {
   aiCacheDebouncer.schedule('aiCache');
 }
 
+/** FR-22.11：速背答完一题、改了标记 / 中文 / 偏好、加了手动词之后触发，去抖 10s。 */
+export function scheduleDrillSync(): void {
+  markDirty('drill');
+  drillDebouncer.schedule('drill');
+}
+
+/** 离开速背页时调用：不等去抖，这一轮的进度不过夜（与 FR-11.6 同一个理由）。 */
+export async function syncDrillNow(): Promise<void> {
+  drillDebouncer.cancelAll();
+  await attempt('drill');
+}
+
 /** 测试与卸载用；正常流程让去抖自然到期。 */
 export function cancelScheduledSyncs(): void {
   lessonDebouncer.cancelAll();
   settingsDebouncer.cancelAll();
   studyDebouncer.cancelAll();
   aiCacheDebouncer.cancelAll();
+  drillDebouncer.cancelAll();
 }
 
 /** FR-11.6：每次复习会话结束触发。 */
@@ -392,6 +442,7 @@ export async function pullSyncNow(options: { force?: boolean } = {}): Promise<Pu
       if (result.settingsNeedsPush) await attempt('settings');
       if (result.studyNeedsPush) await attempt('study');
       if (result.aiCacheNeedsPush) await attempt('aiCache');
+      if (result.drillNeedsPush) await attempt('drill');
       for (const lessonId of result.lessonsNeedPush) await attempt('lesson', lessonId);
 
       // 单个文档坏掉不让整次拉取失败（pull.ts），但也不能一声不响。
@@ -424,6 +475,14 @@ export async function syncNow(options: { force?: boolean } = {}): Promise<void> 
   // 变更 69：还没传上服务器的手动课音频。不等它 —— 一本书上百 MB，启动不该被它拖住；
   // 它自己单飞、幂等，失败了下一次 syncNow 再扫到。
   void uploadPendingAudio().catch((err: unknown) => console.warn('[audio] 扫描上传失败', err));
+  // FR-22.3：速背词库顺手问一次有没有新版 —— 手机在有网时拿到，地铁里才练得了。
+  // 失败不抛（refreshWordbank 自己吞），同样不等它。
+  //
+  // **只在登录了的时候**：接口本身不要求登录，但这里是「启动 / 回前台」这条路，
+  // 而这条路上别的东西全都先看登录 —— 没登录的设备一启动就去敲服务器，
+  // e2e 当场抓到过（本机构建的 origin 不在服务器的跨域白名单里，控制台多一条红字）。
+  // 没登录的设备照样能拿到词库：打开速背页那一刻 DrillPage 自己会问。
+  if (await getSessionToken()) void refreshWordbank();
 }
 
 /**

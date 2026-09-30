@@ -15,6 +15,7 @@ import { Button, Disclosure, EmptyState, Hint, field } from '@/components/ui';
 import { DictLookup } from './vocab/DictLookup';
 import { PresetPanel } from './vocab/PresetPanel';
 import { ZhPanel } from './vocab/ZhPanel';
+import { DrillEntryCard } from './DrillPage';
 import { explainWithAi } from '@/ai/explain';
 import { syncVocabNow } from '@/sync/trigger';
 import type { VocabEntry } from '@/types/models';
@@ -115,6 +116,9 @@ export function VocabPage() {
       </div>
 
       <DictLookup />
+
+      {/* FR-22 速背：查词下面、预置词库上面（§12.21） */}
+      <DrillEntryCard />
 
       <PresetPanel />
 

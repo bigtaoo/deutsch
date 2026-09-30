@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileAudioStore, type AudioStore } from './audioStore.ts';
+import { buildWordbank, type LoadedWordbank } from './wordbank/wordbank.ts';
 
 const SECRET = new TextEncoder().encode('0123456789abcdef0123456789abcdef');
 
@@ -67,9 +68,19 @@ function memoryDiag() {
   };
 }
 
-function setup(overrides: { ai?: AiExplainer; diag?: ReturnType<typeof memoryDiag>['sink']; audio?: AudioStore } = {}) {
+function setup(
+  overrides: { ai?: AiExplainer; diag?: ReturnType<typeof memoryDiag>['sink']; audio?: AudioStore; wordbank?: LoadedWordbank } = {},
+) {
   const store = new Store(':memory:');
-  const app = createApp({ store, config, verifyGoogleIdToken, ai: overrides.ai, diag: overrides.diag, audio: overrides.audio });
+  const app = createApp({
+    store,
+    config,
+    verifyGoogleIdToken,
+    ai: overrides.ai,
+    diag: overrides.diag,
+    audio: overrides.audio,
+    wordbank: overrides.wordbank,
+  });
   return { store, app };
 }
 
@@ -506,5 +517,41 @@ describe('手动导入的课的音频（变更 69）', () => {
     });
     expect(res.headers.get('access-control-allow-methods')).toContain('HEAD');
     expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('range');
+  });
+});
+
+describe('GET /v1/wordbank（FR-22.2）', () => {
+  const wordbank = buildWordbank([
+    { topic: 'wohnen', text: ['Kaution\tnoun\tf\t押金\t-', 'entkalken\tverb\t-\t除水垢\t-'].join('\n') },
+  ]);
+
+  it('不要求登录，直接给整份词库', async () => {
+    const { app } = setup({ wordbank });
+    const res = await app.request('/v1/wordbank');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { version: string; items: { id: string; zh: string }[] };
+    expect(body.version).toBe(wordbank.version);
+    expect(body.items.map((i) => i.id)).toEqual(['kaution', 'entkalken']);
+  });
+
+  it('带着同一个版本来问 → 只回 unchanged，不重发整份', async () => {
+    const { app } = setup({ wordbank });
+    const res = await app.request('/v1/wordbank?have=' + wordbank.version);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ unchanged: true, version: wordbank.version });
+  });
+
+  it('版本对不上（服务器上的词库更新过）→ 给新的整份', async () => {
+    const { app } = setup({ wordbank });
+    const res = await app.request('/v1/wordbank?have=old');
+    const body = (await res.json()) as { unchanged?: boolean; items?: unknown[] };
+    expect(body.unchanged).toBeUndefined();
+    expect(body.items).toHaveLength(2);
+  });
+
+  it('没配词库 → 503，不是 401', async () => {
+    const { app } = setup();
+    const res = await app.request('/v1/wordbank');
+    expect(res.status).toBe(503);
   });
 });

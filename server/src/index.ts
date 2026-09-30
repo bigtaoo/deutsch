@@ -11,6 +11,7 @@ import { createJobQueue } from './align/jobs.ts';
 import { createAiExplainer } from './ai.ts';
 import { createFileDiagSink } from './diag.ts';
 import { createFileAudioStore } from './audioStore.ts';
+import { DEFAULT_WORDBANK_DIR, loadWordbankDir } from './wordbank/wordbank.ts';
 
 const config = loadConfig();
 const store = new Store(join(config.dataDir, 'sync.sqlite'));
@@ -39,6 +40,14 @@ const align = config.align.enabled
     })()
   : undefined;
 
+// 速背词库（FR-22.2）：启动时读一次。读坏了不拦启动 —— 同步是本职，词库只是搭车的。
+let wordbank: ReturnType<typeof loadWordbankDir> | undefined;
+try {
+  wordbank = loadWordbankDir(DEFAULT_WORDBANK_DIR);
+} catch (err) {
+  console.error('[deutsch-sync] 速背词库读取失败：', err);
+}
+
 const app = createApp({
   store,
   config,
@@ -54,6 +63,7 @@ const app = createApp({
   diag: createFileDiagSink(join(config.dataDir, 'diag')),
   // 手动导入的课的音频（变更 69）。同样无条件开：它只在有人上传时才占盘，上限在 config.audio。
   audio: createFileAudioStore(join(config.dataDir, 'audio'), config.audio),
+  wordbank,
 });
 
 const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' }, (info) => {
@@ -66,6 +76,10 @@ const server = serve({ fetch: app.fetch, port: config.port, hostname: '0.0.0.0' 
         : '关'),
   );
   console.log('[deutsch-sync] AI 补充解释：' + (config.ai.apiKey ? `开（${config.ai.model}）` : '关'));
+  console.log(
+    '[deutsch-sync] 速背词库：' +
+      (wordbank ? `${wordbank.count} 个词（版本 ${wordbank.version}，跳过坏行 ${wordbank.skipped}）` : '关'),
+  );
 });
 
 function shutdown(signal: string): void {

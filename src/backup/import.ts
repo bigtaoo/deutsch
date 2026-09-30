@@ -10,6 +10,7 @@ import { getAllLessons, putLesson } from '@/db/lessons';
 import { getAllVocabEntries, putVocabEntry } from '@/db/vocab';
 import { getSettings, putSettings } from '@/db/meta';
 import { getStudyLog, putStudyLog } from '@/study/log';
+import { getDrillState, mergeDrillStates, normalizeDrillState, putDrillState } from '@/drill/state';
 import { buildBackupJson } from './export';
 import { mergeBackup } from './merge';
 import type { BackupFile, MergeResult } from './types';
@@ -20,13 +21,14 @@ export interface PreparedImport {
 }
 
 export async function prepareImport(incoming: BackupFile): Promise<PreparedImport> {
-  const [safetySnapshot, localLessons, localVocab, localSettings, localStudyLog] =
+  const [safetySnapshot, localLessons, localVocab, localSettings, localStudyLog, localDrill] =
     await Promise.all([
       buildBackupJson(),
       getAllLessons(),
       getAllVocabEntries(),
       getSettings(),
       getStudyLog(),
+      getDrillState(),
     ]);
 
   // 设置也参与合并（§0 变更 28）。**这以前是个缺口**：备份文件里一直带着 settings，
@@ -41,6 +43,13 @@ export async function prepareImport(incoming: BackupFile): Promise<PreparedImpor
     },
   );
 
+  // 速背（FR-22.11）不进 mergeBackup：它的合并是逐键比 ts，与那几样都不一样（同 sync/restore.ts）。
+  if (incoming.drill) {
+    const { merged, changed } = mergeDrillStates(localDrill, normalizeDrillState(incoming.drill));
+    result.drill = merged;
+    result.summary.drillUpdated = changed;
+  }
+
   return { safetySnapshot, result };
 }
 
@@ -52,6 +61,7 @@ export async function commitImport(result: MergeResult): Promise<void> {
     // 而那个字段正是同步比新旧的键。
     ...(result.settings && result.summary.settingsUpdated ? [putSettings(result.settings)] : []),
     ...(result.studyLog && result.summary.studyUpdated ? [putStudyLog(result.studyLog)] : []),
+    ...(result.drill && result.summary.drillUpdated ? [putDrillState(result.drill)] : []),
   ]);
 }
 

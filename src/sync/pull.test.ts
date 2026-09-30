@@ -307,3 +307,38 @@ describe('状态可见性', () => {
     expect(persisted?.lastPullAt).toBeGreaterThanOrEqual(before);
   });
 });
+
+describe('速背（FR-22.11）', () => {
+  it('逐键合并：远端背过的词写进本地，本地背过的留着并要求回推', async () => {
+    const { emptyDrillState, getDrillState, putDrillState, withProgress } = await import('@/drill/state');
+    const { newCard } = await import('@/srs/fsrs');
+    await putDrillState(withProgress(emptyDrillState(), 'word', 'kaution', newCard(), 100));
+    const remote = withProgress(emptyDrillState(), 'audio', 'probezeit', newCard(), 200);
+
+    routeFetch({
+      [DOC_LIST]: () => json(200, { docs: [{ id: 'drill', version: 4, updatedAt: 1, bytes: 10 }] }),
+      '/v1/docs/drill': () => json(200, { id: 'drill', version: 4, updatedAt: 1, body: remote }),
+    });
+
+    const result = await pullFromServer();
+    expect(result.drillWritten).toBe(true);
+    expect(result.drillNeedsPush).toBe(true);
+    const local = await getDrillState();
+    expect(Object.keys(local.progress).sort()).toEqual(['audio:probezeit', 'word:kaution']);
+    expect(await getKnownVersion('drill')).toBe(4);
+  });
+
+  it('远端那份是坏形状 → 当空的合并，本地一条不丢', async () => {
+    const { emptyDrillState, getDrillState, putDrillState, withProgress } = await import('@/drill/state');
+    const { newCard } = await import('@/srs/fsrs');
+    await putDrillState(withProgress(emptyDrillState(), 'word', 'kaution', newCard(), 100));
+    routeFetch({
+      [DOC_LIST]: () => json(200, { docs: [{ id: 'drill', version: 1, updatedAt: 1, bytes: 10 }] }),
+      '/v1/docs/drill': () => json(200, { id: 'drill', version: 1, updatedAt: 1, body: 'garbage' }),
+    });
+    const result = await pullFromServer();
+    expect(result.failures).toHaveLength(0);
+    expect((await getDrillState()).progress['word:kaution']).toBeDefined();
+    expect(result.drillNeedsPush).toBe(true);
+  });
+});

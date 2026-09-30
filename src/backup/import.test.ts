@@ -152,3 +152,31 @@ describe('设置也走导入（§0 变更 28 补上的缺口）', () => {
     expect(stored.updatedAt).toBe(300);
   });
 });
+
+describe('速背（FR-22.11）跟着备份走', () => {
+  it('导出带上 drill；导入到另一台设备上逐键合并，本机已有的进度不丢', async () => {
+    const { buildBackupJson } = await import('./export');
+    const { emptyDrillState, getDrillState, putDrillState, withMark, withProgress } = await import('@/drill/state');
+    const { newCard } = await import('@/srs/fsrs');
+
+    await putDrillState(withMark(emptyDrillState(), 'kaution', { flagged: true, zh: '租房押金' }, 100));
+    const exported = await buildBackupJson();
+    expect(exported.drill?.marks.kaution.zh).toBe('租房押金');
+
+    // 另一台设备：自己背过别的词
+    await putDrillState(withProgress(emptyDrillState(), 'audio', 'probezeit', newCard(), 50));
+    const result = await importBackup(exported);
+    expect(result.summary.drillUpdated).toBe(true);
+    const after = await getDrillState();
+    expect(after.marks.kaution.zh).toBe('租房押金');
+    expect(after.progress['audio:probezeit']).toBeDefined();
+  });
+
+  it('老备份文件没有 drill 这一项 → 本机的速背状态原样留着', async () => {
+    const { emptyDrillState, getDrillState, putDrillState, withMark } = await import('@/drill/state');
+    await putDrillState(withMark(emptyDrillState(), 'x', { flagged: true }, 1));
+    const result = await importBackup(backupWith([]));
+    expect(result.summary.drillUpdated).toBeUndefined();
+    expect((await getDrillState()).marks.x.flagged).toBe(true);
+  });
+});

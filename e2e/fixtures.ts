@@ -349,3 +349,38 @@ export function timedLessonBackup(
     settings: { ...testSettings(now), ...opts.settings },
   };
 }
+
+/**
+ * FR-22 速背：只带「我加的」五个词的备份（drill.custom）。
+ *
+ * 不靠服务器上的词库：CI 的构建没配同步服务器，词库那条路在那里根本不会发请求；
+ * 而本机构建配了线上服务器，spec 里会把 `/v1/wordbank` 拦成 503，免得真去拉六千个词。
+ * 「我加的」这一类正好走的是同一个池子、同一套出题，而且顺手验了备份 → 速背这条路。
+ */
+export function drillBackup(now = Date.now()): BackupFile {
+  const words: Array<[string, 'm' | 'f' | 'n', string]> = [
+    ['Kaution', 'f', '押金'],
+    ['Vermieter', 'm', '房东'],
+    ['Umzug', 'm', '搬家'],
+    ['Makler', 'm', '中介'],
+    ['Grundriss', 'm', '户型图'],
+  ];
+  const custom = Object.fromEntries(
+    words.map(([w, g, zh], i) => [`u:${w.toLowerCase()}`, { id: `u:${w.toLowerCase()}`, w, p: 'noun' as const, g, zh, ts: now + i }]),
+  );
+  return {
+    _warning: 'Contains copyrighted text. Local backup only. Do not share.',
+    formatVersion: 1,
+    exportedAt: now,
+    lessons: [],
+    vocab: [],
+    settings: testSettings(now),
+    drill: {
+      progress: {},
+      custom,
+      marks: {},
+      prefs: { mode: 'word', roundSize: 10, categories: ['daily', 'work', 'it', 'mine'], ts: now },
+      updatedAt: now,
+    },
+  };
+}

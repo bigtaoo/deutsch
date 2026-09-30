@@ -17,6 +17,7 @@ import type { AiExplainer, AiGlossItem } from './ai.ts';
 const GLOSS_MAX_ITEMS = 40;
 import type { DiagSink } from './diag.ts';
 import { AudioRejected, SHA256_RE, type AudioStore } from './audioStore.ts';
+import type { LoadedWordbank } from './wordbank/wordbank.ts';
 
 /** 文档 id 直接进 URL 路径，字符集收紧到「课程 id 用得到的那些」。 */
 const DOC_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -59,6 +60,11 @@ export interface AppDeps {
    * 客户端退回「每台设备自己选一次文件」（变更 69 之前的样子）。
    */
   audio?: AudioStore;
+  /**
+   * 速背词库（FR-22.2）。**同样可以整块缺席** —— 没给就回 503，
+   * 客户端退回手上那一份（或说清「词库还没下载」）。
+   */
+  wordbank?: LoadedWordbank;
   /** 测试里可以拨快时钟。 */
   now?: () => number;
 }
@@ -125,6 +131,17 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
       serveWeights(deps.weightsDir!, c.req.path.slice(prefix.length), c.req.header('range')),
     );
   }
+
+  // ── 速背词库（FR-22.2，不要求登录）─────────────────────────────────────
+  // 与权重站同一类：公开、没有任何个人数据，没登录的新设备也该能练。
+  // 同样**必须注册在会话中间件之前**。客户端带着手上那一版的 version 来问，
+  // 没变就只回一行 —— 六千个词的 JSON 不该每次打开页面都下一遍。
+  app.get('/v1/wordbank', (c) => {
+    const wb = deps.wordbank;
+    if (!wb) return c.json({ error: '这台服务器没有配速背词库' }, 503);
+    if (c.req.query('have') === wb.version) return c.json({ unchanged: true, version: wb.version });
+    return c.body(wb.json, 200, { 'Content-Type': 'application/json; charset=utf-8' });
+  });
 
   app.post('/v1/auth/google', async (c) => {
     const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
