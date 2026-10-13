@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FOLLOW_MARGIN, followScrollTarget } from './followScroll';
+import { FOLLOW_MARGIN, LIFT_THRESHOLD, followScrollTarget, pageLiftTarget } from './followScroll';
 
 // iPhone 13：60vh ≈ 506px
 const BOX = 506;
@@ -91,5 +91,23 @@ describe('followScrollTarget', () => {
     const base = { boxHeight: BOX, rowTop: 1000, rowHeight: 900, word: null };
     expect(followScrollTarget({ ...base, scrollTop: 0, lineChanged: true })).toBe(1000 - FOLLOW_MARGIN);
     expect(followScrollTarget({ ...base, scrollTop: 988, lineChanged: false })).toBeNull();
+  });
+});
+
+describe('pageLiftTarget', () => {
+  it('框在半屏以下：整页往上推到框顶贴着导航下沿', () => {
+    expect(pageLiftTarget({ boxTop: 420, topInset: 100, scrollY: 0 })).toBe(420 - 100 - FOLLOW_MARGIN);
+  });
+
+  it('已经滑过一些：在当前位置上接着推', () => {
+    expect(pageLiftTarget({ boxTop: 300, topInset: 100, scrollY: 150 })).toBe(150 + 300 - 100 - FOLLOW_MARGIN);
+  });
+
+  it('差得不多就不动，免得页面抖一下', () => {
+    expect(pageLiftTarget({ boxTop: 100 + FOLLOW_MARGIN + LIFT_THRESHOLD, topInset: 100, scrollY: 0 })).toBeNull();
+  });
+
+  it('框已经在上面（人滑到下面看笔记去了）：不往回拉', () => {
+    expect(pageLiftTarget({ boxTop: -400, topInset: 100, scrollY: 900 })).toBeNull();
   });
 });

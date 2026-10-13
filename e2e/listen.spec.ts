@@ -135,3 +135,29 @@ test('跟随播放遇到比框还高的段落：行首在框里，不是只看�
     )
     .toBe(true);
 });
+
+test('点了播放，整页自己往上推，文本框顶到导航下面（变更 79）', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await seedTimedLesson(page);
+  await page.getByRole('button', { name: '展开文本' }).click();
+  // 夹具只有几句，框撑不满 60vh、页面短到滚不动；真实的一课几十句，框总是顶满的。
+  await page.addStyleTag({ content: 'ol > li { font-size: 40px; }' });
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  // 前提：开播前框顶确实被上面那一摞压在下半截
+  const before = await page.evaluate(() => document.querySelector('ol')!.getBoundingClientRect().top);
+  const navBottom = await page.evaluate(() => document.querySelector('.app-nav')!.getBoundingClientRect().bottom);
+  expect(before - navBottom).toBeGreaterThan(100);
+
+  await page.getByRole('button', { name: '播放', exact: true }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const nav = document.querySelector('.app-nav')!.getBoundingClientRect().bottom;
+        const box = document.querySelector('ol')!.getBoundingClientRect().top;
+        return box - nav;
+      }),
+    )
+    .toBeLessThan(40);
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+});

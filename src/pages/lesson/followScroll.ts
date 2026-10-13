@@ -41,3 +41,26 @@ export function followScrollTarget(input: FollowInput): number | null {
   }
   return lineChanged ? base : null;
 }
+
+// 点了播放，整页也要动一下：课程页顶上那一摞（标题、简介、对齐状态、tab 条、按钮行）
+// 在手机上能占掉半屏，文本框只露出下半截 —— 不往上推一把，每次都得自己先滑一下才看得见。
+// 只往上推（框在目标位置下面才动），不往回拉：人已经滑到笔记那儿去了，
+// 点播放不该把他拽回来。
+
+/** 框顶离目标位置不到这么多就不动 —— 差几像素也滚一下只会让页面抖。 */
+export const LIFT_THRESHOLD = 24;
+
+export interface LiftInput {
+  /** 框顶在视口里的位置（getBoundingClientRect().top） */
+  boxTop: number;
+  /** 视口顶上被吸顶导航占掉的高度（没有就是 0） */
+  topInset: number;
+  /** 页面现在滚到哪儿（window.scrollY） */
+  scrollY: number;
+}
+
+/** 返回整页该滚到的 scrollY；null = 不用动。 */
+export function pageLiftTarget({ boxTop, topInset, scrollY }: LiftInput): number | null {
+  const delta = boxTop - topInset - FOLLOW_MARGIN;
+  return delta > LIFT_THRESHOLD ? scrollY + delta : null;
+}

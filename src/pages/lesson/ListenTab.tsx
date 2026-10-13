@@ -12,7 +12,7 @@
 // 一帧里真正变的只有「上一行」和「当前行」两行。
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLessonAudio, useAudioTime } from '@/audio/useLessonAudio';
+import { useLessonAudio, useAudioPlaying, useAudioTime } from '@/audio/useLessonAudio';
 import { audioPlayer } from '@/audio/player';
 import { flaggedByConfidence, toggleTimingChecked } from '@/align/apply';
 import { activeAt, buildKaraoke, type KaraokeLine } from '@/lesson/karaoke';
@@ -21,7 +21,7 @@ import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
 import { AudioBar } from '@/components/AudioBar';
 import { LessonNotes } from './LessonNotes';
-import { followScrollTarget } from './followScroll';
+import { followScrollTarget, pageLiftTarget } from './followScroll';
 import { Button, Hint } from '@/components/ui';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -95,6 +95,28 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
     });
     if (top !== null) box.scrollTo({ top, behavior: 'smooth' });
   }, [follow, paused, activeLine, activeToken]);
+
+  // 开始播放（或者播着的时候展开文本）时把整页往上推，让框顶贴着导航下沿 —— 见 pageLiftTarget。
+  // 每次开播只推一次：播着的时候人自己滑走了，是他要看别处，不跟他抢。
+  const playing = useAudioPlaying();
+  const lifted = useRef(false);
+  useEffect(() => {
+    if (!playing) {
+      lifted.current = false;
+      return;
+    }
+    if (!expanded || !follow || lifted.current) return;
+    lifted.current = true;
+    const box = boxRef.current;
+    if (!box) return;
+    const nav = document.querySelector('.app-nav')?.getBoundingClientRect();
+    const top = pageLiftTarget({
+      boxTop: box.getBoundingClientRect().top,
+      topInset: nav ? Math.max(0, nav.bottom) : 0,
+      scrollY: window.scrollY,
+    });
+    if (top !== null) window.scrollTo({ top, behavior: 'smooth' });
+  }, [playing, expanded, follow]);
 
   // 展开、或者重新打开跟随时，忘掉「已经滚过哪一行」—— 否则当前行正好等于上次滚到的那行时
   // 会一动不动，用户点了「跟随播放」却看不见任何反应。
@@ -195,39 +217,43 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
         </Hint>
       )}
 
-      {expanded && (
-        <ol
-          ref={boxRef}
-          onWheel={pause}
-          onTouchMove={pause}
-          className="relative max-h-[60vh] space-y-1 overflow-y-auto rounded-box border border-line bg-raised p-3"
-        >
-          {lines.map((line) => (
-            <Line
-              key={line.index}
-              line={line}
-              number={numbers.get(line.index)}
-              speaker={lesson.sentences[line.index]?.speaker}
-              translation={showTranslation ? lesson.sentences[line.index]?.translation : undefined}
-              check={
-                flagged.pending.has(line.index)
-                  ? 'pending'
-                  : flagged.checked.has(line.index)
-                    ? 'checked'
-                    : null
-              }
-              onConfirm={confirm}
-              state={line.index === activeLine ? (active!.inside ? 'current' : 'just-read') : 'idle'}
-              activeToken={line.index === activeLine ? active!.token : null}
-              onSeek={seek}
-              register={register}
-            />
-          ))}
-        </ol>
-      )}
+      {/* 展开时从框顶往下至少一屏高：pageLiftTarget 要把框推到导航下沿，页面不够长时浏览器会把
+          滚动夹在底部，框只上去一半（短课、或简介很短的课都会这样）。 */}
+      <div className={expanded ? 'min-h-[100dvh] space-y-3' : 'space-y-3'}>
+        {expanded && (
+          <ol
+            ref={boxRef}
+            onWheel={pause}
+            onTouchMove={pause}
+            className="relative max-h-[60vh] space-y-1 overflow-y-auto rounded-box border border-line bg-raised p-3"
+          >
+            {lines.map((line) => (
+              <Line
+                key={line.index}
+                line={line}
+                number={numbers.get(line.index)}
+                speaker={lesson.sentences[line.index]?.speaker}
+                translation={showTranslation ? lesson.sentences[line.index]?.translation : undefined}
+                check={
+                  flagged.pending.has(line.index)
+                    ? 'pending'
+                    : flagged.checked.has(line.index)
+                      ? 'checked'
+                      : null
+                }
+                onConfirm={confirm}
+                state={line.index === activeLine ? (active!.inside ? 'current' : 'just-read') : 'idle'}
+                activeToken={line.index === activeLine ? active!.token : null}
+                onSeek={seek}
+                register={register}
+              />
+            ))}
+          </ol>
+        )}
 
-      {/* FR-20：笔记在通听页底部 —— 写和读是同一件事的两半，不该分到两个地方去。 */}
-      <LessonNotes lesson={lesson} />
+        {/* FR-20：笔记在通听页底部 —— 写和读是同一件事的两半，不该分到两个地方去。 */}
+        <LessonNotes lesson={lesson} />
+      </div>
 
       <AudioBar
         audio={audio}
