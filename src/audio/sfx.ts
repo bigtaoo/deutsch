@@ -13,18 +13,31 @@
 // （排上去的音会在 resume 之后立刻响，不丢），但在真机上验证时发现 WKWebView
 // 不认这一套——在 suspended 的上下文里 start() 排的音，resume 之后并不会响，
 // 静默丢在原地（没有报错，因为整个模块的失败出口本来就是「不抛不提示」）。
-// 网页上正常、手机上没声音，根子就在这一行「先后」顺序上。
 //
-// ── 失败一律静默 ──
-// 这个模块里没有一件事值得让复习页报错：没有 AudioContext（jsdom、老 WebView）、
-// 取不到文件、解不出来 —— 结果都只是「这一下没声音」。所以每个出口都是 return，
-// 不抛，也不往界面上写一个字。
+// ── 不只是 suspended：还有 interrupted 和 closed（变更 80）──
+// 变更 51 只处理了 `suspended`。但 WebKit 在 iOS 上还有一个非标准的 `interrupted`：
+// 音频会话被别人动过（课文的 `<audio>` 一开一停、来电、切后台）之后，上下文停在
+// 这一档。复习页偏偏就是「刚放完一句德语 → 马上点选项」，旧代码看到不是
+// suspended 就直接 start()，排进一个不在跑的上下文里 —— 和变更 51 一模一样的
+// 静默丢失，只是换了个状态名。现在的规矩是：**不是 running 就先 resume**；
+// `closed`（系统回收）就扔掉重建，AudioBuffer 不绑上下文，解码好的三声照用。
+//
+// ── 每一次点击都顺手叫醒 ──
+// 「答对 / 答错」是 120ms 之后从 setTimeout 里响的，那时已经不在手势里了。
+// 所以在 document 上挂一个捕获阶段的 touchend / click：任何一次点击，只要上下文
+// 不在跑，就趁着手势 resume 一下。
+//
+// ── 失败静默，但留痕 ──
+// 这个模块里没有一件事值得让复习页报错，所以每个出口仍然是 return、不抛、
+// 不往界面上写字。但「静默」正是它在真机上两次「修好了」都没人说得清卡在哪的原因，
+// 所以每一次响、每一次没响都在内存里记一笔（`sfxStatus()`），设置页的诊断报告
+// 会带上它 —— 下一次真机没声音，报告里写着停在哪一步。
 //
 // ── 静音开关 ──
 // WebKit 把「只有 Web Audio 在响」归成环境音，跟着静音开关走（课文的 `<audio>` 不受影响）。
 // 所以每次响之前都声明一次 playback 会话，见 session.ts。
 
-import { preferPlaybackSession } from './session';
+import { currentSessionType, preferPlaybackSession } from './session';
 
 /** 三个音效。名字是用途，不是文件名 —— 换音效只改 FILES 那张表。 */
 export type SfxName = 'tap' | 'right' | 'wrong';
@@ -41,12 +54,35 @@ const FILES: Record<SfxName, string> = {
  */
 const GAIN = 0.55;
 
+/**
+ * resume 最多等多久。iOS 上被打断的上下文，resume 的 promise 可能一直不 settle
+ * （「永不 settle」在这个项目里已经咬过好几次）。等不到就算这一声没了 ——
+ * 迟到一秒半的「答对」音已经对不上它要确认的那个动作。
+ */
+const RESUME_TIMEOUT_MS = 1500;
+
+/** 内存里最多留多少笔。 */
+const MAX_EVENTS = 20;
+
 type Ctor = new () => AudioContext;
 
 let ctx: AudioContext | null = null;
 let gain: GainNode | null = null;
 const buffers = new Map<SfxName, AudioBuffer>();
 let preloading: Promise<void> | null = null;
+let resuming: Promise<boolean> | null = null;
+let unlockInstalled = false;
+const events: string[] = [];
+const bootAt = Date.now();
+
+function note(text: string): void {
+  events.push(`+${((Date.now() - bootAt) / 1000).toFixed(1)}s ${text}`);
+  if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS);
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+}
 
 function contextCtor(): Ctor | null {
   const g = globalThis as unknown as { AudioContext?: Ctor; webkitAudioContext?: Ctor };
@@ -54,6 +90,13 @@ function contextCtor(): Ctor | null {
 }
 
 function audioContext(): AudioContext | null {
+  // 被系统回收的上下文再也起不来，只能换一个新的。
+  if (ctx && ctx.state === 'closed') {
+    note('上下文已 closed，重建');
+    ctx = null;
+    gain = null;
+    resuming = null;
+  }
   if (ctx) return ctx;
   const Ctor = contextCtor();
   if (!Ctor) return null;
@@ -63,11 +106,66 @@ function audioContext(): AudioContext | null {
     gain = ctx.createGain();
     gain.gain.value = GAIN;
     gain.connect(ctx.destination);
-  } catch {
+    note(`建上下文 state=${ctx.state}`);
+  } catch (e) {
+    note(`建上下文失败 ${errorText(e)}`);
     ctx = null;
     gain = null;
   }
   return ctx;
+}
+
+/**
+ * 让上下文跑起来。同一时刻只有一趟 resume 在飞，后来的人等同一个结果。
+ * **必须同步地从手势里调到这里**（iOS 只认手势当下发起的 resume）。
+ */
+function ensureRunning(context: AudioContext): Promise<boolean> {
+  if (context.state === 'running') return Promise.resolve(true);
+  if (resuming) return resuming;
+  const from = context.state;
+  let attempt: Promise<void>;
+  try {
+    attempt = context.resume();
+  } catch (e) {
+    note(`resume 抛错 ${errorText(e)}`);
+    return Promise.resolve(false);
+  }
+  const p = new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      note(`resume 超时（${from} → ${context.state}）`);
+      resolve(false);
+    }, RESUME_TIMEOUT_MS);
+    attempt.then(
+      () => {
+        clearTimeout(timer);
+        note(`resume ${from} → ${context.state}`);
+        resolve(context.state === 'running');
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        note(`resume 被拒（${from}）${errorText(e)}`);
+        resolve(false);
+      },
+    );
+  });
+  resuming = p;
+  void p.then(() => {
+    if (resuming === p) resuming = null;
+  });
+  return p;
+}
+
+/** 任何一次点击都趁着手势把上下文叫醒（见模块头「每一次点击都顺手叫醒」）。 */
+function installWakeOnTap(): void {
+  if (unlockInstalled || typeof document === 'undefined') return;
+  unlockInstalled = true;
+  const wake = (): void => {
+    if (!ctx || ctx.state === 'running' || ctx.state === 'closed') return;
+    preferPlaybackSession();
+    void ensureRunning(ctx);
+  };
+  document.addEventListener('touchend', wake, { capture: true, passive: true });
+  document.addEventListener('click', wake, { capture: true });
 }
 
 /** 走 `BASE_URL` 而不是写死 `/`：原生壳里的 base 由构建决定（和 share/photos.ts 同一条）。 */
@@ -85,18 +183,27 @@ function sfxUrl(name: SfxName): string {
 export function preloadSfx(): Promise<void> {
   preloading ??= (async () => {
     const context = audioContext();
-    if (!context) return;
+    if (!context) {
+      note('没有 AudioContext');
+      return;
+    }
+    installWakeOnTap();
     await Promise.all(
       (Object.keys(FILES) as SfxName[]).map(async (name) => {
         try {
           const res = await fetch(sfxUrl(name));
-          if (!res.ok) return;
+          if (!res.ok) {
+            note(`取 ${name} 失败 HTTP ${res.status}`);
+            return;
+          }
           buffers.set(name, await context.decodeAudioData(await res.arrayBuffer()));
-        } catch {
+        } catch (e) {
           // 这一个音效没有了，另外两个照常。
+          note(`取/解码 ${name} 失败 ${errorText(e)}`);
         }
       }),
     );
+    note(`预取完 ${buffers.size}/3`);
   })();
   return preloading;
 }
@@ -106,30 +213,78 @@ export function preloadSfx(): Promise<void> {
  *
  * 还没预取完就调是正常情况（点得比 fetch 快）：那一下没声音，不排队补 ——
  * 一个迟到 400ms 的「答对」音已经对不上它要确认的那个动作了。
+ * 但上下文照样趁这次手势叫醒，后面那声「答对」就有得响。
  */
 export function playSfx(name: SfxName): void {
   const context = audioContext();
-  const buffer = buffers.get(name);
-  const destination = gain;
-  if (!context || !destination || !buffer) return;
+  if (!context) return;
   preferPlaybackSession();
+  const woke = context.state === 'running' ? null : ensureRunning(context);
+  const buffer = buffers.get(name);
+  if (!buffer) {
+    note(`${name}：还没取到，跳过`);
+    return;
+  }
   const start = (): void => {
+    const destination = gain;
+    if (!destination || ctx !== context) return;
     try {
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(destination);
       source.start();
-    } catch {
-      // 上下文被系统回收了（iOS 长时间后台）之类 —— 下一次点击会重新 resume。
+      note(`${name}：响 state=${context.state} 会话=${currentSessionType() ?? '无API'}`);
+    } catch (e) {
+      // 上下文被系统回收了（iOS 长时间后台）之类 —— 下一次点击会重建。
+      note(`${name}：start 失败 ${errorText(e)}`);
     }
   };
-  // 必须等 resume 真的 resolve 了再 start——WKWebView 上，suspended 的上下文
-  // 里排的音在 resume 之后不会响，是静默丢失，不是晚到（见上面模块头的注释）。
-  if (context.state === 'suspended') {
-    void context.resume().then(start).catch(() => {});
-  } else {
+  // 必须等上下文真的在跑了再 start——WKWebView 上，不在跑的上下文里排的音
+  // 之后不会响，是静默丢失，不是晚到（见上面模块头的注释）。
+  if (!woke) {
     start();
+    return;
   }
+  void woke.then((ok) => {
+    if (ok) start();
+    else note(`${name}：上下文没叫醒（${context.state}），这一声没了`);
+  });
+}
+
+/**
+ * 设置页「试听」用：**从点击处理器里同步调**，趁手势把上下文建好并叫醒，
+ * 之后再去预取、再 playSfx —— 不然第一次点试听时文件还没取，手势就白白过去了。
+ */
+export function wakeSfx(): void {
+  const context = audioContext();
+  if (!context) return;
+  installWakeOnTap();
+  preferPlaybackSession();
+  if (context.state !== 'running') void ensureRunning(context);
+}
+
+/** 最近一笔记录，给「试听」按钮旁边那行字用。 */
+export function lastSfxEvent(): string | null {
+  return events.at(-1) ?? null;
+}
+
+/** 给诊断报告用：音效这条链此刻的样子，加上最近几次响 / 没响的原因。 */
+export interface SfxStatus {
+  hasAudioContext: boolean;
+  state: string;
+  loaded: SfxName[];
+  session: string;
+  events: string[];
+}
+
+export function sfxStatus(): SfxStatus {
+  return {
+    hasAudioContext: contextCtor() !== null,
+    state: ctx?.state ?? '还没建',
+    loaded: [...buffers.keys()],
+    session: currentSessionType() ?? '无 navigator.audioSession',
+    events: [...events],
+  };
 }
 
 /** 只给测试用：把模块状态清回没初始化过的样子。 */
@@ -138,4 +293,6 @@ export function resetSfxForTests(): void {
   gain = null;
   buffers.clear();
   preloading = null;
+  resuming = null;
+  events.length = 0;
 }

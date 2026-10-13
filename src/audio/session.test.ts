@@ -31,6 +31,27 @@ describe('audio session', () => {
     expect(fake.type).toBe('playback');
   });
 
+  // 变更 80：同一个类别再写一遍，WebKit 可能当成一次会话变更、把在跑的上下文打断。
+  it('已经是 playback 时不再写', () => {
+    let writes = 0;
+    let value = 'playback';
+    Object.defineProperty(navigator, 'audioSession', {
+      value: {
+        get type() {
+          return value;
+        },
+        set type(v: string) {
+          writes += 1;
+          value = v;
+        },
+      },
+      configurable: true,
+    });
+    preferPlaybackSession();
+    preferPlaybackSession();
+    expect(writes).toBe(0);
+  });
+
   it('没有 Audio Session API 的环境什么都不做、不抛', () => {
     delete (navigator as unknown as { audioSession?: unknown }).audioSession;
     expect(() => preferPlaybackSession()).not.toThrow();

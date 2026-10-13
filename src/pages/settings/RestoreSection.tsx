@@ -12,6 +12,7 @@ import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useStudyStore } from '@/state/useStudyStore';
 import { Banner, Button, Hint, Note, Section, field } from '@/components/ui';
+import { lastSfxEvent, playSfx, preloadSfx, wakeSfx } from '@/audio/sfx';
 
 const DRILL_META_KEY = 'lastRestoreDrillAt';
 const DRILL_INTERVAL_MS = 365 * 86_400_000;
@@ -178,6 +179,31 @@ export function StudySettingsSection() {
         />
         复习时的音效（点选项、答对、答错）
       </label>
+      {settings.soundEffects && <SfxTrial />}
     </Section>
+  );
+}
+
+/**
+ * 试听一声「答对」。变更 80：音效在 iPhone 上前后修了三次都没人能当场确认响没响 ——
+ * 复习页里要先有到期卡、再答一题才听得到。这里点一下就知道，旁边那行字说的是
+ * 这一下走到了哪一步（同一份记录也在诊断报告里）。
+ */
+function SfxTrial() {
+  const [result, setResult] = useState<string | null>(null);
+  const tryIt = () => {
+    // 手势当下先把上下文叫醒，再去取文件 —— 顺序反过来，手势就过去了。
+    wakeSfx();
+    setResult('…');
+    void preloadSfx().then(() => {
+      playSfx('right');
+      window.setTimeout(() => setResult(lastSfxEvent() ?? '没有任何记录'), 1700);
+    });
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button onClick={tryIt}>试听</Button>
+      {result && <Hint>{result}</Hint>}
+    </div>
   );
 }

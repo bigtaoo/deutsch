@@ -41,6 +41,7 @@ import { consoleLines, type ConsoleLine } from './consoleTap';
 import { getSessionToken } from '@/sync/session';
 import { syncFetch } from '@/sync/client';
 import { isSyncConfigured } from '@/sync/config';
+import { sfxStatus, type SfxStatus } from '@/audio/sfx';
 
 /** 逐个试一遍的那组方法。**必须全是只读的** —— 自检不该改变这台设备上的任何状态。 */
 const READONLY_METHODS = [
@@ -166,6 +167,8 @@ export interface DeviceReport {
   /** 诊断自己写 localStorage 失败过没有。`null` = 没失败过。
    *  有值时上面那两份「上次…」里存储的那一半不可信，内存那一半才算数。 */
   storageWriteError: string | null;
+  /** 音效这条链的状态与最近几笔（变更 80）。旧报告里没有这一项。 */
+  sfx?: SfxStatus;
   console: ConsoleLine[];
 }
 
@@ -188,6 +191,7 @@ export async function collectDeviceReport(selfTest: MethodOutcome[]): Promise<De
     lastCheck: readLastCheckLog(),
     appReady: readAppReadyLog(),
     storageWriteError: readStorageWriteError(),
+    sfx: sfxStatus(),
     console: consoleLines().slice(-MAX_REPORT_LINES),
   };
 }
@@ -235,6 +239,14 @@ export function reportToText(report: DeviceReport): string {
   );
   if (report.storageWriteError) lines.push(`localStorage 写失败过：${report.storageWriteError}`);
   lines.push('');
+  if (report.sfx) {
+    const x = report.sfx;
+    lines.push(
+      `音效：AudioContext ${x.hasAudioContext ? '有' : '没有'} · 状态 ${x.state} · 已取到 ${x.loaded.join('、') || '（无）'} · 会话 ${x.session}`,
+    );
+    for (const e of x.events) lines.push(`  ${e}`);
+    lines.push('');
+  }
   lines.push(`原生日志（最近 ${report.console.length} 行）：`);
   for (const l of report.console) lines.push(`  [${l.level}] ${l.text}`);
   return lines.join('\n');

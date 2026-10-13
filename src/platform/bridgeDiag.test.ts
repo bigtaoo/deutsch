@@ -126,6 +126,13 @@ describe('collectDeviceReport / reportToText', () => {
     expect(text).toContain('getPluginVersion → ok');
     expect(text).toContain('App.getInfo → ok');
   });
+
+  // 变更 80：音效在 iPhone 上修了三次都说不清卡在哪 —— 报告里要有它的那一段。
+  it('报告带上音效链的状态', async () => {
+    const report = await collectDeviceReport([]);
+    expect(report.sfx).toBeDefined();
+    expect(reportToText(report)).toMatch(/音效：AudioContext/);
+  });
 });
 
 describe('sendDeviceReport', () => {

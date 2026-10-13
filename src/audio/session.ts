@@ -32,8 +32,16 @@ function setType(type: AudioSessionType): void {
 
 /** 建 AudioContext 之前调：静音开关不再掐掉 Web Audio。录音中不动它。 */
 export function preferPlaybackSession(): void {
-  if (session()?.type === 'play-and-record') return;
+  const current = session()?.type;
+  // 录音中不动它；已经是 playback 也不再写 —— 同一个类别再写一遍，WebKit 那边
+  // 可能当成一次会话变更，把正在跑的 AudioContext 打成 interrupted（变更 80）。
+  if (current === 'play-and-record' || current === 'playback') return;
   setType('playback');
+}
+
+/** 给诊断用：此刻声明的会话类别；没有这个 API 时是 null。 */
+export function currentSessionType(): string | null {
+  return session()?.type ?? null;
 }
 
 /** 开麦克风之前调。 */
