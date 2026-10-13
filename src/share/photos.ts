@@ -1,12 +1,13 @@
 // FR-18.4：分享图的底图。
 //
-// 六张 CC0 照片，已经按 4:5（1080×1350）裁好、压成 WebP，一共约 1.2MB，
+// 二十六张 CC0 照片（变更 78 从六张加到二十六张，不只风景：夜景、书房、动物、星空都有），
+// 已经按 4:5（1080×1350）裁好、压成 WebP，一共约 4MB，
 // 随包走 —— 生成分享图这件事必须在离线时也成立。作者与出处在
 // `public/share/photos/CREDITS.md`：CC0 不要求署名，但拿了别人的东西总该说得出
 // 它是谁的。**换图要同时改三处**，那份清单的末尾写着是哪三处。
 //
 // 不做「用户自选照片」：那要处理任意尺寸、任意方向、EXIF 旋转、以及一张亮到
-// 看不清白字的照片。这是个人自用工具，六张够用。
+// 看不清白字的照片。这是个人自用工具，挑过的二十六张够用。
 
 export interface SharePhoto {
   id: string;
@@ -21,6 +22,26 @@ export const SHARE_PHOTOS: SharePhoto[] = [
   { id: 'heide', label: '吕讷堡石南' },
   { id: 'herbstwald', label: '秋天的山毛榉林' },
   { id: 'lindau-nebel', label: '雾中的林道港' },
+  { id: 'tuebingen-nacht', label: '图宾根夜色' },
+  { id: 'frankfurt-skyline', label: '法兰克福夜景' },
+  { id: 'muenchen-lichtspuren', label: '慕尼黑光轨' },
+  { id: 'prunksaal-wien', label: '维也纳图书馆' },
+  { id: 'antiquarium-muenchen', label: '慕尼黑古物厅' },
+  { id: 'abbotsford-bibliothek', label: '旧书房' },
+  { id: 'kaffeebohnen', label: '咖啡豆' },
+  { id: 'kerze', label: '烛光' },
+  { id: 'sterne-see', label: '湖中星空' },
+  { id: 'sternenberge', label: '星空下的山' },
+  { id: 'polarlicht', label: '林梢极光' },
+  { id: 'nordlicht-spiegel', label: '极光倒影' },
+  { id: 'fuchs-wald', label: '春林里的狐狸' },
+  { id: 'qualle', label: '水母' },
+  { id: 'uhu', label: '雕鸮' },
+  { id: 'marienkaefer', label: '瓢虫' },
+  { id: 'zitronenfalter', label: '钩粉蝶' },
+  { id: 'herbstblatt', label: '雨后落叶' },
+  { id: 'wellen-island', label: '冰岛海浪' },
+  { id: 'kettenbruecke', label: '链子桥夜色' },
 ];
 
 /**

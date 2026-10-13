@@ -237,7 +237,16 @@ export async function renderShareCard(
   });
 }
 
-/** 画一张并拿到 PNG。PNG 而不是 JPEG：字的边缘不该有压缩噪点。 */
+/**
+ * 画一张并拿到 JPEG（质量 0.9）。原来是 PNG，理由是「字的边缘不该有压缩噪点」——
+ * 但图的九成面积是照片，PNG 对照片几乎压不动：一张 1.3~2.3MB，分享一次就是这么多流量。
+ * 底图本身已经是有损 WebP，再用无损格式存它只是把损失过的像素原样搬大；
+ * JPEG 0.9 一张 300~700KB，白字压在暗底上肉眼看不出差别（变更 78 实测）。
+ * 不用 WebP：微信、相册、各家聊天软件对 JPEG 的兼容是确定的。
+ */
+export const SHARE_CARD_MIME = 'image/jpeg';
+export const SHARE_CARD_QUALITY = 0.9;
+
 export async function renderShareCardBlob(data: ShareCardData): Promise<Blob> {
   const canvas = document.createElement('canvas');
   await renderShareCard(canvas, data);
@@ -245,6 +254,6 @@ export async function renderShareCardBlob(data: ShareCardData): Promise<Blob> {
     canvas.toBlob((blob) => {
       if (blob) resolve(blob);
       else reject(new Error('生成图片失败'));
-    }, 'image/png');
+    }, SHARE_CARD_MIME, SHARE_CARD_QUALITY);
   });
 }

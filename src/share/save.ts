@@ -18,7 +18,7 @@ function blobToBase64(blob: Blob): Promise<string> {
     const reader = new FileReader();
     reader.onload = () => {
       const result = String(reader.result);
-      // data:image/png;base64,XXXX —— Capacitor 的 Filesystem 只要逗号后面那一段
+      // data:image/jpeg;base64,XXXX —— Capacitor 的 Filesystem 只要逗号后面那一段
       resolve(result.slice(result.indexOf(',') + 1));
     };
     reader.onerror = () => reject(new Error('读取图片数据失败'));
@@ -45,7 +45,7 @@ export async function shareCardImage(blob: Blob, filename: string): Promise<Shar
     return 'native-share';
   }
 
-  const file = new File([blob], filename, { type: 'image/png' });
+  const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
   // canShare({files}) 必须问 —— 桌面 Chrome 有 navigator.share 却分享不了文件，
   // 不问就会在那里抛一个 TypeError，而用户看到的是「分享失败」。
   if (navigator.canShare?.({ files: [file] })) {
@@ -68,7 +68,7 @@ export async function shareCardImage(blob: Blob, filename: string): Promise<Shar
   return 'browser-download';
 }
 
-/** `努力学德语-2026-09-15.png`。日期在文件名里，存进相册之后还能看出是哪天的。 */
+/** `努力学德语-2026-09-15.jpg`。日期在文件名里，存进相册之后还能看出是哪天的。 */
 export function shareCardFileName(dateKey: string): string {
-  return `努力学德语-${dateKey}.png`;
+  return `努力学德语-${dateKey}.jpg`;
 }

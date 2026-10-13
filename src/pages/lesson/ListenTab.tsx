@@ -21,6 +21,7 @@ import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
 import { AudioBar } from '@/components/AudioBar';
 import { LessonNotes } from './LessonNotes';
+import { followScrollTarget } from './followScroll';
 import { Button, Hint } from '@/components/ui';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -71,18 +72,29 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
     else rows.current.delete(index);
   }, []);
 
-  // 当前行停在框高的三分之一处，不是正中间：往下要留出还没读到的那几句（眼睛往前扫着走），
-  // 往上只需要留得下刚读过的一两句。滚的是这个框自己（offsetTop 相对它，因为它是 relative），
+  // 滚到哪儿见 followScroll.ts（普通行停在框高三分之一处；比框高三分之二还高的段落行首贴顶、
+  // 念出框外再翻页）。滚的是这个框自己（offsetTop 相对它，因为它是 relative），
   // 不用 scrollIntoView —— 那个会把整页也一起带着跳。
   const scrolled = useRef<number | null>(null);
+  const activeToken = active?.token ?? null;
   useEffect(() => {
-    if (!follow || paused || activeLine === null || scrolled.current === activeLine) return;
+    if (!follow || paused || activeLine === null) return;
+    const lineChanged = scrolled.current !== activeLine;
     scrolled.current = activeLine;
     const box = boxRef.current;
     const row = rows.current.get(activeLine);
     if (!box || !row) return;
-    box.scrollTo({ top: row.offsetTop - box.clientHeight / 3 + row.clientHeight / 2, behavior: 'smooth' });
-  }, [follow, paused, activeLine]);
+    const word = activeToken === null ? null : row.querySelector<HTMLElement>('[data-active]');
+    const top = followScrollTarget({
+      boxHeight: box.clientHeight,
+      scrollTop: box.scrollTop,
+      rowTop: row.offsetTop,
+      rowHeight: row.offsetHeight,
+      word: word ? { top: word.offsetTop, height: word.offsetHeight } : null,
+      lineChanged,
+    });
+    if (top !== null) box.scrollTo({ top, behavior: 'smooth' });
+  }, [follow, paused, activeLine, activeToken]);
 
   // 展开、或者重新打开跟随时，忘掉「已经滚过哪一行」—— 否则当前行正好等于上次滚到的那行时
   // 会一动不动，用户点了「跟随播放」却看不见任何反应。

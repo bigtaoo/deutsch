@@ -97,3 +97,41 @@ test('没有时间戳的课不假装高亮，而是说清楚为什么（FR-5.2�
   // 播着也一个词都不亮 —— 伪同步是这一页明确不做的事
   await expect(page.locator('[data-active]')).toHaveCount(0);
 });
+
+test('跟随播放遇到比框还高的段落：行首在框里，不是只看得见段尾（变更 78）', async ({ page }) => {
+  // iPhone 13 的视口：框是 60vh ≈ 506px
+  await page.setViewportSize({ width: 390, height: 844 });
+  await seedTimedLesson(page);
+  await page.getByRole('button', { name: '展开文本' }).click();
+
+  // 把第三句撑成一大段（教材那种一段一行的课）：字号放大到这一行比框高还高
+  await page.addStyleTag({ content: 'ol > li:nth-child(3) { font-size: 90px; line-height: 1.2; }' });
+  const tall = await page.evaluate(() => {
+    const box = document.querySelector('ol')!;
+    const row = box.children[2] as HTMLElement;
+    return row.offsetHeight > box.clientHeight;
+  });
+  expect(tall).toBe(true);
+
+  // 从第一句的词跳进第三句的第二个词：换行 → 行首应当贴着框顶
+  await page.getByText('Herbst', { exact: true }).click();
+  await expect(page.locator('li.bg-warn-soft')).toContainText('Im Herbst');
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+
+  // smooth 滚动要时间：轮询到「行首在框内、当前词也在框内」为止
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const box = document.querySelector('ol')!.getBoundingClientRect();
+        const row = document.querySelector('li.bg-warn-soft')!.getBoundingClientRect();
+        const word = document.querySelector('[data-active]')!.getBoundingClientRect();
+        return (
+          row.top >= box.top - 1 &&
+          row.top < box.top + 40 &&
+          word.top >= box.top &&
+          word.bottom <= box.bottom
+        );
+      }),
+    )
+    .toBe(true);
+});
