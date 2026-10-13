@@ -2697,6 +2697,12 @@ Android 那条仍未跑过。
       还原成旧写法验证过第一条会红（报的是 `rgb(251, 241, 224)`，`--color-warn-soft` 的色值）
 - [x] `e2e/listen.spec.ts` 又加两条（变更 78 / 79，390×844 视口）：一行撑得比框还高时跟随播放行首在框里；
       **点了播放整页自己往上推，框顶到导航下沿**（去掉 `window.scrollTo` 那一行即红，报的是 256px）
+- [x] `sfx.test.ts` / `session.test.ts` / `bridgeDiag.test.ts` +7 条（变更 80）：`interrupted` 也先 resume、
+      等真的在跑了才 start（还原成只认 `suspended` 即红：没 resume 就同步排进去了）；resume 永不 settle 时
+      这一声放弃并记下原因；同时点两下只发一趟 resume；`closed` 时重建；还没取到文件时照样叫醒；
+      已是 `playback` 不再写会话；诊断报告带「音效：」一段。**fake 的 resume 带真实延迟**（见变更 54 的教训）
+- [ ] **真机（变更 80）**：设置页「试听」在静音开关关 / 开两种情况下各点一次，都要响；
+      没响就发诊断，看「音效：」一段停在哪 —— 没有 `navigator.audioSession` 时静音那一半得改走原生、要出包
 - [x] `fixtures.ts` 新增 `timedLessonBackup(lessonId)`：音频（缓存层）与词级时间戳
       （标注层）分属两层，只能「先导入带 WAV 的一课拿 id、再用备份把时间戳盖上去」；
       走「课程页选本地音频」那条会顺手 `enqueueAlign()`，而 E2E 里没有对齐服务器
