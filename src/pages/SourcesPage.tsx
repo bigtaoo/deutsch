@@ -10,7 +10,9 @@ import { getMeta, putMeta } from '@/db/meta';
 import { SOURCES, type SourceDefinition } from '@/sources/registry';
 import { fetchCourse, fetchFeed, parseLessonId, type FeedItem } from '@/sources/dw/adapter';
 import { acceptNewManuscript, importFromDw, rehydrateLesson, type ImportProgress } from '@/sources/importLesson';
-import { backfillRecent, BACKFILL_LIMITS, type BackfillProgress } from '@/sources/backfill';
+import { backfillRecent, BACKFILL_LIMITS, SEASON_IMPORT_MAX, type BackfillProgress } from '@/sources/backfill';
+import { queueLessonTranslation } from '@/ai/translate';
+import { ChunkTabs, CHUNK_SIZE } from '@/components/ChunkTabs';
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { hasTimings } from '@/align/apply';
@@ -88,13 +90,8 @@ export function SourcesPage() {
             <Hint>
               抓取于 {new Date(feed.fetchedAt).toLocaleString('zh-CN', { hour12: false })} · {feed.items.length} 期
             </Hint>
-            <FeedList items={feed.items} series={source.name} importedIds={importedIds} />
-            <BackfillPanel
-              items={feed.items}
-              importedIds={importedIds}
-              series={source.name}
-              serial={Boolean(source.courseUrl)}
-            />
+            <FeedList items={feed.items} source={source} importedIds={importedIds} />
+            <BackfillPanel items={feed.items} importedIds={importedIds} source={source} />
           </>
         ) : (
           <EmptyState>还没有列表。点「刷新列表」拉一次。</EmptyState>
@@ -144,10 +141,11 @@ function importProgressText(progress: ImportProgress): string {
 /**
  * 剧集（课程页列表，变更 81）按季折叠：一百多集平铺着，「下一集在哪」要滚好几屏才找得到。
  * 默认只展开「还有没导的」第一季 —— 那里就是接着往下看的地方。RSS 列表没有季，照旧平铺。
+ * 季里面再按 11 集一页（变更 82 / §12.22），默认翻到这一季第一集没导的那一页。
  */
-function FeedList({ items, series, importedIds }: { items: FeedItem[]; series: string; importedIds: ReadonlySet<string> }) {
+function FeedList({ items, source, importedIds }: { items: FeedItem[]; source: SourceDefinition; importedIds: ReadonlySet<string> }) {
   const row = (item: FeedItem) => (
-    <FeedRow key={item.lessonId} item={item} series={series} imported={importedIds.has(item.lessonId)} />
+    <FeedRow key={item.lessonId} item={item} source={source} imported={importedIds.has(item.lessonId)} />
   );
   const seasons = new Map<string, FeedItem[]>();
   for (const item of items) {
@@ -163,14 +161,20 @@ function FeedList({ items, series, importedIds }: { items: FeedItem[]; series: s
           summary={`${season} · 已导 ${list.filter((i) => importedIds.has(i.lessonId)).length}/${list.length}`}
           defaultOpen={season === current}
         >
-          <ul className="divide-y divide-line">{list.map(row)}</ul>
+          <SeasonImport items={list} importedIds={importedIds} source={source} />
+          <ChunkTabs
+            items={list}
+            defaultIndex={Math.floor(Math.max(0, list.findIndex((i) => !importedIds.has(i.lessonId))) / CHUNK_SIZE)}
+          >
+            {(page) => <ul className="divide-y divide-line">{page.map(row)}</ul>}
+          </ChunkTabs>
         </Disclosure>
       ))}
     </div>
   );
 }
 
-function FeedRow({ item, series, imported }: { item: FeedItem; series: string; imported: boolean }) {
+function FeedRow({ item, source, imported }: { item: FeedItem; source: SourceDefinition; imported: boolean }) {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const enqueueAlign = useAlignStore((s) => s.enqueue);
@@ -178,10 +182,12 @@ function FeedRow({ item, series, imported }: { item: FeedItem; series: string; i
   const run = async () => {
     setResult(null);
     try {
-      const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined, series, item.group);
+      const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined, source.name, item.group);
       // FR-15：音频一到位就立刻排对齐 —— 「下载完就能直接练」是它存在的理由。
       // 不等它跑完：几分钟的活儿不该把导入按钮和这一页钉在原地。
       if (outcome.hasAudio) enqueueAlign(outcome.lessonId);
+      // 变更 82：中译同理，排进后台队列，没登录就静默不做
+      if (source.autoTranslate) void queueLessonTranslation([outcome.lessonId]);
       const notes = [
         outcome.audioError ? `音频没抓到（${outcome.audioError}），文本已导入，可稍后补齐或手动选文件` : null,
       ].filter(Boolean);
@@ -367,6 +373,91 @@ function RehydratePanel() {
 }
 
 /**
+ * 一批串行导入（「往下导 N 集」与「导入这一季」共用）。每导完一集就排对齐、
+ * 该来源要中译就排中译 —— 不等整批结束：整季 33 集要十几分钟，导完一集就该能开始练那一集。
+ */
+function useBatchImport(source: SourceDefinition) {
+  const [progress, setProgress] = useState<BackfillProgress | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const stopRef = useRef(false);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
+  const unit = source.courseUrl ? '集' : '期';
+
+  const run = async (items: FeedItem[], importedIds: ReadonlySet<string>, limit: number) => {
+    stopRef.current = false;
+    setResult(null);
+    const pending = items.filter((i) => !importedIds.has(i.lessonId)).length;
+    setProgress({ index: 0, total: Math.min(limit, pending), title: '' });
+    const outcome = await backfillRecent({
+      items,
+      importedIds,
+      limit,
+      series: source.name,
+      onProgress: setProgress,
+      shouldStop: () => stopRef.current,
+      importOne: async (...args) => {
+        const one = await importFromDw(...args);
+        // FR-15：与逐期导入同一条规矩 —— 音频到位就排对齐（变更 81 以前回填漏了这一步）
+        if (one.hasAudio) enqueueAlign(one.lessonId);
+        if (source.autoTranslate) void queueLessonTranslation([one.lessonId]);
+        return one;
+      },
+    });
+    setProgress(null);
+    const parts = [`导入 ${outcome.imported.length} ${unit}`];
+    if (outcome.withoutAudio.length) parts.push(`其中 ${outcome.withoutAudio.length} ${unit}没拿到音频（课程已建，可稍后补齐）`);
+    if (outcome.failed.length) parts.push(`${outcome.failed.length} ${unit}失败：${outcome.failed.map((f) => f.title).join('、')}`);
+    if (outcome.stopped) parts.push('（你停下的）');
+    setResult(parts.join('，') + '。');
+  };
+
+  const status = progress && (
+    <>
+      <span className="text-ui text-muted">
+        第 {progress.index}/{progress.total} {unit}
+        {progress.step ? `（${{ page: '取文稿', audio: '取音频', saving: '落库', done: '完成' }[progress.step]}）` : ''}
+        {progress.title ? ` · ${progress.title.slice(0, 28)}` : ''}
+      </span>
+      <Button variant="danger" onClick={() => { stopRef.current = true; }}>
+        停
+      </Button>
+    </>
+  );
+
+  return { busy: progress !== null, result, run, status, unit };
+}
+
+/**
+ * 变更 82：剧集一季一键导完。他按 33 集一个阶段学 —— 「往下导 10 集」点三次再补三集是纯摩擦。
+ * 与 R-3 的关系写在 `src/sources/backfill.ts` 头部「整季导入」一段。
+ */
+function SeasonImport({ items, importedIds, source }: { items: FeedItem[]; importedIds: ReadonlySet<string>; source: SourceDefinition }) {
+  const batch = useBatchImport(source);
+  const pending = items.filter((i) => !importedIds.has(i.lessonId)).length;
+  if (!source.courseUrl || items.length > SEASON_IMPORT_MAX) return null;
+  if (pending === 0 && !batch.result) return null;
+  return (
+    <div className="mb-2 space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        {pending > 0 && (
+          <Button variant="primary" disabled={batch.busy} onClick={() => void batch.run(items, importedIds, pending)}>
+            {pending === items.length ? `导入这一季 ${pending} 集` : `导入这一季剩下的 ${pending} 集`}
+          </Button>
+        )}
+        {batch.status}
+      </div>
+      {!batch.busy && pending > 0 && (
+        <Hint>
+          一集一集串行地导，导一集十来秒；导完的那一集马上开始对齐{source.autoTranslate ? '、加中译（要登录同步）' : ''}。
+          可以随时停，停在集与集之间。
+        </Hint>
+      )}
+      {batch.result && <Hint tone="ok">{batch.result}</Hint>}
+    </div>
+  );
+}
+
+/**
  * FR-13.12：回填最近几期。冷启动用 —— 一次导几期旧刊，
  * 它们的 Glossar 候选词（FR-14）就是一批**带真语料**的生词：
  * 有德德释义、有语境句、有真人朗读。FR-17 的预置词库这三样都给不了。
@@ -377,46 +468,16 @@ function RehydratePanel() {
 function BackfillPanel({
   items,
   importedIds,
-  series,
-  serial = false,
+  source,
 }: {
   items: FeedItem[];
   importedIds: ReadonlySet<string>;
-  series: string;
-  /** 剧集：列表是播出顺序，「回填最近几期」其实是「接着往下导几集」（变更 81） */
-  serial?: boolean;
+  source: SourceDefinition;
 }) {
-  const [progress, setProgress] = useState<BackfillProgress | null>(null);
-  const [result, setResult] = useState<string | null>(null);
-  const stopRef = useRef(false);
-  const enqueueAlign = useAlignStore((s) => s.enqueue);
-
+  const batch = useBatchImport(source);
+  /** 剧集：列表是播出顺序，「回填最近几期」其实是「接着往下导几集」（变更 81） */
+  const serial = Boolean(source.courseUrl);
   const pending = items.filter((i) => !importedIds.has(i.lessonId)).length;
-
-  const run = async (limit: number) => {
-    stopRef.current = false;
-    setResult(null);
-    setProgress({ index: 0, total: Math.min(limit, pending), title: '' });
-    const outcome = await backfillRecent({
-      items,
-      importedIds,
-      limit,
-      series,
-      onProgress: setProgress,
-      shouldStop: () => stopRef.current,
-    });
-    setProgress(null);
-    // FR-15：与逐期导入同一条规矩 —— 音频到位就排对齐。以前回填漏了这一步，导进来的课
-    // 要一课一课点进去手动对齐（变更 81 顺手补上；队列串行，十集排着慢慢算）。
-    const noAudio = new Set(outcome.withoutAudio);
-    for (const id of outcome.imported) if (!noAudio.has(id)) enqueueAlign(id);
-    const unit = serial ? '集' : '期';
-    const parts = [`导入 ${outcome.imported.length} ${unit}`];
-    if (outcome.withoutAudio.length) parts.push(`其中 ${outcome.withoutAudio.length} ${unit}没拿到音频（课程已建，可稍后补齐）`);
-    if (outcome.failed.length) parts.push(`${outcome.failed.length} ${unit}失败：${outcome.failed.map((f) => f.title).join('、')}`);
-    if (outcome.stopped) parts.push('（你停下的）');
-    setResult(parts.join('，') + '。');
-  };
 
   if (pending === 0) {
     return <Hint>列表里的{serial ? '集数' : '期次'}都已经导入过了。</Hint>;
@@ -427,7 +488,7 @@ function BackfillPanel({
       <p className="text-ui">
         <b>{serial ? '接着往下导' : '回填最近几期'}</b>
         <span className="ml-2 text-muted">
-          列表里还有 {pending} {serial ? '集' : '期'}没导入
+          列表里还有 {pending} {batch.unit}没导入
         </span>
       </p>
       <Hint>
@@ -436,31 +497,21 @@ function BackfillPanel({
       </Hint>
       <div className="flex flex-wrap items-center gap-2">
         {BACKFILL_LIMITS.map((n) => (
-          <Button key={n} disabled={progress !== null} onClick={() => void run(n)}>
+          <Button key={n} disabled={batch.busy} onClick={() => void batch.run(items, importedIds, n)}>
             {serial ? `往下导 ${n} 集` : `回填 ${n} 期`}
           </Button>
         ))}
-        {progress && (
-          <>
-            <span className="text-ui text-muted">
-              第 {progress.index}/{progress.total} 期
-              {progress.step ? `（${{ page: '取文稿', audio: '取音频', saving: '落库', done: '完成' }[progress.step]}）` : ''}
-              {progress.title ? ` · ${progress.title.slice(0, 28)}` : ''}
-            </span>
-            <Button variant="danger" onClick={() => { stopRef.current = true; }}>
-              停
-            </Button>
-          </>
-        )}
+        {batch.status}
       </div>
       <Disclosure summary="它到底会做什么">
         <p className="text-note text-muted">
           串行、每次出网间隔 ≥ 1 秒，只从上面这份已拉到的列表里取 —— 不翻页、不爬归档。
-          <b>没有「全部」这个选项</b>，最多 {Math.max(...BACKFILL_LIMITS)} 期。
+          <b>没有「全部」这个选项</b>，最多 {Math.max(...BACKFILL_LIMITS)} {batch.unit}
+          {serial ? '；整季导入在每一季里面，一次只导一季' : ''}。
           「停」会停在期与期之间，不留半篇课程。
         </p>
       </Disclosure>
-      {result && <Hint tone="ok">{result}</Hint>}
+      {batch.result && <Hint tone="ok">{batch.result}</Hint>}
     </div>
   );
 }

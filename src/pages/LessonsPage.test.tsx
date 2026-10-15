@@ -439,3 +439,19 @@ describe('组头：重复的空课一键删', () => {
     expect(screen.queryByRole('button', { name: /^删掉这/ })).toBeNull();
   });
 });
+
+describe('组里 11 课一页（变更 82 / §12.22）', () => {
+  it('只有一季的剧集 33 集：三页，各页互不重叠；选的页按组名记在本机', () => {
+    const ids = Array.from({ length: 33 }, (_, i) => i + 1);
+    seed(ids.map((n) => lesson(`j${n}`, `Staffel 1 · ${String(n).padStart(2, '0')} Folge`, 'DW Jojo sucht das Glück')));
+    render(<LessonsPage />);
+    const group = details('DW Jojo sucht das Glück');
+    expect(within(group).getByRole('button', { name: '1–11' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(group).getByText('Staffel 1 · 11 Folge')).toBeInTheDocument();
+    expect(within(group).queryByText('Staffel 1 · 12 Folge')).toBeNull();
+    fireEvent.click(within(group).getByRole('button', { name: '23–33' }));
+    expect(within(group).getByText('Staffel 1 · 33 Folge')).toBeInTheDocument();
+    expect(within(group).queryByText('Staffel 1 · 11 Folge')).toBeNull();
+    expect(JSON.parse(store.get('chunkTabs')!)).toEqual({ 'DW Jojo sucht das Glück': 2 });
+  });
+});

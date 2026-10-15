@@ -11,10 +11,12 @@ import { extensionOf, type Engine } from './align/engine.ts';
 import type { JobQueue } from './align/jobs.ts';
 import { MATRIX_CONTENT_TYPE, encodeMatrix } from './align/wire.ts';
 import { serveWeights } from './align/weights.ts';
-import type { AiExplainer, AiGlossItem } from './ai.ts';
+import type { AiExplainer, AiGlossItem, AiTranslateInput } from './ai.ts';
 
 /** FR-9.15：一批的上限。前端按这个切批，改了两边一起改（src/ai/gloss.ts）。 */
 const GLOSS_MAX_ITEMS = 40;
+/** 变更 82：一课一次请求。Jojo 一集 30~70 句，Alltagsdeutsch 一期 60~100 句；超过的由客户端分批。 */
+const TRANSLATE_MAX_LINES = 120;
 import type { DiagSink } from './diag.ts';
 import { AudioRejected, SHA256_RE, type AudioStore } from './audioStore.ts';
 import type { LoadedWordbank } from './wordbank/wordbank.ts';
@@ -389,6 +391,35 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     }
     try {
       return c.json({ glosses: await deps.ai.gloss(items) });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
+    }
+  });
+
+  // ── 一课的逐句中译（变更 82 / FR-19.11）────────────────────────────────
+  //
+  // 与 gloss 同形：一批进、按位置对齐的数组出。句子是课文原文（DW 素材），
+  // 只在这一次请求里过一下模型、不在服务器上落盘 —— 与 §3.1.1 R-1 的关系见 SPEC FR-19.11。
+  app.post('/v1/ai/translate', async (c) => {
+    if (!deps.ai?.translate) {
+      return c.json({ error: '这台服务器没有开 AI 解释（缺 ANTHROPIC_API_KEY）', code: 'ai_off' }, 503);
+    }
+    const payload = (await c.req.json().catch(() => null)) as { lines?: unknown; title?: unknown } | null;
+    const rawLines = payload && Array.isArray(payload.lines) ? payload.lines : null;
+    if (!rawLines || rawLines.length === 0) return c.json({ error: '缺少 lines' }, 400);
+    if (rawLines.length > TRANSLATE_MAX_LINES) return c.json({ error: `一次最多 ${TRANSLATE_MAX_LINES} 句` }, 400);
+    const lines: AiTranslateInput['lines'] = [];
+    for (const it of rawLines) {
+      const r = it && typeof it === 'object' ? (it as Record<string, unknown>) : {};
+      if (typeof r.text !== 'string' || !r.text.trim()) return c.json({ error: 'lines 里有缺 text 的' }, 400);
+      lines.push({
+        text: r.text.trim().slice(0, 1000),
+        ...(typeof r.speaker === 'string' && r.speaker.trim() ? { speaker: r.speaker.trim().slice(0, 60) } : {}),
+      });
+    }
+    const title = typeof payload?.title === 'string' && payload.title.trim() ? payload.title.trim().slice(0, 200) : undefined;
+    try {
+      return c.json({ translations: await deps.ai.translate({ title, lines }) });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'AI 调用失败', code: 'ai_failed' }, 502);
     }

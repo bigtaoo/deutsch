@@ -13,6 +13,11 @@ export interface SourceDefinition {
   adapter: 'dw';
   level: string;
   note?: string;
+  /**
+   * 导进来就在后台让 AI 逐句译成中文（变更 82 / FR-19.11）。只对他点名要中文的来源开：
+   * 没开的来源照旧在译文页手动点「让 AI 译」或粘回来。
+   */
+  autoTranslate?: boolean;
 }
 
 export const SOURCES: SourceDefinition[] = [
@@ -51,6 +56,7 @@ export const SOURCES: SourceDefinition[] = [
     courseUrl: 'https://learngerman.dw.com/de/jojo-sucht-das-gl%C3%BCck/c-53437698',
     adapter: 'dw',
     level: 'B1–B2',
-    note: '剧集，三季 99 集，全是对话；音频从视频里抽，导一集要多等十来秒',
+    note: '剧集，三季 99 集，全是对话；音频从视频里抽，导一集要多等十来秒。登录了同步的话，导完自动加中译',
+    autoTranslate: true,
   },
 ];

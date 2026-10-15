@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { backfillRecent, BACKFILL_LIMITS } from './backfill';
+import { backfillRecent, BACKFILL_LIMITS, SEASON_IMPORT_MAX } from './backfill';
 import type { FeedItem } from './dw/rss';
 
 const item = (id: string): FeedItem => ({
@@ -126,6 +126,11 @@ describe('§3.1.1 R-3 的形状约束', () => {
     // 所以它是需求的一部分，不是随手写的常量 —— 放宽它等于改 SPEC。
     expect(Math.max(...BACKFILL_LIMITS)).toBeLessThanOrEqual(10);
     expect(BACKFILL_LIMITS).not.toContain(Infinity);
+  });
+
+  it('整季导入（变更 82）的上限也是硬的：一季的量，不是整个来源', () => {
+    // Jojo 三季 99 集；上限放到整个来源那么大，就又成了「一键导入全部」
+    expect(SEASON_IMPORT_MAX).toBeLessThanOrEqual(40);
   });
 
   it('只从传进来的 RSS 列表里取 —— 不翻页、不猜 id、不爬归档', async () => {

@@ -28,6 +28,7 @@ import { hasServerAudio, needsUpload } from '@/sync/audio';
 import { emptyDuplicates } from '@/lesson/emptyShell';
 import { isSyncConfigured } from '@/sync/config';
 import type { Lesson } from '@/types/models';
+import { ChunkTabs } from '@/components/ChunkTabs';
 
 export function LessonsPage() {
   const { lessons, loaded } = useLessonStore();
@@ -394,7 +395,12 @@ function CollectionGroup({ name, lessons }: { name: string; lessons: Lesson[] })
           </Note>
         )}
         {message && <Note>{message}</Note>}
-        {loose.length > 0 && <LessonList lessons={loose} />}
+        {loose.length > 0 && (
+          // §12.22：只有一季的剧集（Jojo 第一阶段 33 集）没有章可分，平铺 33 行太长 —— 11 课一页
+          <ChunkTabs items={loose} storageKey={name}>
+            {(page) => <LessonList lessons={page} />}
+          </ChunkTabs>
+        )}
         {chapters.map(([chapter, members]) => (
           <ChapterGroup key={chapter} groupName={name} chapter={chapter} lessons={members} />
         ))}
@@ -424,7 +430,9 @@ function ChapterGroup({ groupName, chapter, lessons }: { groupName: string; chap
         {missing > 0 && <Chip tone="warn">{missing} 课缺音频</Chip>}
       </summary>
       <div className="pt-1 pl-5">
-        <LessonList lessons={lessons} short />
+        <ChunkTabs items={lessons} storageKey={`${groupName} › ${chapter}`}>
+          {(page) => <LessonList lessons={page} short />}
+        </ChunkTabs>
       </div>
     </details>
   );

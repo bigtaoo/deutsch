@@ -89,6 +89,35 @@ describe('gloss（FR-9.15）', () => {
   });
 });
 
+describe('translate（变更 82）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('一课一次请求：说话人、句子、标题都进提示词；整句不按 60 字截断', async () => {
+    const long = '这'.repeat(120);
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ content: [{ type: 'text', text: JSON.stringify(['哇，原来这就是科隆。', long]) }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await createAiExplainer('sk-test', 'model').translate!({
+      title: '1 Die Ankunft',
+      lines: [{ speaker: 'JOJO', text: 'Wow – das ist also Köln.' }, { text: 'Wohin soll es gehen?' }],
+    });
+
+    expect(out).toEqual(['哇，原来这就是科隆。', long]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const prompt = (JSON.parse(init.body as string) as { messages: Array<{ content: string }> }).messages[0].content;
+    expect(prompt).toContain('JOJO');
+    expect(prompt).toContain('Wohin soll es gehen?');
+    expect(prompt).toContain('1 Die Ankunft');
+  });
+
+  it('条数对不上整批作废', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ content: [{ type: 'text', text: '["只有一句"]' }] })));
+    await expect(createAiExplainer('sk-test', 'model').translate!({ lines: [{ text: 'a' }, { text: 'b' }] })).rejects.toThrow('要的是 2 条');
+  });
+});
+
 describe('parseGlossOutput', () => {
   it('容忍前后多话与 ```json 围栏', () => {
     expect(parseGlossOutput('好的：\n```json\n["a", "b"]\n```', 2)).toEqual(['a', 'b']);

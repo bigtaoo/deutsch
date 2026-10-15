@@ -264,13 +264,25 @@ export async function alignLesson(
  * （句级 + 词级都进标注层，见变更 26），服务器那条路上任何一项漏掉，
  * 失败方式都是静默的 —— 界面照样说「对齐完成」，只是词级高亮不动。
  */
-async function saveOutcome(
+export async function saveOutcome(
   lesson: Lesson,
   outcome: AlignOutcome,
   options: AlignLessonOptions,
   report: (p: AlignProgress) => void,
 ): Promise<ApplyResult> {
   report({ stage: 'apply' });
+  // 对齐要跑一两分钟，这期间别的路可能已经改过这一课（变更 82：导完就在后台排 AI 中译，
+  // 译文往往比时间戳先落库）。拿开始时的那份快照写回，会把这段时间写进去的东西整个抹掉；
+  // 所以以**现在**内存里的那份为底 —— 前提是句子没被合并/拆分/改字（否则时间戳对不上，
+  // 只能退回快照，与原来的行为一样）。
+  const latest = useLessonStore.getState().lessons.find((l) => l.id === lesson.id);
+  if (
+    latest &&
+    latest.sentences.length === lesson.sentences.length &&
+    latest.sentences.every((s, i) => s.text === lesson.sentences[i].text)
+  ) {
+    lesson = latest;
+  }
   const applied = applyTimings(lesson.sentences, outcome.sentences, {
     audioDuration: outcome.duration,
     overwriteManual: options.overwriteManual,
