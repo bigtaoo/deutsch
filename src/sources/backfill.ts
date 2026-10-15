@@ -49,6 +49,11 @@ export interface BackfillOptions {
   /** 已经导入过的 dwLessonId */
   importedIds: ReadonlySet<string>;
   limit: number;
+  /**
+   * 来源名（registry 的 name），记成 collection。以前回填没传它，回填进来的 Top-Thema 一律掉进
+   * 「DW Alltagsdeutsch」那一组（变更 81 顺手修）。
+   */
+  series?: string;
   onProgress?: (progress: BackfillProgress) => void;
   /** 每期之间检查一次；返回 true 就停在期与期之间 */
   shouldStop?: () => boolean;
@@ -64,6 +69,7 @@ export async function backfillRecent({
   items,
   importedIds,
   limit,
+  series,
   onProgress,
   shouldStop,
   importOne = importFromDw,
@@ -92,6 +98,8 @@ export async function backfillRecent({
         item.lessonId,
         (p) => onProgress?.({ index: i + 1, total: targets.length, title: item.title, step: p.step }),
         item.link || undefined,
+        series,
+        item.group,
       );
       outcome.imported.push(result.lessonId);
       if (result.audioError) outcome.withoutAudio.push(result.lessonId);

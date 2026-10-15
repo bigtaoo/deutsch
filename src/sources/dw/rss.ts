@@ -17,6 +17,10 @@ export interface FeedItem {
   durationText?: string;
   enclosureUrl?: string;
   enclosureBytes?: number;
+  /** 课程页列表才有（变更 81）：这一集属于哪一季（`Staffel 1`），导入时拼进标题，课程列表按它折叠 */
+  group?: string;
+  /** 课程页列表才有：这一集的学习目标（`Ein Taxi nehmen`），列表里当副标题 */
+  subtitle?: string;
 }
 
 export function parseFeed(xml: string): FeedItem[] {

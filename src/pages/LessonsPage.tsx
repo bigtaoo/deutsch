@@ -13,6 +13,7 @@
 // FR-1.9（2026-09-26）：有分组名的课（教材）收进各自的折叠组，其余照旧平铺在最上面。
 // 2026-09-27：DW 的课也进折叠组（按来源；以前导的没记来源，归「DW Alltagsdeutsch」），
 // 教材组里再按章折叠一层（标题前缀「Kapitel 7 · 」）。
+// 2026-10-15（变更 81）：剧集（Jojo sucht das Glück）按季折叠，同一套，前缀是「Staffel 1 · 」。
 
 import { useMemo, useState } from 'react';
 import { href, lessonHref, navigate } from '@/app/router';
@@ -130,17 +131,19 @@ export function groupLessons(lessons: readonly Lesson[]): {
     .sort(([a], [b]) => collator.compare(a, b))
     .map(([name, list]): [string, Lesson[]] => [
       name,
-      list.every((l) => l.source.type === 'dw')
+      // 剧集（变更 81）虽然也全是 DW，顺序却写在标题里（`Staffel 1 · 3 …`）—— 跟教材一样按标题排
+      list.every((l) => l.source.type === 'dw') && !list.every((l) => CHAPTER_RE.test(l.title))
         ? [...list].sort((a, b) => b.createdAt - a.createdAt)
         : [...list].sort((a, b) => collator.compare(a.title, b.title)),
     ]);
   return { ungrouped, groups };
 }
 
-const CHAPTER_RE = /^(Kapitel \d+) · (.+)$/u;
+const CHAPTER_RE = /^((?:Kapitel|Staffel) \d+) · (.+)$/u;
 
 /**
  * 教材组里按章再分一层：标题是 `sectionTitle()` 生成的「Kapitel 7 · Modul 4 Aufgabe 3」。
+ * 剧集按季分（变更 81）：`importFromDw` 给课程页列表导进来的课拼的是「Staffel 1 · 3 Eine Frau in der WG?」。
  * 不到两章时不分（一章也套一层折叠只是多点一下）；没有章前缀的课放在各章前面。
  * 输入已经按标题自然排好序，章的顺序跟着它走。
  */

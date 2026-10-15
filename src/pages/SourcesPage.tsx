@@ -8,7 +8,7 @@ import { useEffect, useState, useRef } from 'react';
 import { navigate } from '@/app/router';
 import { getMeta, putMeta } from '@/db/meta';
 import { SOURCES, type SourceDefinition } from '@/sources/registry';
-import { fetchFeed, parseLessonId, type FeedItem } from '@/sources/dw/adapter';
+import { fetchCourse, fetchFeed, parseLessonId, type FeedItem } from '@/sources/dw/adapter';
 import { acceptNewManuscript, importFromDw, rehydrateLesson, type ImportProgress } from '@/sources/importLesson';
 import { backfillRecent, BACKFILL_LIMITS, type BackfillProgress } from '@/sources/backfill';
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
@@ -47,13 +47,13 @@ export function SourcesPage() {
     setLoading(true);
     setError(null);
     try {
-      const items = await fetchFeed(source.feedUrl);
+      const items = source.courseUrl ? await fetchCourse(source.courseUrl) : await fetchFeed(source.feedUrl ?? '');
       const cached = { items, fetchedAt: Date.now() };
       await putMeta(feedCacheKey(source.id), cached);
       setFeed(cached);
     } catch (err) {
       // FR-13.9：说清楚失败在哪一步，并且保留已缓存的列表
-      setError(`拉取 RSS 失败：${err instanceof Error ? err.message : err}。已缓存的列表仍可用。`);
+      setError(`拉取列表失败：${err instanceof Error ? err.message : err}。已缓存的列表仍可用。`);
     } finally {
       setLoading(false);
     }
@@ -88,15 +88,16 @@ export function SourcesPage() {
             <Hint>
               抓取于 {new Date(feed.fetchedAt).toLocaleString('zh-CN', { hour12: false })} · {feed.items.length} 期
             </Hint>
-            <ul className="divide-y divide-line">
-              {feed.items.map((item) => (
-                <FeedRow key={item.lessonId} item={item} series={source.name} imported={importedIds.has(item.lessonId)} />
-              ))}
-            </ul>
-            <BackfillPanel items={feed.items} importedIds={importedIds} />
+            <FeedList items={feed.items} series={source.name} importedIds={importedIds} />
+            <BackfillPanel
+              items={feed.items}
+              importedIds={importedIds}
+              series={source.name}
+              serial={Boolean(source.courseUrl)}
+            />
           </>
         ) : (
-          <EmptyState>还没有列表。点「刷新列表」拉一次 RSS。</EmptyState>
+          <EmptyState>还没有列表。点「刷新列表」拉一次。</EmptyState>
         )}
       </Section>
 
@@ -140,6 +141,35 @@ function importProgressText(progress: ImportProgress): string {
   }
 }
 
+/**
+ * 剧集（课程页列表，变更 81）按季折叠：一百多集平铺着，「下一集在哪」要滚好几屏才找得到。
+ * 默认只展开「还有没导的」第一季 —— 那里就是接着往下看的地方。RSS 列表没有季，照旧平铺。
+ */
+function FeedList({ items, series, importedIds }: { items: FeedItem[]; series: string; importedIds: ReadonlySet<string> }) {
+  const row = (item: FeedItem) => (
+    <FeedRow key={item.lessonId} item={item} series={series} imported={importedIds.has(item.lessonId)} />
+  );
+  const seasons = new Map<string, FeedItem[]>();
+  for (const item of items) {
+    if (!item.group) return <ul className="divide-y divide-line">{items.map(row)}</ul>;
+    seasons.set(item.group, [...(seasons.get(item.group) ?? []), item]);
+  }
+  const current = items.find((i) => !importedIds.has(i.lessonId))?.group;
+  return (
+    <div className="space-y-2">
+      {[...seasons.entries()].map(([season, list]) => (
+        <Disclosure
+          key={season}
+          summary={`${season} · 已导 ${list.filter((i) => importedIds.has(i.lessonId)).length}/${list.length}`}
+          defaultOpen={season === current}
+        >
+          <ul className="divide-y divide-line">{list.map(row)}</ul>
+        </Disclosure>
+      ))}
+    </div>
+  );
+}
+
 function FeedRow({ item, series, imported }: { item: FeedItem; series: string; imported: boolean }) {
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -148,7 +178,7 @@ function FeedRow({ item, series, imported }: { item: FeedItem; series: string; i
   const run = async () => {
     setResult(null);
     try {
-      const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined, series);
+      const outcome = await importFromDw(item.lessonId, setProgress, item.link || undefined, series, item.group);
       // FR-15：音频一到位就立刻排对齐 —— 「下载完就能直接练」是它存在的理由。
       // 不等它跑完：几分钟的活儿不该把导入按钮和这一页钉在原地。
       if (outcome.hasAudio) enqueueAlign(outcome.lessonId);
@@ -171,7 +201,8 @@ function FeedRow({ item, series, imported }: { item: FeedItem; series: string; i
       <div className="min-w-0 flex-1">
         <p className="font-medium">{item.title}</p>
         <p className="text-note text-muted">
-          {item.durationText ?? '时长未知'}
+          {item.subtitle ? `${item.subtitle} · ` : ''}
+          {item.durationText ?? (item.subtitle ? '' : '时长未知')}
           {item.enclosureBytes ? ` · ${formatBytes(item.enclosureBytes)}` : ''}
           {' · id '}
           {item.lessonId}
@@ -343,10 +374,22 @@ function RehydratePanel() {
  * **与 R-3 的关系写在 `src/sources/backfill.ts` 头部**，不在这里重复。
  * 界面上只需要三件事到位：期数有上限且没有「全部」、能停、进度看得见。
  */
-function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds: ReadonlySet<string> }) {
+function BackfillPanel({
+  items,
+  importedIds,
+  series,
+  serial = false,
+}: {
+  items: FeedItem[];
+  importedIds: ReadonlySet<string>;
+  series: string;
+  /** 剧集：列表是播出顺序，「回填最近几期」其实是「接着往下导几集」（变更 81） */
+  serial?: boolean;
+}) {
   const [progress, setProgress] = useState<BackfillProgress | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const stopRef = useRef(false);
+  const enqueueAlign = useAlignStore((s) => s.enqueue);
 
   const pending = items.filter((i) => !importedIds.has(i.lessonId)).length;
 
@@ -358,26 +401,34 @@ function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds:
       items,
       importedIds,
       limit,
+      series,
       onProgress: setProgress,
       shouldStop: () => stopRef.current,
     });
     setProgress(null);
-    const parts = [`导入 ${outcome.imported.length} 期`];
-    if (outcome.withoutAudio.length) parts.push(`其中 ${outcome.withoutAudio.length} 期没拿到音频（课程已建，可稍后补齐）`);
-    if (outcome.failed.length) parts.push(`${outcome.failed.length} 期失败：${outcome.failed.map((f) => f.title).join('、')}`);
+    // FR-15：与逐期导入同一条规矩 —— 音频到位就排对齐。以前回填漏了这一步，导进来的课
+    // 要一课一课点进去手动对齐（变更 81 顺手补上；队列串行，十集排着慢慢算）。
+    const noAudio = new Set(outcome.withoutAudio);
+    for (const id of outcome.imported) if (!noAudio.has(id)) enqueueAlign(id);
+    const unit = serial ? '集' : '期';
+    const parts = [`导入 ${outcome.imported.length} ${unit}`];
+    if (outcome.withoutAudio.length) parts.push(`其中 ${outcome.withoutAudio.length} ${unit}没拿到音频（课程已建，可稍后补齐）`);
+    if (outcome.failed.length) parts.push(`${outcome.failed.length} ${unit}失败：${outcome.failed.map((f) => f.title).join('、')}`);
     if (outcome.stopped) parts.push('（你停下的）');
     setResult(parts.join('，') + '。');
   };
 
   if (pending === 0) {
-    return <Hint>列表里的期次都已经导入过了。</Hint>;
+    return <Hint>列表里的{serial ? '集数' : '期次'}都已经导入过了。</Hint>;
   }
 
   return (
     <div className="space-y-2 border-t border-line pt-3">
       <p className="text-ui">
-        <b>回填最近几期</b>
-        <span className="ml-2 text-muted">列表里还有 {pending} 期没导入</span>
+        <b>{serial ? '接着往下导' : '回填最近几期'}</b>
+        <span className="ml-2 text-muted">
+          列表里还有 {pending} {serial ? '集' : '期'}没导入
+        </span>
       </p>
       <Hint>
         每期的 Glossar 候选词能一键接受成生词，那些词带释义、带语境句、带真人朗读。
@@ -386,7 +437,7 @@ function BackfillPanel({ items, importedIds }: { items: FeedItem[]; importedIds:
       <div className="flex flex-wrap items-center gap-2">
         {BACKFILL_LIMITS.map((n) => (
           <Button key={n} disabled={progress !== null} onClick={() => void run(n)}>
-            回填 {n} 期
+            {serial ? `往下导 ${n} 集` : `回填 ${n} 期`}
           </Button>
         ))}
         {progress && (

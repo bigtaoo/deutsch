@@ -6,7 +6,7 @@ import { extractApolloState, ApolloParseError, findKeys } from './apolloState';
 import { manuscriptToText, htmlToPlainText } from './htmlToText';
 import { parseGlossaryTitle } from './glossary';
 import { parseFeed, sortAndDedupe } from './rss';
-import { articleUrl, fetchLesson, LessonNotFoundError, mapSpansToSentences, parseLessonPage, parseLessonId, lessonUrl } from './adapter';
+import { articleUrl, fetchCourse, fetchLesson, joinSpeakerLabels, LessonNotFoundError, mapSpansToSentences, parseCoursePage, parseLessonPage, parseLessonId, lessonUrl } from './adapter';
 import { segmentSentences } from '@/lesson/segment';
 import { createSentences } from '@/lesson/sentences';
 import { FIXTURE_FEED_XML, FIXTURE_LESSON_ID, FIXTURE_PAGE_HTML } from './__fixtures__/lessonPage';
@@ -272,5 +272,123 @@ describe('fetchLesson 只给裸 id 时', () => {
     vi.stubGlobal('fetch', fetchMock);
     await expect(fetchLesson(ARTICLE_ID)).rejects.toThrow('页面请求失败：503');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 变更 81：Jojo sucht das Glück。结构照 2026-10-15 实测页面（台词是编的）：
+// 单集页 `audios: []`、`videos` 挂两条（第二条烧了字幕），文稿说话人标签独占一行。
+const VIDEO_ID = '17395817';
+const videoState = {
+  ROOT_QUERY: {},
+  // state 里的键序故意和引用顺序相反：取哪条要看实体自己的 videos，不看键序
+  'Video:2': { __typename: 'Video', hlsVideoSrc: 'https://hls.invalid/folge01_ut_,sd,.mp4.csmil/master.m3u8', duration: 199 },
+  'Video:1': { __typename: 'Video', hlsVideoSrc: 'https://hls.invalid/folge01_,sd,.mp4.csmil/master.m3u8', duration: 199 },
+  [`Lesson:${VIDEO_ID}`]: {
+    __typename: 'Lesson',
+    name: '1 Die Ankunft',
+    namedUrl: `/de/die-ankunft/l-${VIDEO_ID}`,
+    manuscript:
+      '<p><strong>JOJO:</strong><br />\nWow – das ist also Köln.<br />\n<br />\n<strong>REZA:</strong><br />\nWohin soll es gehen?<br />\n<br />\n<strong>JOJO:</strong><br />\nZur Uni, bitte.</p>',
+    audios: [],
+    videos: [{ __ref: 'Video:1' }, { __ref: 'Video:2' }],
+  },
+};
+const VIDEO_HTML = `<html><script>window.__APOLLO_STATE__=${JSON.stringify(videoState)};</script></html>`;
+
+describe('视频课（变更 81）', () => {
+  const lesson = parseLessonPage(VIDEO_HTML, VIDEO_ID, 'https://example.invalid/l');
+
+  it('没有 Audio 时取实体自己引用的第一条 Video 的 HLS 地址与时长', () => {
+    expect(lesson.audio).toEqual({ mp3Src: 'https://hls.invalid/folge01_,sd,.mp4.csmil/master.m3u8', duration: 199 });
+  });
+
+  it('说话人标签并进台词那一行，切句后每句带上说话人', () => {
+    expect(lesson.speakers).toEqual(['JOJO', 'REZA']);
+    const sentences = segmentSentences(lesson.plainText, { speakers: lesson.speakers });
+    expect(sentences.map((s) => [s.speaker ?? null, s.text])).toEqual([
+      ['JOJO', 'Wow – das ist also Köln.'],
+      ['REZA', 'Wohin soll es gehen?'],
+      ['JOJO', 'Zur Uni, bitte.'],
+    ]);
+  });
+
+  it('缓存里存的 manuscriptHtml 仍是原样（并行只发生在转纯文本这一步）', () => {
+    expect(lesson.manuscriptHtml).toBe(videoState[`Lesson:${VIDEO_ID}`].manuscript);
+  });
+
+  it('音频课的纯文本一个字都不变：有 mp3 时不做说话人并行，也不带 speakers', () => {
+    const audioState = {
+      ...videoState,
+      'Audio:9': { __typename: 'Audio', mp3Src: 'https://cdn.invalid/a.mp3', duration: 60 },
+      [`Lesson:${VIDEO_ID}`]: { ...videoState[`Lesson:${VIDEO_ID}`], audios: [{ __ref: 'Audio:9' }] },
+    };
+    const html = `<script>window.__APOLLO_STATE__=${JSON.stringify(audioState)};</script>`;
+    const got = parseLessonPage(html, VIDEO_ID, 'x');
+    expect(got.audio?.mp3Src).toBe('https://cdn.invalid/a.mp3');
+    expect(got.speakers).toBeUndefined();
+    expect(got.plainText).toBe(manuscriptToText(audioState[`Lesson:${VIDEO_ID}`].manuscript).text);
+  });
+});
+
+describe('joinSpeakerLabels', () => {
+  it('标签后的一个或多个 <br> 换成一个空格，名字去重保序', () => {
+    const got = joinSpeakerLabels('<strong>MARK:</strong><br><br/>Hi.<strong> JOJO : </strong><br />Ja.<strong>MARK:</strong><br />Na?');
+    expect(got.html).toBe('<strong>MARK:</strong> Hi.<strong>JOJO:</strong> Ja.<strong>MARK:</strong> Na?');
+    expect(got.speakers).toEqual(['MARK', 'JOJO']);
+  });
+
+  it('同一行里的粗体（后面不跟换行）不动，也不算说话人', () => {
+    const html = '<p>Das ist <strong>wichtig:</strong> hör zu.</p>';
+    expect(joinSpeakerLabels(html)).toEqual({ html, speakers: [] });
+  });
+});
+
+const COURSE_ID = '53437698';
+const courseState = {
+  ROOT_QUERY: {},
+  [`Course:${COURSE_ID}`]: {
+    __typename: 'Course',
+    'contentLinks({"targetTypes":"LESSON"})': [{ __ref: 'ContentLink:a' }, { __ref: 'ContentLink:b' }, { __ref: 'ContentLink:x' }, { __ref: 'ContentLink:c' }],
+  },
+  'ContentLink:a': { groupName: 'Staffel 1', target: { __ref: 'Lesson:11' } },
+  'ContentLink:b': { groupName: 'Staffel 1', target: { __ref: 'Lesson:12' } },
+  'ContentLink:x': { groupName: 'Staffel 1', target: { __ref: 'Lesson:19' } },
+  'ContentLink:c': { groupName: 'Staffel 2', target: { __ref: 'Lesson:21' } },
+  'Lesson:11': { shortTitle: '1 Die Ankunft', namedUrl: '/de/die-ankunft/l-11', learningTargetHeadline: 'Ein Taxi nehmen' },
+  'Lesson:12': { shortTitle: '2 Jojo aus Brasilien', namedUrl: '/de/jojo/l-12' },
+  'Lesson:19': { shortTitle: '34 Extras: Hinter den Kulissen', namedUrl: '/de/extras/l-19' },
+  'Lesson:21': { shortTitle: '1 Überraschung', namedUrl: '/de/ueberraschung/l-21' },
+};
+const COURSE_HTML = `<script>window.__APOLLO_STATE__=${JSON.stringify(courseState)};</script>`;
+
+describe('parseCoursePage（课程页当列表）', () => {
+  it('按播出顺序列出集数，带季、副标题与页面地址；花絮 Extras 不列', () => {
+    expect(parseCoursePage(COURSE_HTML, COURSE_ID)).toEqual([
+      { lessonId: '11', title: '1 Die Ankunft', link: 'https://learngerman.dw.com/de/die-ankunft/l-11', pubDate: 0, group: 'Staffel 1', subtitle: 'Ein Taxi nehmen' },
+      { lessonId: '12', title: '2 Jojo aus Brasilien', link: 'https://learngerman.dw.com/de/jojo/l-12', pubDate: 0, group: 'Staffel 1' },
+      { lessonId: '21', title: '1 Überraschung', link: 'https://learngerman.dw.com/de/ueberraschung/l-21', pubDate: 0, group: 'Staffel 2' },
+    ]);
+  });
+
+  it('页面里没有这门课时报错，而不是返回空列表', () => {
+    expect(() => parseCoursePage(COURSE_HTML, '1')).toThrow('Course:1');
+  });
+
+  describe('fetchCourse', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('从 c-<id> 地址里取课程 id', async () => {
+      vi.stubGlobal('fetch', async () => new Response(COURSE_HTML));
+      const items = await fetchCourse(`https://learngerman.dw.com/de/jojo-sucht-das-gl%C3%BCck/c-${COURSE_ID}`);
+      expect(items.map((i) => i.lessonId)).toEqual(['11', '12', '21']);
+    });
+
+    it('认不出 id 不发请求；请求失败报状态码', async () => {
+      const fetchMock = vi.fn(async () => new Response('', { status: 404 }));
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(fetchCourse('https://example.invalid/x')).rejects.toThrow('认不出课程 id');
+      expect(fetchMock).not.toHaveBeenCalled();
+      await expect(fetchCourse(`https://example.invalid/c-${COURSE_ID}`)).rejects.toThrow('404');
+    });
   });
 });

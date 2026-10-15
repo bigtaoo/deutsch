@@ -198,6 +198,36 @@ describe('groupLessons', () => {
     ]);
     expect(groups[0][1].map((l) => l.id)).toEqual(['c', 'a', 'b']);
   });
+
+  // 变更 81：剧集也全是 DW 课，但顺序写在标题里 —— 不能按导入时间倒排
+  const dw = (id: string, title: string, createdAt: number) =>
+    lesson(id, title, 'DW Jojo sucht das Glück', { source: { type: 'dw', dwLessonId: id, sourceUrl: '' }, createdAt });
+
+  it('剧集按标题自然排序（第 2 集在第 10 集前面），不管哪一集先导', () => {
+    const { groups } = groupLessons([
+      dw('s1e10', 'Staffel 1 · 10 Warten auf Ben', 1),
+      dw('s2e1', 'Staffel 2 · 1 Überraschung', 2),
+      dw('s1e2', 'Staffel 1 · 2 Jojo aus Brasilien', 3),
+    ]);
+    expect(groups[0][1].map((l) => l.id)).toEqual(['s1e2', 's1e10', 's2e1']);
+  });
+
+  it('普通 DW 来源（标题没有季前缀）照旧新导的在前', () => {
+    const { groups } = groupLessons([dw('a', 'Alltagsdeutsch: A', 1), dw('b', 'Alltagsdeutsch: B', 2)]);
+    expect(groups[0][1].map((l) => l.id)).toEqual(['b', 'a']);
+  });
+
+  it('splitChapters 按季再折一层，季里那一行去掉前缀', () => {
+    const { loose, chapters } = splitChapters([
+      dw('a', 'Staffel 1 · 1 Die Ankunft', 0),
+      dw('b', 'Staffel 2 · 1 Überraschung', 0),
+    ]);
+    expect(loose).toEqual([]);
+    expect(chapters.map(([name, list]) => [name, list.map((l) => l.id)])).toEqual([
+      ['Staffel 1', ['a']],
+      ['Staffel 2', ['b']],
+    ]);
+  });
 });
 
 describe('groupBindSummary', () => {

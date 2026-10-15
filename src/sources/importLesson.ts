@@ -21,6 +21,7 @@ import { generateId } from '@/lib/id';
 import { scheduleLessonSync } from '@/sync/trigger';
 import { useLessonStore } from '@/state/useLessonStore';
 import { downloadAudio, fetchLesson, mapSpansToSentences, type DwLesson } from './dw/adapter';
+import { isHlsUrl } from './dw/hls';
 import type { GlossaryCandidate, Lesson, LessonCache, Sentence } from '@/types/models';
 
 const MIN_REQUEST_INTERVAL_MS = 1000;
@@ -74,6 +75,8 @@ export async function importFromDw(
   sourceUrl?: string,
   /** 从哪个来源的列表导进来的（registry 里的 name）—— 记成 collection，课程列表按它折叠（FR-1.9）。按 id 导入的没有 */
   series?: string,
+  /** 课程页列表才有的「第几季」（变更 81）：拼成标题前缀 `Staffel 1 · `，课程列表在组里按它再折一层 */
+  group?: string,
 ): Promise<ImportOutcome> {
   onProgress?.({ step: 'page' });
   const dw = await politely(() => fetchLesson(lessonId, sourceUrl));
@@ -85,7 +88,7 @@ export async function importFromDw(
   // 从对齐目标里挖掉，逼 CTC 把开头几十秒的声音塞给第一句正文。
   // 音频里没念的段落（手动粘贴 PDF 时的文末 Glossar）仍然排除，只是走手工 ——
   // 「切句」页有开头/文末两个批量控件，逐句也能点。
-  const sentences = createSentences(segmentSentences(dw.plainText));
+  const sentences = createSentences(segmentSentences(dw.plainText, { speakers: dw.speakers }));
 
   // FR-13.5：音频与文本任一失败不影响另一个。
   let audioBlob: Blob | undefined;
@@ -109,11 +112,12 @@ export async function importFromDw(
 
   const lesson: Lesson = {
     id,
-    title: dw.title,
+    title: group ? `${group} · ${dw.title}` : dw.title,
     source: { type: 'dw', dwLessonId: lessonId, sourceUrl: dw.sourceUrl },
     // 音频本身不进备份，地址进（§0 变更 27）。抓失败时也记 —— 那正是最需要它的时候。
     audioSrc: dw.audio?.mp3Src,
     ...(series ? { collection: series } : {}),
+    ...(dw.speakers ? { speakers: dw.speakers } : {}),
     audioDuration: dw.audio?.duration || undefined,
     // 补齐素材时拿它比「DW 换没换过音频」（§0 变更 43）。抓失败时没有这个数，
     // 那种课的第一次补齐会退回到比时长。
@@ -265,7 +269,12 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
   // 以及文稿没变时刷新候选词。文稿变了就不动候选词 —— 它的 offset 基于旧文稿，
   // 等用户在 FR-3.7 里做完决定。
   const nextAudioSrc = dw.audio?.mp3Src ?? lesson.audioSrc;
-  const changed = audioChanged(lesson, downloaded, dw.audio?.duration);
+  // 从视频里抽的音频是转码出来的，不同设备字节数不同（hls.ts 头部）—— 这类课只比时长
+  const changed = audioChanged(
+    isHlsUrl(mp3Src ?? '') ? { audioDuration: lesson.audioDuration } : lesson,
+    downloaded,
+    dw.audio?.duration,
+  );
   // **时长只在「确实换过音频」或「本来就没有」时才改写**（§0 变更 43）：
   // 对齐写回的是解码出来的精确值，比 DW 页面上报的整数秒可靠 —— 补齐一次素材
   // 就把它降级回整数，等于每台设备各记一个值，下次比起来又像是换过音频。
@@ -304,7 +313,7 @@ export async function rehydrateLesson(lesson: Lesson): Promise<RehydrateOutcome>
  * 另一个分支「保留旧标注自行核对」什么都不用做 —— 缓存里留着的就是旧文稿。
  */
 export async function acceptNewManuscript(lesson: Lesson, dw: DwLesson) {
-  const result = resegment(lesson.sentences, segmentSentences(dw.plainText));
+  const result = resegment(lesson.sentences, segmentSentences(dw.plainText, { speakers: dw.speakers }));
   const existing = await getLessonCache(lesson.id);
   await putLessonCache({
     ...existing,

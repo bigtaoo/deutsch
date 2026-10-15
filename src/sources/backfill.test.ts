@@ -102,6 +102,17 @@ describe('backfillRecent', () => {
     expect(out.skipped).toBe(5);
   });
 
+  it('来源名与每期的季一并交给导入（以前不传，回填进来的课掉进默认那一组）', async () => {
+    const { fn } = fakeImport();
+    const items = [{ ...item('a'), group: 'Staffel 1' }, item('b')];
+    await backfillRecent({ items, importedIds: new Set(), limit: 2, series: 'DW Jojo sucht das Glück', importOne: fn });
+    const calls = (fn as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls.map((c) => [c[0], c[3], c[4]])).toEqual([
+      ['a', 'DW Jojo sucht das Glück', 'Staffel 1'],
+      ['b', 'DW Jojo sucht das Glück', undefined],
+    ]);
+  });
+
   it('limit <= 0 什么都不做', async () => {
     const { fn, calls } = fakeImport();
     await backfillRecent({ items: ITEMS, importedIds: new Set(), limit: 0, importOne: fn });

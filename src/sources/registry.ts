@@ -6,7 +6,9 @@
 export interface SourceDefinition {
   id: string;
   name: string;
-  feedUrl: string;
+  /** 列表从哪来：RSS（`feedUrl`），或者没有 RSS 的剧集课用课程页（`courseUrl`，变更 81）。二选一 */
+  feedUrl?: string;
+  courseUrl?: string;
   /** adapter 标识。目前只有 dw 一种，留着是为了 §8 那条「换取数方式时只改数据来源」 */
   adapter: 'dw';
   level: string;
@@ -40,5 +42,15 @@ export const SOURCES: SourceDefinition[] = [
     level: 'B1–B2',
     // 页面是 Article 不是 Lesson（a-<id>），文稿在 `text`，没有词汇表；一页两条音频取慢速那条。
     note: '语速慢，适合做打点练习的热身；没有词汇表',
+  },
+  {
+    // 变更 81：剧集课。没有 RSS，列表取课程页；页面上没有音频只有视频，音频从 HLS 视频流里抽。
+    // 三季 101 集，一集 3~6 分钟，全是对话 —— 他说想要「Nicos Weg 那样能跟一两年的主线」。
+    id: 'dw-jojo',
+    name: 'DW Jojo sucht das Glück',
+    courseUrl: 'https://learngerman.dw.com/de/jojo-sucht-das-gl%C3%BCck/c-53437698',
+    adapter: 'dw',
+    level: 'B1–B2',
+    note: '剧集，三季 99 集，全是对话；音频从视频里抽，导一集要多等十来秒',
   },
 ];
