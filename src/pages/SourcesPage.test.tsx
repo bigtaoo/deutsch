@@ -1,5 +1,5 @@
 // 变更 81：剧集（课程页列表）按季折叠；「接着往下导」导进来的课自动排对齐。
-// 变更 82：一季一键导完、季里按 11 集分页、要中译的来源导完一集排一集中译。
+// 变更 82：一季一键导完、季里按 11 集分页。变更 83：译文包。
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -52,8 +52,6 @@ function backfillImports(ids: string[], noAudio: string[] = []) {
   });
 }
 
-const queueLessonTranslation = vi.fn();
-vi.mock('@/ai/translate', () => ({ queueLessonTranslation: (ids: string[]) => queueLessonTranslation(ids) }));
 
 const { SourcesPage } = await import('./SourcesPage');
 
@@ -110,8 +108,6 @@ describe('接着往下导', () => {
     await screen.findByText(/导入 2 集/);
     expect(backfillRecent.mock.calls[0][0]).toMatchObject({ series: 'DW Jojo sucht das Glück', limit: 3 });
     expect(enqueue.mock.calls).toEqual([['local-a']]);
-    // Jojo 标了 autoTranslate：没音频的也排中译（中译只要文稿）
-    expect(queueLessonTranslation.mock.calls).toEqual([[['local-a']], [['local-b']]]);
     expect(screen.getByText(/其中 1 集没拿到音频/)).toBeTruthy();
   });
 });
@@ -169,5 +165,43 @@ describe('季里按 11 集分页（变更 82 / §12.22）', () => {
     await openJojo();
     await screen.findByText('Staffel 2 · 已导 0/2');
     expect(screen.queryByRole('group', { name: '分页' })).toBeNull();
+  });
+});
+
+describe('译文包（变更 83）', () => {
+  const pick = (json: unknown) => {
+    const input = screen.getByText('导入译文包').querySelector('input')!;
+    fireEvent.change(input, { target: { files: [new File([JSON.stringify(json)], 'jojo.json', { type: 'application/json' })] } });
+  };
+
+  it('补上了几句、还有几课没导，一句话说清', async () => {
+    const saveLesson = vi.fn(async (_l: Lesson) => {});
+    const patchLesson = vi.fn(async (id: string, up: (l: Lesson) => Lesson) => {
+      await saveLesson(up(useLessonStore.getState().lessons.find((l) => l.id === id)!));
+    });
+    useLessonStore.setState({
+      lessons: [{ ...dwLesson('100'), sentences: [{ index: 0, text: 'Ja.' }] } as Lesson],
+      caches: {},
+      loaded: true,
+      patchLesson,
+    } as never);
+    render(<SourcesPage />);
+    pick({
+      format: 'deutsch-translation-pack',
+      version: 1,
+      lessons: [
+        { dwLessonId: '100', sentences: [{ de: 'Ja.', zh: '是。' }] },
+        { dwLessonId: '200', title: '2 Jojo aus Brasilien', sentences: [{ de: 'Hallo.', zh: '你好。' }] },
+      ],
+    });
+    await screen.findByText('1 课补上了 1 句译文；还有 1 课没导入，导入之后再导一次这个包就行。');
+    expect(saveLesson).toHaveBeenCalledTimes(1);
+  });
+
+  it('不是译文包：说原因', async () => {
+    useLessonStore.setState({ lessons: [], caches: {}, loaded: true });
+    render(<SourcesPage />);
+    pick({ format: 'deutsch-backup' });
+    await screen.findByText('没导进来：不是译文包（format 不对）');
   });
 });

@@ -346,59 +346,6 @@ describe('课上加词的一句话中文（FR-9.15）', () => {
   });
 });
 
-describe('一课的逐句中译（变更 82）', () => {
-  const post = (token: string, body: unknown) =>
-    authed(token, { method: 'POST', body: JSON.stringify(body) });
-
-  it('explainer 没有 translate（没配 key）→ 503 code=ai_off', async () => {
-    const { app } = setup({ ai: { explain: async () => 'x' } });
-    const { token } = await login(app);
-    const res = await app.request('/v1/ai/translate', post(token, { lines: [{ text: 'Hallo.' }] }));
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ code: 'ai_off' });
-  });
-
-  it('要登录', async () => {
-    const { app } = setup({ ai: { explain: async () => 'x', translate: async () => ['你好。'] } });
-    const res = await app.request('/v1/ai/translate', { method: 'POST', body: JSON.stringify({ lines: [{ text: 'Hallo.' }] }) });
-    expect(res.status).toBe(401);
-  });
-
-  it('空批、超过 120 句、有缺 text 的 → 400，不去问模型', async () => {
-    const translate = vi.fn();
-    const { app } = setup({ ai: { explain: async () => 'x', translate } });
-    const { token } = await login(app);
-    for (const body of [{}, { lines: [] }, { lines: Array.from({ length: 121 }, () => ({ text: 'a' })) }, { lines: [{ text: 'a' }, { speaker: 'JOJO' }] }]) {
-      expect((await app.request('/v1/ai/translate', post(token, body))).status).toBe(400);
-    }
-    expect(translate).not.toHaveBeenCalled();
-  });
-
-  it('句子与说话人 trim 后按顺序交给 translate，结果原样回去', async () => {
-    const translate = vi.fn().mockResolvedValue(['哇，原来这就是科隆。', '要去哪儿？']);
-    const { app } = setup({ ai: { explain: async () => 'x', translate } });
-    const { token } = await login(app);
-    const res = await app.request('/v1/ai/translate', post(token, {
-      title: ' 1 Die Ankunft ',
-      lines: [{ speaker: ' JOJO ', text: ' Wow – das ist also Köln. ' }, { speaker: '  ', text: 'Wohin soll es gehen?' }],
-    }));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ translations: ['哇，原来这就是科隆。', '要去哪儿？'] });
-    expect(translate).toHaveBeenCalledWith({
-      title: '1 Die Ankunft',
-      lines: [{ speaker: 'JOJO', text: 'Wow – das ist also Köln.' }, { text: 'Wohin soll es gehen?' }],
-    });
-  });
-
-  it('上游失败 → 502 code=ai_failed', async () => {
-    const { app } = setup({ ai: { explain: async () => 'x', translate: async () => { throw new Error('AI 返回了 1 条，要的是 2 条'); } } });
-    const { token } = await login(app);
-    const res = await app.request('/v1/ai/translate', post(token, { lines: [{ text: 'a' }, { text: 'b' }] }));
-    expect(res.status).toBe(502);
-    expect(await res.json()).toMatchObject({ code: 'ai_failed' });
-  });
-});
-
 describe('CORS', () => {
   it('白名单里的 origin 拿得到放行头，别的拿不到', async () => {
     const { app } = setup();

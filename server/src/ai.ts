@@ -41,34 +41,6 @@ export interface AiExplainer {
    * 可选只是为了测试替身可以只实现 explain —— 真实现两个都有。
    */
   gloss?(items: AiGlossItem[]): Promise<string[]>;
-  /**
-   * 变更 82 / FR-19.11：一课的句子逐句译成中文，顺序与输入一一对应。
-   * 可选的理由同 gloss。
-   */
-  translate?(input: AiTranslateInput): Promise<string[]>;
-}
-
-/** 变更 82：一课要译的句子（已滤掉排除句），带说话人好让模型分清谁在说话。 */
-export interface AiTranslateInput {
-  title?: string;
-  lines: { speaker?: string; text: string }[];
-}
-
-/**
- * 变更 82 的提示词。要的是**逐句对照**的自然中文 —— 通听与卡背按句显示，
- * 一句德语对一句中文；所以合并、拆句、漏句都不行，长度不对整批作废（parseGlossOutput 同一条）。
- */
-function buildTranslatePrompt({ title, lines }: AiTranslateInput): string {
-  const list = lines.map((l, i) => ({ i, ...(l.speaker ? { speaker: l.speaker } : {}), text: l.text }));
-  return [
-    '下面是一段德语学习剧的台词（或一篇课文），一个中文母语的德语学习者要逐句对照着学。',
-    '把每一句译成自然、口语化的中文；结合上下文译，但**一句对一句**，不要合并、拆分或省略，',
-    '不要加注释或拼音。人名保留德语原文。',
-    '只输出一个 JSON 字符串数组，长度与输入相同、顺序一一对应，不要任何别的文字。',
-    ...(title ? ['', `标题：${title}`] : []),
-    '',
-    JSON.stringify(list),
-  ].join('\n');
 }
 
 /**
@@ -89,7 +61,7 @@ function buildGlossPrompt(items: AiGlossItem[]): string {
 }
 
 /** 从模型输出里取那个数组：容忍它前后多说了一句、或者包了 ```json 围栏。 */
-export function parseGlossOutput(text: string, count: number, maxLen = 60): string[] {
+export function parseGlossOutput(text: string, count: number): string[] {
   const start = text.indexOf('[');
   const end = text.lastIndexOf(']');
   if (start < 0 || end <= start) throw new Error('AI 接口没有返回数组');
@@ -97,7 +69,7 @@ export function parseGlossOutput(text: string, count: number, maxLen = 60): stri
   if (!Array.isArray(parsed)) throw new Error('AI 接口没有返回数组');
   // 长度不对就整批作废：按位置对齐，错一位整批都是错的 —— 错位的中文比没有中文更糟（FR-19.2 同一条）
   if (parsed.length !== count) throw new Error(`AI 返回了 ${parsed.length} 条，要的是 ${count} 条`);
-  return parsed.map((g) => (typeof g === 'string' ? g.trim().slice(0, maxLen) : ''));
+  return parsed.map((g) => (typeof g === 'string' ? g.trim().slice(0, 60) : ''));
 }
 
 /**
@@ -167,8 +139,5 @@ export function createAiExplainer(apiKey: string, model: string): AiExplainer {
     explain: (input) => complete(buildPrompt(input), 500),
     // 一个词大约 20 个 token 的输出，40 个词给 1500 足够，且封住了模型跑题时的花销
     gloss: async (items) => parseGlossOutput(await complete(buildGlossPrompt(items), 1500), items.length),
-    // 一句中文大约 30~50 个 token；一次最多 TRANSLATE_MAX_LINES 句，8000 给够且封住跑题的花销
-    translate: async (input) =>
-      parseGlossOutput(await complete(buildTranslatePrompt(input), 8000), input.lines.length, 500),
   };
 }

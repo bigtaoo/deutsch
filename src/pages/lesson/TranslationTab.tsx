@@ -6,11 +6,8 @@
 // 三步：复制走（提示词 + 编号原文）→ 在外面翻 → 粘回来。
 // 保存前先看对照预览：编号是锚，但锚本身贴错了（贴了另一课、或者贴完之后重切过句）
 // 这里就该看得出来，而不是等到跟读时发现中文说的是下一句的事。
-//
-// 变更 82：登录了同步、服务器开了 AI 时，上面多一个「让 AI 译」—— 只补没有译文的句子，
-// 粘回来的不碰（见 src/ai/translate.ts）。没登录时这一块不出现，三步照旧。
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useLessonStore } from '@/state/useLessonStore';
 import {
   applyTranslations,
@@ -20,8 +17,6 @@ import {
   translationRequest,
 } from '@/lesson/translation';
 import { displayNumbers } from '@/lesson/sentences';
-import { aiAvailable } from '@/ai/explain';
-import { translateLessonWithAi, untranslatedCount } from '@/ai/translate';
 import { Button, Hint, Note, Section, field } from '@/components/ui';
 import type { Lesson, LessonCache } from '@/types/models';
 
@@ -37,29 +32,6 @@ export function TranslationTab({ lesson }: { lesson: Lesson; cache: LessonCache 
   const request = useMemo(() => translationRequest(lesson.sentences, lesson.title), [lesson]);
   const coverage = translationCoverage(lesson.sentences);
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
-  const untranslated = untranslatedCount(lesson.sentences);
-  const [canAi, setCanAi] = useState(false);
-  const [aiBusy, setAiBusy] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    void aiAvailable().then((ok) => alive && setCanAi(ok));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const askAi = async () => {
-    setAiBusy(true);
-    setMessage(null);
-    try {
-      const { translated } = await translateLessonWithAi(lesson.id);
-      setMessage(`AI 补上了 ${translated} 句译文。`);
-    } catch (e) {
-      setMessage(`AI 没译成：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setAiBusy(false);
-    }
-  };
 
   // 一边打字一边解析：预览就是「保存之后会变成什么样」，没有第二套逻辑。
   const parsed = useMemo(() => parseTranslations(pasted), [pasted]);
@@ -123,15 +95,6 @@ export function TranslationTab({ lesson }: { lesson: Lesson; cache: LessonCache 
           ? `${coverage.total} 句里 ${coverage.translated} 句有译文。译文在通听和跟读里显示，开关在那两页上。`
           : `还没有译文。这里不翻译 —— 复制原文去你惯用的地方翻，再把结果粘回来。`}
       </Note>
-
-      {canAi && untranslated > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="primary" disabled={aiBusy} onClick={() => void askAi()}>
-            {aiBusy ? '正在译…' : `让 AI 译（${untranslated} 句）`}
-          </Button>
-          <Hint>只补没有译文的句子，粘回来的不动。不想用 AI 就走下面三步。</Hint>
-        </div>
-      )}
 
       <Section
         title="第一步：复制原文"

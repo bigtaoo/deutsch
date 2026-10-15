@@ -11,12 +11,12 @@ import { SOURCES, type SourceDefinition } from '@/sources/registry';
 import { fetchCourse, fetchFeed, parseLessonId, type FeedItem } from '@/sources/dw/adapter';
 import { acceptNewManuscript, importFromDw, rehydrateLesson, type ImportProgress } from '@/sources/importLesson';
 import { backfillRecent, BACKFILL_LIMITS, SEASON_IMPORT_MAX, type BackfillProgress } from '@/sources/backfill';
-import { queueLessonTranslation } from '@/ai/translate';
 import { ChunkTabs, CHUNK_SIZE } from '@/components/ChunkTabs';
 import { useLessonStore, isMaterialMissing } from '@/state/useLessonStore';
 import { useAlignStore } from '@/state/useAlignStore';
 import { hasTimings } from '@/align/apply';
-import { Banner, Button, Chip, Disclosure, EmptyState, Hint, Note, Section, field, formatBytes } from '@/components/ui';
+import { Banner, Button, Chip, Disclosure, EmptyState, FilePicker, Hint, Note, Section, field, formatBytes } from '@/components/ui';
+import { applyTranslationPack, parseTranslationPack } from '@/lesson/translationPack';
 import type { Lesson } from '@/types/models';
 import type { DwLesson } from '@/sources/dw/adapter';
 
@@ -99,6 +99,8 @@ export function SourcesPage() {
       </Section>
 
       <ManualIdSection />
+
+      <TranslationPackSection />
 
       <Section title="教材">
         <Hint>
@@ -186,8 +188,6 @@ function FeedRow({ item, source, imported }: { item: FeedItem; source: SourceDef
       // FR-15：音频一到位就立刻排对齐 —— 「下载完就能直接练」是它存在的理由。
       // 不等它跑完：几分钟的活儿不该把导入按钮和这一页钉在原地。
       if (outcome.hasAudio) enqueueAlign(outcome.lessonId);
-      // 变更 82：中译同理，排进后台队列，没登录就静默不做
-      if (source.autoTranslate) void queueLessonTranslation([outcome.lessonId]);
       const notes = [
         outcome.audioError ? `音频没抓到（${outcome.audioError}），文本已导入，可稍后补齐或手动选文件` : null,
       ].filter(Boolean);
@@ -373,8 +373,8 @@ function RehydratePanel() {
 }
 
 /**
- * 一批串行导入（「往下导 N 集」与「导入这一季」共用）。每导完一集就排对齐、
- * 该来源要中译就排中译 —— 不等整批结束：整季 33 集要十几分钟，导完一集就该能开始练那一集。
+ * 一批串行导入（「往下导 N 集」与「导入这一季」共用）。每导完一集就排对齐
+ * —— 不等整批结束：整季 33 集要十几分钟，导完一集就该能开始练那一集。
  */
 function useBatchImport(source: SourceDefinition) {
   const [progress, setProgress] = useState<BackfillProgress | null>(null);
@@ -399,7 +399,6 @@ function useBatchImport(source: SourceDefinition) {
         const one = await importFromDw(...args);
         // FR-15：与逐期导入同一条规矩 —— 音频到位就排对齐（变更 81 以前回填漏了这一步）
         if (one.hasAudio) enqueueAlign(one.lessonId);
-        if (source.autoTranslate) void queueLessonTranslation([one.lessonId]);
         return one;
       },
     });
@@ -448,7 +447,7 @@ function SeasonImport({ items, importedIds, source }: { items: FeedItem[]; impor
       </div>
       {!batch.busy && pending > 0 && (
         <Hint>
-          一集一集串行地导，导一集十来秒；导完的那一集马上开始对齐{source.autoTranslate ? '、加中译（要登录同步）' : ''}。
+          一集一集串行地导，导一集十来秒；导完的那一集马上开始对齐。
           可以随时停，停在集与集之间。
         </Hint>
       )}
@@ -513,5 +512,40 @@ function BackfillPanel({
       </Disclosure>
       {batch.result && <Hint tone="ok">{batch.result}</Hint>}
     </div>
+  );
+}
+
+/**
+ * 变更 83：译文包。整季的中译在 Claude Code 会话里译好（用订阅，不花 API 额度），
+ * 存成 .json 放在他本机，这里导入一次。按原文对上才填、只补空的 —— 见 `src/lesson/translationPack.ts`。
+ */
+function TranslationPackSection() {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: 'ok' | 'warn'; text: string } | null>(null);
+
+  const onPick = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await applyTranslationPack(parseTranslationPack(await file.text()));
+      const parts = [r.filled > 0 ? `${r.lessons} 课补上了 ${r.filled} 句译文` : '没有要补的句子（都已经有译文，或者原文对不上）'];
+      if (r.missing.length > 0) parts.push(`还有 ${r.missing.length} 课没导入，导入之后再导一次这个包就行`);
+      setMessage({ tone: 'ok', text: parts.join('；') + '。' });
+    } catch (e) {
+      setMessage({ tone: 'warn', text: `没导进来：${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="译文包">
+      <Hint>
+        整批译好的中文（.json），按原文一句句对上才填，只补还没有译文的句子，粘回来的不动。可以反复导。
+      </Hint>
+      {busy ? <Hint>正在导入…</Hint> : <FilePicker accept=".json,application/json" onPick={(f) => void onPick(f)}>导入译文包</FilePicker>}
+      {message && <Hint tone={message.tone}>{message.text}</Hint>}
+    </Section>
   );
 }

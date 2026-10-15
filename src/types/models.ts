@@ -146,8 +146,8 @@ export interface Sentence {
   words?: WordSpan[];
   /**
    * FR-19：这一句的中文译文。两个来源，同一个字段：人在外面（Claude 之类）译好之后
-   * 按编号整篇粘回来的（`src/lesson/translation.ts`）；或者登录了同步时由服务器上的 AI
-   * 补上（变更 82，`src/ai/translate.ts`，只补空的，不覆盖粘回来的）。
+   * 按编号整篇粘回来的（`src/lesson/translation.ts`）；或者整批导进来的译文包
+   * （变更 83，`src/lesson/translationPack.ts`，在 Claude Code 会话里用订阅译好，按原文对上才填，只补空的）。
    *
    * 挂在句子上而不是整课一段，是因为它的两个使用场景都是逐句的：通听展开文本时
    * 每行下面一行中文，跟读时当前句下面一行中文。整课一段译文要人在两块文本之间
