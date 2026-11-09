@@ -14,8 +14,8 @@
 // manifest.json，判断逻辑留在 TS 里 —— 顺带让它可以被单测覆盖（decideUpdate）。
 //
 // ── 更新时机：后台下载，下次冷启动生效 ──
-// 用 `next()` 而不是 `set()`。`set()` 会立刻重载 WebView，那等于在练听写的当口把
-// 只活在 React state 里的答案（DictationTab 的 `answers`，没落 IndexedDB）清空 ——
+// 用 `next()` 而不是 `set()`。`set()` 会立刻重载 WebView，那等于在人正在练的当口把
+// 只活在 React state 里的进度（跟读当前到哪一句、速背这一张的作答，没落 IndexedDB）清空 ——
 // §7.6 里 web 版「不在打字的当口刷」那条教训在这里更严重，因为原生侧换 bundle 是整个
 // WebView 重载，比浏览器的 reload 更重。`next()` 只登记「下次加载用这个」，零打断。
 //

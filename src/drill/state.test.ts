@@ -15,6 +15,7 @@ import {
   progressKey,
   updateDrillState,
   withCustom,
+  withDay,
   withMark,
   withoutCustom,
   withPrefs,
@@ -126,5 +127,42 @@ describe('updateDrillState', () => {
     ).rejects.toThrow('boom');
     await updateDrillState((s) => withProgress(s, 'word', 'c', card(3), 3));
     expect((await getDrillState()).progress['word:c']).toBeDefined();
+  });
+});
+
+describe('当天计划 day（变更 84）：整份 LWW', () => {
+  const day = (date: string, ids: string[], ts: number) => withDay(emptyDrillState(), { date, ids }, ts);
+
+  it('远端那份更新：取远端，changed=true', () => {
+    const { merged, changed } = mergeDrillStates(day('2026-11-09', ['a'], 1), day('2026-11-09', ['a', 'b'], 2));
+    expect(merged.day?.ids).toEqual(['a', 'b']);
+    expect(changed).toBe(true);
+  });
+
+  it('本地那份更新：留本地，changed=false；但要回推', () => {
+    const local = day('2026-11-09', ['a', 'b'], 5);
+    const remote = day('2026-11-09', ['a'], 2);
+    const { merged, changed } = mergeDrillStates(local, remote);
+    expect(merged.day?.ids).toEqual(['a', 'b']);
+    expect(changed).toBe(false);
+    expect(drillNeedsPush(local, remote)).toBe(true);
+    expect(drillNeedsPush(remote, local)).toBe(false);
+  });
+
+  it('只有一边有：取有的那边；两边都没有就不出现 day 键', () => {
+    expect(mergeDrillStates(emptyDrillState(), day('2026-11-09', ['a'], 1)).merged.day?.ids).toEqual(['a']);
+    expect(mergeDrillStates(day('2026-11-09', ['a'], 1), emptyDrillState()).merged.day?.ids).toEqual(['a']);
+    expect('day' in mergeDrillStates(emptyDrillState(), emptyDrillState()).merged).toBe(false);
+  });
+
+  it('normalize 丢掉坏掉的 day，留下好的', () => {
+    expect('day' in normalizeDrillState({ day: { date: 1, ids: 'x' } })).toBe(false);
+    expect(normalizeDrillState({ day: { date: '2026-11-09', ids: ['a'], ts: 3 } }).day?.ids).toEqual(['a']);
+  });
+
+  it('withDay 盖上 ts 并推进 updatedAt', () => {
+    const s = day('2026-11-09', ['a'], 7);
+    expect(s.day).toEqual({ date: '2026-11-09', ids: ['a'], ts: 7 });
+    expect(s.updatedAt).toBe(7);
   });
 });

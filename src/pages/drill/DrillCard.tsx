@@ -10,6 +10,9 @@ import { playSfx } from '@/audio/sfx';
 import { aiAvailable, explainWithAi, getCachedAiNote } from '@/ai/explain';
 import { ensureWordAudio, germanVoice, speak, type WordAudioSource } from '@/dict/audio';
 import { lookupDict } from '@/dict/lookup';
+import { getAudioBlob } from '@/db/cache';
+import { resolveRange } from '@/lesson/timing';
+import { useLessonStore } from '@/state/useLessonStore';
 import type { DictEntry } from '@/dict/types';
 import type { DrillChoice } from '@/drill/round';
 import type { DrillMark, DrillMode, PoolItem } from '@/drill/types';
@@ -38,6 +41,7 @@ export function DrillCard({
   retry,
   mark,
   soundOn,
+  autoplay = false,
   onAnswer,
   onContinue,
   onSaveMark,
@@ -51,6 +55,11 @@ export function DrillCard({
   retry: boolean;
   mark: DrillMark | undefined;
   soundOn: boolean;
+  /**
+   * 单词题面也进卡自动念一遍（FR-22.4′：两种模式合并 —— 看着词形、同时听到它）。
+   * 音频模式本来就自动播，这个只管单词模式。
+   */
+  autoplay?: boolean;
   onAnswer: (choiceId: string | null, correct: boolean, elapsedMs: number) => void;
   onContinue: () => void;
   onSaveMark: (patch: { flagged?: boolean; zh?: string }) => void | Promise<void>;
@@ -84,8 +93,8 @@ export function DrillCard({
       if (cancelled) return;
       const s: WordAudioSource = blob ? 'human' : germanVoice() ? 'tts' : 'none';
       setSource(s);
-      if (mode !== 'audio') return;
-      startedAt.current = Date.now();
+      if (mode !== 'audio' && !autoplay) return;
+      if (mode === 'audio') startedAt.current = Date.now();
       if (blob) {
         try {
           await audioPlayer.load(`word:${item.w}`, blob);
@@ -102,7 +111,7 @@ export function DrillCard({
       audioPlayer.pause();
       if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
     };
-  }, [item.w, mode]);
+  }, [item.w, mode, autoplay]);
 
   const tap = () => {
     if (soundOn) playSfx('tap');
@@ -374,6 +383,7 @@ function DrillBack({
       {flagged && !saved && <p className="text-note text-faint">标记了：可以直接改上面的中文，改完点保存。</p>}
 
       {item.n && <p className="text-note text-muted">{item.n}</p>}
+      {item.lessonId !== undefined && item.si !== undefined && <LessonLine lessonId={item.lessonId} si={item.si} />}
       {de && <p className="text-ui text-muted">{de}</p>}
       {entry?.ex?.slice(0, 2).map((ex) => (
         <p key={ex} className="text-ui text-muted">
@@ -400,6 +410,58 @@ function DrillBack({
           </button>
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * 课程词的原句（FR-22.16）：这个词是从哪一句里来的，点一下放那一句的原声。
+ * 原句是这个词最好的记忆钩子 —— 孤立词发音练不到连读，原声练得到。
+ * 那一课没了、或这台设备上没有音频时，只显示文字（没有按钮）。
+ */
+function LessonLine({ lessonId, si }: { lessonId: string; si: number }) {
+  const lesson = useLessonStore((s) => s.lessons.find((l) => l.id === lessonId));
+  const sentence = lesson?.sentences[si];
+  const [blob, setBlob] = useState<Blob | null>(null);
+
+  // 先把 Blob 取好：点击时只剩 load + play，尽量不离开 iOS 的手势链（§3.2）。
+  useEffect(() => {
+    let cancelled = false;
+    setBlob(null);
+    void getAudioBlob(lessonId)
+      .catch(() => undefined)
+      .then((b) => {
+        if (!cancelled && b) setBlob(b);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lessonId]);
+
+  if (!lesson || !sentence) return null;
+  const range = resolveRange(lesson.sentences, si, lesson.audioDuration);
+  const playable = Boolean(blob && range);
+  const play = async () => {
+    if (!blob || !range) return;
+    await audioPlayer.load(lessonId, blob);
+    await audioPlayer.playRange(range.start, range.end).catch(() => {});
+  };
+
+  return (
+    <div className="space-y-1 rounded-box bg-sunken p-3">
+      <p className="text-de">{sentence.text}</p>
+      <div className="flex items-center gap-2 text-note text-faint">
+        <span className="mr-auto truncate">《{lesson.title}》</span>
+        {playable && (
+          <button
+            type="button"
+            onClick={() => void play()}
+            className="rounded-box border border-line px-2 py-0.5 text-note text-muted active:scale-95"
+          >
+            ▶ 原句
+          </button>
+        )}
+      </div>
     </div>
   );
 }

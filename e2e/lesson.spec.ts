@@ -81,7 +81,7 @@ test('没有音频的课在列表里标「素材未下载」，并且不假装�
   await expect(page.getByText('素材未下载 —— 播放相关的功能全部不可用')).toBeVisible();
 });
 
-test('一课的四个 tab 都进得去，缺前提时说清缺什么', async ({ page }) => {
+test('一课的两个 tab 都进得去，缺前提时说清缺什么', async ({ page }) => {
   await openApp(page);
   await importLesson(page, { title: TITLE, text: MANUSCRIPT });
   const lessonUrl = new URL(page.url()).hash.replace('/sentences', '');
@@ -90,7 +90,7 @@ test('一课的四个 tab 都进得去，缺前提时说清缺什么', async ({ 
   // 刚导入的课没有时间戳，通听只是一份静态文本 —— 这一点要说出来，不能静默。
   await expect(page.locator('main')).not.toBeEmpty();
 
-  for (const tab of ['shadowing', 'study', 'dictation']) {
+  for (const tab of ['shadowing']) {
     await page.goto(`/${lessonUrl}/${tab}`);
     await expect(page.locator('main')).not.toBeEmpty();
     await expect(page.getByRole('heading', { name: TITLE })).toBeVisible();
@@ -104,7 +104,7 @@ test('切句与译文收在「⋯」里，不占 tab 条', async ({ page }) => {
   await page.goto(`/${lessonUrl}/listen`);
 
   const tabs = page.locator('nav.border-b a');
-  await expect(tabs).toHaveText(['通听', '跟读', '学词', '听写']);
+  await expect(tabs).toHaveText(['通听', '跟读']);
 
   await page.getByLabel('这一课的更多操作').click();
   await expect(page.getByRole('link', { name: /^切句/ })).toBeVisible();

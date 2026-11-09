@@ -162,6 +162,17 @@ export function advanceRun(run: RoundRun): RoundRun {
   return { ...run, position: run.position + 1 };
 }
 
+/**
+ * 斩（FR-22.15）：当前这张不背了。后面插回来的重做也一并拿掉，然后前进。
+ * 不记进 `first` —— 斩掉不是答对，小结里不该算「一次答对」。
+ */
+export function skipCurrent(run: RoundRun): RoundRun {
+  const id = run.queue[run.position];
+  if (id === undefined) return run;
+  const queue = [...run.queue.slice(0, run.position + 1), ...run.queue.slice(run.position + 1).filter((x) => x !== id)];
+  return { ...run, queue, position: run.position + 1 };
+}
+
 export function runFinished(run: RoundRun): boolean {
   return run.position >= run.queue.length;
 }

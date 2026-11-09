@@ -1,4 +1,7 @@
-// FR-9.5 查词。生词本页顶部的一块。
+// FR-9.5 查词。单词页（§12.21）的一块。
+//
+// 变更 84：生词本列表与复习撤掉，「加入生词本」随之去掉 —— 查到的词只有一个去处：
+// 「加入速背」（FR-22.10，进每天 200 个的新词前排）。AI 解释原样保留。
 //
 // ── 为什么在生词本里，而不是一个新页面 ──
 // 「课上碰到一个词」到「这个词进了我的复习队列」是一条动线，中间只差一次查词。
@@ -15,20 +18,15 @@
 // 一起等的话，「查一个词典里本来就有的词」会白等半秒 —— 而这是最常走的一条路。
 
 import { useEffect, useRef, useState } from 'react';
-import { href } from '@/app/router';
 import { lookupDict } from '@/dict/lookup';
-import { lookupOnlineEntry, toDictEntry, type OnlineEntry } from '@/dict/online';
+import { lookupOnlineEntry, type OnlineEntry } from '@/dict/online';
 import { buildLookupResult, type LookupResult, type LookupSense } from '@/dict/view';
 import { ensureWordAudio, speak, type WordAudioSource } from '@/dict/audio';
 import { audioPlayer } from '@/audio/player';
 import { aiAvailable, explainWithAi, getCachedAiNote } from '@/ai/explain';
 import { useSettingsStore } from '@/state/useSettingsStore';
-import { useVocabStore } from '@/state/useVocabStore';
-import { useLessonStore } from '@/state/useLessonStore';
-import { syncVocabNow } from '@/sync/trigger';
 import { Button, Card, Chip, Hint, Note, Section, field } from '@/components/ui';
 import type { DictLookup, DictPos } from '@/dict/types';
-import type { VocabEntry } from '@/types/models';
 import { AddToDrill } from '../drill/AddToDrill';
 
 /** 德语键盘不在手边时的四个字母。查词不区分大小写（`normalizeKey` 会小写），所以不给大写。 */
@@ -68,16 +66,12 @@ type AiState = 'loading' | 'unavailable' | { note: string };
 
 export function DictLookup() {
   const { settings } = useSettingsStore();
-  const { entries, findDuplicates, createFromLookup } = useVocabStore();
-  const lessons = useLessonStore((s) => s.lessons);
 
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
   const [local, setLocal] = useState<Pending<DictLookup | null>>(null);
   const [online, setOnline] = useState<Pending<OnlineEntry | null> | 'off'>(null);
   const [sound, setSound] = useState<Pending<WordAudioSource> | null>(null);
-  const [dupes, setDupes] = useState<VocabEntry[]>([]);
-  const [added, setAdded] = useState<VocabEntry | null>(null);
   /**
    * FR-9.11/9.12：查不到词时自动问一次 AI；查到的词也给一个「问 AI」入口（变更 49，
    * 之前只有查不到那一支有）。`null` = 还没有答案（查到的词等按钮点，查不到的词等自动问
@@ -97,8 +91,6 @@ export function DictLookup() {
     setLocal('loading');
     setOnline(settings.onlineDictFallback ? 'loading' : 'off');
     setSound(null);
-    setDupes([]);
-    setAdded(null);
     setAiState(null);
 
     void (async () => {
@@ -120,28 +112,6 @@ export function DictLookup() {
   const busy = local === 'loading';
   const result = query ? buildLookupResult(query, localHit, onlineHit) : null;
   const resultHead = result?.head;
-
-  // 去重（FR-9.3 的那一套键）：查到的词可能早就在生词本里了 ——
-  // 而「加进去发现多了一张重复卡」要到复习时才会被发现。
-  useEffect(() => {
-    const word = result?.head;
-    if (!word) {
-      setDupes([]);
-      return;
-    }
-    let cancelled = false;
-    void findDuplicates(word)
-      .then((list) => {
-        if (!cancelled) setDupes(list);
-      })
-      .catch(() => {
-        if (!cancelled) setDupes([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // entries 变了也要重算：刚加进去的那一条应该立刻算重复。
-  }, [result?.head, findDuplicates, entries]);
 
   /**
    * 问一次 AI（按钮点击、或下面那个 effect 判定「查不到」之后自动调用）。
@@ -214,26 +184,6 @@ export function DictLookup() {
     setSound(speak(word) ? 'tts' : 'none');
   };
 
-  /**
-   * 收下一个词。**词形由调用方给**，不从 `result` 里取 —— 查不到的时候
-   * `result` 就是 null，而那恰恰是最需要这个按钮的一条路（§12.11：多词搭配和
-   * 生僻复合词两边都查不到，而那是最值得记的一类）。
-   *
-   * 这里原来写的是 `if (!result) return;`，于是「查不到」那张卡上的
-   * 「加入生词本」**按下去什么都不发生** —— 没有报错、没有提示，
-   * 看起来就像这个词只能丢掉（FR-9.6，2026-09-22 修）。
-   */
-  const add = async (word: string) => {
-    const dict = localHit?.entry ?? (onlineHit ? toDictEntry(onlineHit) : null);
-    // FR-21.6：例句一并收下 —— 在线那一趟已经拿到了，开读卡时它多半不在了
-    // FR-9.11：AI 刚给的解释也一并收下 —— 不这样的话用户还要再去生词本页点一次「问 AI」。
-    const note = aiState && typeof aiState === 'object' ? aiState.note : undefined;
-    const entry = await createFromLookup({ surface: word, dict, examples: result?.examples, note });
-    setAdded(entry);
-    // 不可重建的数据不过夜（FR-11.6）。失败也不用管：进队列，由状态芯片报出来。
-    void syncVocabNow();
-  };
-
   return (
     <Section title="查词">
       <form
@@ -279,7 +229,7 @@ export function DictLookup() {
       {!query && (
         <Hint>
           先查内置词典（离线也能查），再向 de.wiktionary 补例句、同义词和词源。
-          查到的词可以直接加进生词本。
+          查到的词可以直接加进速背。
         </Hint>
       )}
 
@@ -291,10 +241,6 @@ export function DictLookup() {
           onlineState={online}
           aiState={aiState}
           onAskAi={() => runAskAi(query)}
-          onAdd={() => void add(query)}
-          added={added}
-          dupes={dupes}
-          lessons={lessons}
         />
       )}
 
@@ -306,10 +252,6 @@ export function DictLookup() {
           aiState={aiState}
           onAskAi={() => runAskAi(result.head)}
           onPlay={() => void play(result.head)}
-          onAdd={() => void add(result.head)}
-          added={added}
-          dupes={dupes}
-          lessons={lessons}
         />
       )}
     </Section>
@@ -323,10 +265,6 @@ function ResultCard({
   aiState,
   onAskAi,
   onPlay,
-  onAdd,
-  added,
-  dupes,
-  lessons,
 }: {
   result: LookupResult;
   online: Pending<OnlineEntry | null> | 'off';
@@ -334,10 +272,6 @@ function ResultCard({
   aiState: AiState | null;
   onAskAi: () => void;
   onPlay: () => void;
-  onAdd: () => void;
-  added: VocabEntry | null;
-  dupes: VocabEntry[];
-  lessons: Array<{ id: string; title: string }>;
 }) {
   const first = result.senses[0];
   const article = first?.gender ? ARTICLES[first.gender] : undefined;
@@ -433,8 +367,7 @@ function ResultCard({
           尤其是搭配和语用层面的细节。缓存命中时不用点就直接显示（见上面那个 effect）。 */}
       <AiBlock aiState={aiState} onAsk={onAskAi} />
 
-      <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={result.head} />
-      {/* FR-22.10：与「加入生词本」并列 —— 进不进复习与进不进速背是两个决定 */}
+      {/* FR-22.10：查到的词唯一的去处（变更 84 撤掉了「加入生词本」） */}
       <AddToDrill word={result.head} pos={first?.pos} gender={first?.gender} zh={first?.zh[0]} />
     </Card>
   );
@@ -502,19 +435,11 @@ function NotFound({
   onlineState,
   aiState,
   onAskAi,
-  onAdd,
-  added,
-  dupes,
-  lessons,
 }: {
   query: string;
   onlineState: Pending<OnlineEntry | null> | 'off';
   aiState: AiState | null;
   onAskAi: () => void;
-  onAdd: () => void;
-  added: VocabEntry | null;
-  dupes: VocabEntry[];
-  lessons: Array<{ id: string; title: string }>;
 }) {
   // navigator.onLine 只用来选一句话怎么说：它会误报（连着 WiFi 但没有出口），
   // 但「查不到」和「没网」这两件事对用户的下一步完全不同，说错一次也比不说好。
@@ -548,73 +473,7 @@ function NotFound({
           在维基词典里搜
         </a>
       </div>
-      <AddRow onAdd={onAdd} added={added} dupes={dupes} lessons={lessons} word={query} noDict aiState={aiState} />
       <AddToDrill word={query} />
     </Card>
-  );
-}
-
-/** 「加入生词本」那一行：去重提示、加、加完之后的出口。 */
-function AddRow({
-  onAdd,
-  added,
-  dupes,
-  lessons,
-  word,
-  noDict = false,
-  aiState = null,
-}: {
-  onAdd: () => void;
-  added: VocabEntry | null;
-  dupes: VocabEntry[];
-  lessons: Array<{ id: string; title: string }>;
-  word: string;
-  noDict?: boolean;
-  aiState?: AiState | null;
-}) {
-  if (added) {
-    return (
-      <Note tone="ok">
-        <b>{added.surface}</b> 已加进生词本，作为新卡进入复习队列（声音是孤立词发音）。
-        {/* FR-9.11：查不到的词收下来就是一张空卡，而「下面自己填」在手机上等于不填。
-            AI 给出结果的话已经跟着这次创建一起收下了；没给出结果就把话说清楚，
-            而不是让这张空卡看起来像一个来路不明的数字。 */}
-        {noDict &&
-          (aiState && typeof aiState === 'object'
-            ? ' AI 刚给的解释已经跟着这张卡一起存了下来。'
-            : ' AI 解释暂时没要到，释义先空着 —— 上面的「问 AI」随时可以再点一次。')}
-      </Note>
-    );
-  }
-
-  // FR-9.3：命中已有词条时**不新建**。这里没有句子可挖空，所以「合并」无事可做，
-  // 而「仍然新建」只会多出一张同一个词的卡 —— 两张卡的 FSRS 状态各自漂移。
-  if (dupes.length > 0) {
-    const e = dupes[0];
-    const from = e.preset
-      ? `预置词库第 ${e.preset.band} 档`
-      : e.lookup
-        ? '查词加进来的'
-        : lessons.find((l) => l.id === e.lessonId)?.title
-          ? `《${lessons.find((l) => l.id === e.lessonId)!.title}》`
-          : '一课已删除的课程';
-    return (
-      <Note tone="accent" action={<a className="underline" href={href({ name: 'review' })}>去复习</a>}>
-        生词本里已经有 <b>{e.surface}</b> 了（{from}）。
-      </Note>
-    );
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Button variant="primary" onClick={onAdd}>
-        加入生词本
-      </Button>
-      <Hint>
-        {noDict
-          ? `照原样收下「${word}」，释义自己填。`
-          : '作为新卡进入复习。它不来自任何一课，所以声音是孤立词发音，练不到连读。'}
-      </Hint>
-    </div>
   );
 }

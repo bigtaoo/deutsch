@@ -33,16 +33,25 @@ describe('解析', () => {
   });
 
   it('每个单页路由都认得', () => {
-    for (const name of ['lessons', 'import', 'sources', 'vocab', 'review', 'cache', 'record', 'settings'] as const) {
+    for (const name of ['lessons', 'import', 'sources', 'vocab', 'drill', 'cache', 'record', 'settings'] as const) {
       expect(routeAt(`#/${name}`)).toEqual({ name });
     }
   });
 
+  it('复习页下线（变更 84）：旧书签 #/review 落到单词页', () => {
+    expect(routeAt('#/review')).toEqual({ name: 'vocab' });
+  });
+
+  it('学词 / 听写下线（变更 84）：旧深链接落到通听', () => {
+    expect(routeAt('#/lesson/abc/study')).toEqual({ name: 'lesson', lessonId: 'abc', tab: 'listen' });
+    expect(routeAt('#/lesson/abc/dictation')).toEqual({ name: 'lesson', lessonId: 'abc', tab: 'listen' });
+  });
+
   it('课程页带 tab', () => {
-    expect(routeAt('#/lesson/abc/dictation')).toEqual({
+    expect(routeAt('#/lesson/abc/shadowing')).toEqual({
       name: 'lesson',
       lessonId: 'abc',
-      tab: 'dictation',
+      tab: 'shadowing',
     });
   });
 
@@ -64,10 +73,10 @@ describe('解析', () => {
 
   it('多余的斜杠不影响解析 —— 手打地址和拼接出来的地址都得认', () => {
     expect(routeAt('#lessons')).toEqual({ name: 'lessons' });
-    expect(routeAt('#//lesson//abc//study')).toEqual({
+    expect(routeAt('#//lesson//abc//shadowing')).toEqual({
       name: 'lesson',
       lessonId: 'abc',
-      tab: 'study',
+      tab: 'shadowing',
     });
   });
 
@@ -76,8 +85,8 @@ describe('解析', () => {
     const { result } = renderHook(() => useRoute());
     expect(result.current).toEqual({ name: 'vocab' });
     // hashchange 是下一个 task 才投递的，所以要等一拍。
-    navigate({ name: 'review' });
-    await waitFor(() => expect(result.current).toEqual({ name: 'review' }));
+    navigate({ name: 'drill' });
+    await waitFor(() => expect(result.current).toEqual({ name: 'drill' }));
   });
 });
 
@@ -88,7 +97,7 @@ describe('生成', () => {
       { name: 'import' },
       { name: 'sources' },
       { name: 'vocab' },
-      { name: 'review' },
+      { name: 'drill' },
       { name: 'cache' },
       { name: 'record' },
       { name: 'settings' },
@@ -106,8 +115,8 @@ describe('生成', () => {
 });
 
 describe('tab 清单（§12.6）', () => {
-  it('每天走的四个是全部 tab 的子集，顺序就是动线', () => {
-    expect(PRACTICE_TABS).toEqual(['listen', 'shadowing', 'study', 'dictation']);
+  it('每天走的两个是全部 tab 的子集，顺序就是动线', () => {
+    expect(PRACTICE_TABS).toEqual(['listen', 'shadowing']);
     for (const tab of PRACTICE_TABS) expect(LESSON_TABS).toContain(tab);
   });
 

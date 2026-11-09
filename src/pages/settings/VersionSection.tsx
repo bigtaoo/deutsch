@@ -347,7 +347,7 @@ function BridgeSelfTest() {
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<MethodOutcome[] | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  // 剪贴板被拒时把全文摊在这里让他自己选 —— 和 ZhPanel 那条退路同一个理由。
+  // 剪贴板被拒时把全文摊在这里让他自己选 —— 剪贴板的退路都是这一条（变更 84 前生词本补中译那里也有过）。
   const [rawText, setRawText] = useState<string | null>(null);
 
   const run = async (): Promise<MethodOutcome[]> => {

@@ -10,6 +10,7 @@ import { META_KEYS } from '@/db/schema';
 import type {
   DrillCategory,
   DrillCustomItem,
+  DrillDay,
   DrillMark,
   DrillMode,
   DrillPrefs,
@@ -43,8 +44,20 @@ export function normalizeDrillState(raw: unknown): DrillState {
     custom: s.custom && typeof s.custom === 'object' ? s.custom : {},
     marks: s.marks && typeof s.marks === 'object' ? s.marks : {},
     prefs,
+    ...(validDay(s.day) ? { day: s.day } : {}),
     updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : 0,
   };
+}
+
+function validDay(d: unknown): d is DrillDay {
+  if (!d || typeof d !== 'object') return false;
+  const x = d as Partial<DrillDay>;
+  return typeof x.date === 'string' && Array.isArray(x.ids) && typeof x.ts === 'number';
+}
+
+/** 当天计划整份 LWW。 */
+function newerDay(a: DrillDay | undefined, b: DrillDay | undefined): boolean {
+  return Boolean(b && (!a || b.ts > a.ts));
 }
 
 function mergeMap<T extends { ts: number }>(
@@ -71,13 +84,16 @@ export function mergeDrillStates(local: DrillState, incoming: DrillState): { mer
   const custom = mergeMap(a.custom, b.custom);
   const marks = mergeMap(a.marks, b.marks);
   const prefsChanged = b.prefs.ts > a.prefs.ts;
-  const changed = progress.changed || custom.changed || marks.changed || prefsChanged;
+  const dayChanged = newerDay(a.day, b.day);
+  const changed = progress.changed || custom.changed || marks.changed || prefsChanged || dayChanged;
+  const day = dayChanged ? b.day : a.day;
   return {
     merged: {
       progress: progress.merged,
       custom: custom.merged,
       marks: marks.merged,
       prefs: prefsChanged ? b.prefs : a.prefs,
+      ...(day ? { day } : {}),
       updatedAt: Math.max(a.updatedAt, b.updatedAt),
     },
     changed,
@@ -100,7 +116,8 @@ export function drillNeedsPush(local: DrillState, remote: DrillState): boolean {
     hasNewer(a.progress, b.progress) ||
     hasNewer(a.custom, b.custom) ||
     hasNewer(a.marks, b.marks) ||
-    a.prefs.ts > b.prefs.ts
+    a.prefs.ts > b.prefs.ts ||
+    newerDay(b.day, a.day)
   );
 }
 
@@ -113,7 +130,8 @@ export function withProgress(state: DrillState, mode: DrillMode, itemId: string,
 
 export function withMark(state: DrillState, itemId: string, patch: Partial<Omit<DrillMark, 'ts'>>, now: number): DrillState {
   const prev = state.marks[itemId];
-  const next: DrillMark = { flagged: prev?.flagged ?? false, zh: prev?.zh, ...patch, ts: now };
+  // 先铺 prev：斩（known）与改过的中文互不覆盖。
+  const next: DrillMark = { ...prev, flagged: prev?.flagged ?? false, ...patch, ts: now };
   return { ...state, marks: { ...state.marks, [itemId]: next }, updatedAt: now };
 }
 
@@ -145,6 +163,20 @@ export async function getDrillState(): Promise<DrillState> {
 
 export async function putDrillState(state: DrillState): Promise<void> {
   await putMeta(META_KEYS.drill, state);
+  for (const listener of listeners) listener(state);
+}
+
+// 导航角标（FR-22.17）要跟着变：任何一次落库（作答、同步拉回来的合并）都通知一声。
+type Listener = (state: DrillState) => void;
+const listeners = new Set<Listener>();
+
+export function onDrillStateChange(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function withDay(state: DrillState, day: Omit<DrillDay, 'ts'>, now: number): DrillState {
+  return { ...state, day: { ...day, ts: now }, updatedAt: now };
 }
 
 /**

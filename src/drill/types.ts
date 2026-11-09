@@ -104,6 +104,14 @@ export interface DrillCustomItem {
   ts: number;
   /** 墓碑：删掉的手动词要留一条，否则另一台设备合并时会把它复活。 */
   deleted?: true;
+  /**
+   * 从哪来（变更 84）：`lesson` = 课程对齐后自动加的（FR-22.14），`lookup` = 查词加的 / 生词本迁来的查词条目。
+   * 没有这个字段的是变更 84 之前手动加的。决定新词的出场顺序（FR-22.6′）。
+   */
+  src?: 'lesson' | 'lookup';
+  /** 课程词的出处：哪一课、第几句（`Sentence.index`）—— 卡背放原句用（FR-22.16）。 */
+  lessonId?: string;
+  si?: number;
 }
 
 /** 标记与改过的中文（FR-22.9）。取消标记不丢 `zh`。 */
@@ -111,6 +119,22 @@ export interface DrillMark {
   flagged: boolean;
   /** 我改过的中文；没改过是 undefined。 */
   zh?: string;
+  /**
+   * 斩（FR-22.13）：我认识，以后不出。放在 marks 里而不是新开字段 —— 热更没到的旧客户端
+   * 合并时 marks 整条对象原样保留，新字段不会被它抹掉。
+   */
+  known?: boolean;
+  ts: number;
+}
+
+/**
+ * 当天计划（FR-22.6′）。只存「今天要背哪些」，**不存做没做完** —— 那个看进度的
+ * `last_review` 是不是今天（进度逐键合并，两台设备各背一半也对得上）。整份 LWW。
+ */
+export interface DrillDay {
+  /** 本地日期 `YYYY-MM-DD`。 */
+  date: string;
+  ids: string[];
   ts: number;
 }
 
@@ -127,6 +151,8 @@ export interface DrillState {
   custom: Record<string, DrillCustomItem>;
   marks: Record<string, DrillMark>;
   prefs: DrillPrefs;
+  /** 变更 84 起；旧数据没有。 */
+  day?: DrillDay;
   updatedAt: number;
 }
 
@@ -140,4 +166,10 @@ export interface PoolItem {
   zh: string;
   n?: string;
   category: DrillCategory;
+  /** 手动词才有：来源与出处（见 DrillCustomItem）。 */
+  src?: 'lesson' | 'lookup';
+  lessonId?: string;
+  si?: number;
+  /** 手动词加入的时间（排新词顺序用）。 */
+  addedAt?: number;
 }

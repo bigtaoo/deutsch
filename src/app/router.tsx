@@ -11,14 +11,14 @@ export type Route =
   | { name: 'sources' }
   | { name: 'lesson'; lessonId: string; tab: LessonTab }
   | { name: 'vocab' }
-  | { name: 'review' }
   | { name: 'drill' }
   | { name: 'cache' }
   | { name: 'record' }
   | { name: 'settings' };
 
 /**
- * 一课的所有 tab。**顺序就是真实动线**（§12.6）：通听 → 跟读 → 学词 → 听写。
+ * 一课的所有 tab。**顺序就是真实动线**（§12.6）：通听 → 跟读。
+ * 学词、听写两个 tab 在变更 84 下线；旧深链接落到通听（见 parse）。
  *
  * 「标注」那一页在 FR-15 之后去掉了：时间戳一律由自动对齐给（导入后立刻跑），
  * 状态与重跑入口在课程页头部的 AlignStatus 里。
@@ -26,29 +26,25 @@ export type Route =
 export const LESSON_TABS = [
   'listen',
   'shadowing',
-  'study',
-  'dictation',
   'sentences',
   'translation',
 ] as const;
 export type LessonTab = (typeof LESSON_TABS)[number];
 
 /**
- * 每天要走的那四个。`sentences` 和 `translation` **不在其中** —— 两者都是一次性的
+ * 每天要走的那两个。`sentences` 和 `translation` **不在其中** —— 两者都是一次性的
  * 准备工作（§12.6 / §12.9），收在课程页头部的「⋯」里。
  *
  * 以前五个 tab 平级排着，而且落地页就是 `sentences`：打开一课的默认状态是
  * 「编辑模式」，不是「能练」。切句现在收进课程页头部的「⋯」，深链接照旧有效。
  */
-export const PRACTICE_TABS = ['listen', 'shadowing', 'study', 'dictation'] as const;
+export const PRACTICE_TABS = ['listen', 'shadowing'] as const;
 
 export const DEFAULT_LESSON_TAB: LessonTab = 'listen';
 
 export const LESSON_TAB_LABELS: Record<LessonTab, string> = {
   listen: '通听',
   shadowing: '跟读',
-  study: '学词',
-  dictation: '听写',
   sentences: '切句',
   translation: '译文',
 };
@@ -68,7 +64,8 @@ function parse(hash: string): Route {
     case 'vocab':
       return { name: 'vocab' };
     case 'review':
-      return { name: 'review' };
+      // 复习页在变更 84 下线：旧书签落到单词页（今天该做的词都在那里）。
+      return { name: 'vocab' };
     case 'drill':
       return { name: 'drill' };
     case 'cache':

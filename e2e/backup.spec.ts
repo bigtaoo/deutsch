@@ -77,19 +77,16 @@ test('导入：先自动落一份防呆备份，再给合并预览，确认之�
   // 点完就该看得到，不用刷新页面。
   await page.goto('/#/lessons');
   await expect(page.getByRole('link', { name: /Der deutsche Wald/ })).toBeVisible();
-  await page.goto('/#/vocab');
-  await expect(page.getByText('Ansammlung', { exact: true })).toBeVisible();
-  await expect(page.getByText('Erholung', { exact: true })).toBeVisible();
 });
 
-test('导入回来的课带着时间戳与挖空 —— 听写因此立刻可用', async ({ page }) => {
+test('导入回来的课带着时间戳 —— 跟读因此立刻可用', async ({ page }) => {
   await openApp(page);
   await importBackup(page, sampleBackup());
 
-  await page.goto('/#/lesson/e2e-lesson-1/dictation');
+  await page.goto('/#/lesson/e2e-lesson-1/shadowing');
   await expect(page.getByRole('heading', { name: /Der deutsche Wald/ })).toBeVisible();
-  // 「需要有时间戳 + 有挖空的句子」那句话不该出现 —— fixture 里两样都有。
-  await expect(page.getByText('去「学词」标几个词')).toHaveCount(0);
+  // 「还没有任何时间戳」那句话不该出现 —— fixture 里带着。
+  await expect(page.getByText(/还没有任何时间戳/)).toHaveCount(0);
 });
 
 test('导入一份坏 JSON：给一条看得懂的报错，不动已有数据', async ({ page }) => {
@@ -131,8 +128,16 @@ test('往返：导出 → 清空 → 导入，课程与生词都回来了', asyn
 
   await page.goto('/#/lessons');
   await expect(page.getByRole('link', { name: /Der deutsche Wald/ })).toBeVisible();
-  await page.goto('/#/vocab');
-  await expect(page.getByText('Ansammlung', { exact: true })).toBeVisible();
+  // 生词本页不再列旧词条（变更 84），但它们仍在标注层里：再导一次出来，一条不少。
+  await page.goto('/#/settings');
+  const [again] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: '导出备份 JSON' }).click(),
+  ]);
+  const roundTrip = await readJson(again);
+  expect(roundTrip.vocab.map((v: { surface: string }) => v.surface).sort()).toEqual(
+    exported.vocab.map((v: { surface: string }) => v.surface).sort(),
+  );
 });
 
 test('本机更新的那一份不被旧备份覆盖（§2.4 的合并规则）', async ({ page }) => {

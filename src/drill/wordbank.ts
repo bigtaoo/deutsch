@@ -86,7 +86,19 @@ export function buildPool(
   if (want.has('mine')) {
     for (const it of Object.values(state.custom)) {
       if (it.deleted) continue;
-      pool.push({ id: it.id, w: it.w, p: it.p, g: it.g, zh: zhOf(it.id, it.zh), n: it.n, category: 'mine' });
+      pool.push({
+        id: it.id,
+        w: it.w,
+        p: it.p,
+        g: it.g,
+        zh: zhOf(it.id, it.zh),
+        n: it.n,
+        category: 'mine',
+        src: it.src,
+        lessonId: it.lessonId,
+        si: it.si,
+        addedAt: it.ts,
+      });
     }
   }
   return pool;

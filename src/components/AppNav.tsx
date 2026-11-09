@@ -8,6 +8,9 @@
 //
 // 判据一句话：**这是不是一件我今天要做的事**。不是的收进「⋯」。
 //
+// 变更 84：复习整个撤掉、生词本收成「单词」（每天 200 个 + 查词），活动只剩两个：
+// 听课、背词。每天的待办从「复习到期几张」变成「今天还剩几个词」，角标跟着搬到「单词」上。
+//
 // ── 手机为什么放底部 ──
 // 拇指可达。同一个理由让 FR-10.7 把复习的评分按钮钉在底部；导航没有理由例外。
 // 底部标签栏在**课程页与导入页**隐藏 —— 那两页是「推进去」的详情页，而课程页的
@@ -15,9 +18,7 @@
 
 import { useRef, useState } from 'react';
 import { href, type Route } from '@/app/router';
-import { useVocabStore } from '@/state/useVocabStore';
-import { useSettingsStore } from '@/state/useSettingsStore';
-import { buildReviewQueue } from '@/srs/queue';
+import { useDrillToday } from '@/drill/useDrillToday';
 import { useBottomLayer } from './bottomLayer';
 import { SyncChip } from './SyncChip';
 
@@ -28,12 +29,16 @@ interface Activity {
   icon: (props: { className: string }) => React.ReactElement;
 }
 
-/** 三个活动，三个动词：听、练、词。 */
+/** 两个活动：听、背。 */
 const ACTIVITIES: Activity[] = [
   { label: '课程', route: { name: 'lessons' }, icon: HeadphonesIcon },
-  { label: '复习', route: { name: 'review' }, icon: CardsIcon },
-  { label: '生词本', route: { name: 'vocab' }, icon: ListIcon },
+  { label: '单词', route: { name: 'vocab' }, icon: CardsIcon },
 ];
+
+/** 单词会话（#/drill）是从单词页推进去的，导航上仍亮「单词」。 */
+function isActive(item: Activity, route: Route): boolean {
+  return route.name === item.route.name || (item.route.name === 'vocab' && route.name === 'drill');
+}
 
 /** 抽屉里的管道页。它们仍是完整页面，只是不占导航位。 */
 const DRAWER: Array<{ label: string; route: Route; note: string }> = [
@@ -49,24 +54,15 @@ function isDetail(route: Route): boolean {
 }
 
 function activeActivity(route: Route): Activity | undefined {
-  return ACTIVITIES.find((a) => a.route.name === route.name);
+  return ACTIVITIES.find((a) => isActive(a, route));
 }
 
 /**
- * 今天到期几张。**每天唯一的待办**，所以它在两处导航上都是一个角标，
- * 而不是首页上一条会被读一次就再也不读的横幅。
- *
- * 数字必须跟复习页的「新卡 N · 复习 M」加起来一致 —— 都走 `buildReviewQueue`，
- * 套 `newPerDay`/`reviewPerDay` 的每日上限与同日互斥去重。早先这里是一个不设上限
- * 的原始 `due <= now` 计数，于是角标写着 19、进页面却只有 10 张能刷，两个数字
- * 对不上（用户发现的）。「到期总共多少」不是这个角标要回答的问题。
+ * 今天还剩几个词（FR-22.17）。**每天唯一的待办**，所以它在两处导航上都是一个角标，
+ * 而不是首页上一条会被读一次就再也不读的横幅。数字跟单词页的「今天 x / 200」同源。
  */
 export function useDueCount(): number {
-  const entries = useVocabStore((s) => s.entries);
-  const newPerDay = useSettingsStore((s) => s.settings.newPerDay);
-  const reviewPerDay = useSettingsStore((s) => s.settings.reviewPerDay);
-  const { newCount, reviewCount } = buildReviewQueue(entries, { newPerDay, reviewPerDay });
-  return newCount + reviewCount;
+  return useDrillToday().remaining;
 }
 
 export function TopBar({ route }: { route: Route }) {
@@ -84,18 +80,18 @@ export function TopBar({ route }: { route: Route }) {
             <a
               key={item.label}
               href={href(item.route)}
-              aria-current={route.name === item.route.name ? 'page' : undefined}
+              aria-current={isActive(item, route) ? 'page' : undefined}
               className={`flex min-h-11 items-center rounded-ctl px-3 text-ui ${
-                route.name === item.route.name
+                isActive(item, route)
                   ? 'bg-accent text-accent-ink'
                   : 'text-muted hover:bg-sunken hover:text-ink'
               }`}
             >
               {item.label}
-              {item.route.name === 'review' && dueCount > 0 && (
+              {item.route.name === 'vocab' && dueCount > 0 && (
                 <span
                   className={`tnum ml-1.5 rounded-full px-1.5 text-note ${
-                    route.name === 'review' ? 'bg-accent-ink/20' : 'bg-accent text-accent-ink'
+                    isActive(item, route) ? 'bg-accent-ink/20' : 'bg-accent text-accent-ink'
                   }`}
                 >
                   {dueCount > 99 ? '99+' : dueCount}
@@ -172,7 +168,7 @@ export function BottomTabs({ route }: { route: Route }) {
     >
       <div className="mx-auto flex max-w-4xl">
         {ACTIVITIES.map((item) => {
-          const active = route.name === item.route.name;
+          const active = isActive(item, route);
           const Icon = item.icon;
           return (
             <a
@@ -185,8 +181,8 @@ export function BottomTabs({ route }: { route: Route }) {
             >
               <Icon className="size-6" />
               <span className="text-note leading-none">{item.label}</span>
-              {/* 到期张数只贴在「复习」上。它是这个应用每天唯一的待办。 */}
-              {item.route.name === 'review' && dueCount > 0 && (
+              {/* 今天还剩几个只贴在「单词」上。它是这个应用每天唯一的待办。 */}
+              {item.route.name === 'vocab' && dueCount > 0 && (
                 <span className="absolute top-1.5 right-[calc(50%-1.5rem)] min-w-4 rounded-full bg-accent px-1 text-center text-[0.625rem] leading-4 text-accent-ink">
                   {dueCount > 99 ? '99+' : dueCount}
                 </span>
@@ -205,7 +201,7 @@ export function shouldShowBottomTabs(route: Route): boolean {
 }
 
 /* ── 图标 ──
-   纯手写路径，不引图标库：一共三个，而 stroke 宽度和圆角要跟这套令牌对齐。
+   纯手写路径，不引图标库：一共两个，而 stroke 宽度和圆角要跟这套令牌对齐。
    全部 24×24、`currentColor`、只用 stroke —— 于是深色模式下不需要第二份。 */
 
 function HeadphonesIcon({ className }: { className: string }) {
@@ -227,10 +223,3 @@ function CardsIcon({ className }: { className: string }) {
   );
 }
 
-function ListIcon({ className }: { className: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className={className} aria-hidden>
-      <path d="M5 6.5h14M5 12h14M5 17.5h9" strokeLinecap="round" />
-    </svg>
-  );
-}

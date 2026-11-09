@@ -12,6 +12,7 @@ import {
   RETRY_GAP,
   runFinished,
   sameMeaning,
+  skipCurrent,
   splitPool,
   startRun,
   summarizeRun,
@@ -165,5 +166,33 @@ describe('一轮之内（FR-22.7）', () => {
     run = advanceRun(recordAnswer(run, true));
     run = recordAnswer(run, false); // b 错，后面只剩 0 张
     expect(run.queue).toEqual(['a', 'b', 'b']);
+  });
+});
+
+describe('skipCurrent（斩，FR-22.15）', () => {
+  it('前进一张，后面插回来的重做一并拿掉，且不记进 first', () => {
+    let run = startRun([item('a', '一'), item('b', '二'), item('c', '三'), item('d', '四'), item('e', '五')]);
+    run = recordAnswer(run, false); // a 错 → 插回 a
+    run = advanceRun(run);
+    run = recordAnswer(run, false); // b 错 → 插回 b
+    expect(run.queue.filter((x) => x === 'b')).toHaveLength(2);
+    // 刚答错的 b 又被斩：不再重做；first 里 b 已经记了，小结仍按它算
+    run = skipCurrent(run);
+    expect(run.position).toBe(2);
+    expect(run.queue.slice(run.position).includes('b')).toBe(false);
+    expect(run.queue.slice(run.position).includes('a')).toBe(true);
+  });
+
+  it('没答就斩：不进 first，小结不把它算成「一次答对」', () => {
+    let run = startRun([item('a', '一'), item('b', '二')]);
+    run = skipCurrent(run);
+    expect('a' in run.first).toBe(false);
+    run = recordAnswer(run, true);
+    run = advanceRun(run);
+    expect(summarizeRun(run)).toEqual({ total: 1, firstTry: 1, missed: [] });
+  });
+
+  it('最后一张斩掉 → 这一轮结束', () => {
+    expect(runFinished(skipCurrent(startRun([item('a', '一')])))).toBe(true);
   });
 });

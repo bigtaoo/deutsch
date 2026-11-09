@@ -19,16 +19,17 @@ test('空库上不提醒备份 —— 那时还没有任何东西可丢', async 
   await expect(page.getByText(/手动导出/)).toHaveCount(0);
 });
 
-test('三个活动直接可达，四个管道页收在抽屉里', async ({ page }) => {
+test('两个活动直接可达，四个管道页收在抽屉里', async ({ page }) => {
   await openApp(page);
 
   for (const [label, hash] of [
     ['课程', '#/lessons'],
-    ['复习', '#/review'],
-    ['生词本', '#/vocab'],
+    ['单词', '#/vocab'],
   ] as const) {
     await expect(page.locator(`header a[href="${hash}"]`).first()).toHaveText(new RegExp(label));
   }
+  // 复习整个撤掉了（变更 84）：导航里不再有它
+  await expect(page.locator('header a[href="#/review"]')).toHaveCount(0);
 
   await page.getByLabel('更多').click();
   for (const label of ['来源', '素材', '记录', '设置']) {
@@ -52,11 +53,16 @@ test('抽屉里每一页都真的打得开', async ({ page }) => {
 });
 
 test('深链接：地址栏直接粘进去就是那一页', async ({ page }) => {
-  for (const hash of ['#/vocab', '#/review', '#/record', '#/settings', '#/cache', '#/sources']) {
+  for (const hash of ['#/vocab', '#/drill', '#/record', '#/settings', '#/cache', '#/sources']) {
     await page.goto(`/${hash}`);
     await expect(page).toHaveURL(new RegExp(`${hash}$`));
     await expect(page.locator('main')).not.toBeEmpty();
   }
+});
+
+test('旧的复习地址（收藏夹里可能还有）落到单词页', async ({ page }) => {
+  await page.goto('/#/review');
+  await expect(page.getByRole('heading', { name: '单词', level: 1 })).toBeVisible();
 });
 
 test('认不出的地址退回课程列表，而不是白屏', async ({ page }) => {
@@ -67,7 +73,7 @@ test('认不出的地址退回课程列表，而不是白屏', async ({ page }) 
 test('前进后退按钮走的是同一条 hash 历史（Android 的硬件返回键靠它）', async ({ page }) => {
   await openApp(page);
   await page.goto('/#/vocab');
-  await page.goto('/#/review');
+  await page.goto('/#/record');
 
   await page.goBack();
   await expect(page).toHaveURL(/#\/vocab$/);
@@ -85,6 +91,11 @@ test('桌面宽度下不画底部标签栏（§12.2：底部一次只有一层�
 
 test('控制台里没有报错 —— 白屏之前先是一条红字', async ({ page }) => {
   const errors: string[] = [];
+  // 预览服务器的 origin 不在同步服务器的 CORS 白名单里：词库请求在这里必然被挡，那不是应用的错。
+  // 给一份空词库（200）：503 也会在控制台留一条红字。
+  await page.route('**/v1/wordbank**', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{"version":"e2e","items":[]}' }),
+  );
   page.on('pageerror', (err) => errors.push(err.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(msg.text());
@@ -92,7 +103,7 @@ test('控制台里没有报错 —— 白屏之前先是一条红字', async ({ 
 
   await openApp(page);
   await page.goto('/#/vocab');
-  await page.goto('/#/review');
+  await page.goto('/#/drill');
   await page.goto('/#/record');
   await page.goto('/#/settings');
 

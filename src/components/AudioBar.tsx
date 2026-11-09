@@ -12,6 +12,7 @@ import { audioPlayer } from '@/audio/player';
 import { useAudioPlaying, useAudioTime, type LessonAudioState } from '@/audio/useLessonAudio';
 import { useBottomLayer } from './bottomLayer';
 import { Button, formatTime } from './ui';
+import { LOOP_LABELS, nextLoopMode, useLoopMode } from '@/pages/lesson/loop';
 
 export const PLAYBACK_RATES = [0.7, 0.85, 1.0, 1.2] as const;
 
@@ -21,9 +22,11 @@ interface Props {
   onRateChange: (rate: number) => void;
   /** 额外的控制按钮（如跟读的「重播本句」） */
   children?: React.ReactNode;
+  /** 显示循环档位键（FR-5.7，只有通听有：跟读是一句一句的，没有「放完」） */
+  loop?: boolean;
 }
 
-export function AudioBar({ audio, rate, onRateChange, children }: Props) {
+export function AudioBar({ audio, rate, onRateChange, children, loop = false }: Props) {
   const time = useAudioTime();
   const playing = useAudioPlaying();
   const [el, setEl] = useState<HTMLElement | null>(null);
@@ -73,6 +76,8 @@ export function AudioBar({ audio, rate, onRateChange, children }: Props) {
             {playing ? '暂停' : '播放'}
           </Button>
 
+          {loop && <LoopButton />}
+
           <span className="tnum shrink-0 text-note text-muted">
             {formatTime(time)} / {formatTime(duration, 0)}
           </span>
@@ -84,6 +89,24 @@ export function AudioBar({ audio, rate, onRateChange, children }: Props) {
         {reason && <p className="text-note text-warn">{reason}</p>}
       </div>
     </div>
+  );
+}
+
+/** 循环档位：一个键轮换三档（不循环 → 本课循环 → 顺播本组）。 */
+function LoopButton() {
+  const [mode, setMode] = useLoopMode();
+  return (
+    <button
+      type="button"
+      aria-label={`循环：${LOOP_LABELS[mode]}`}
+      title="点一下换一档"
+      onClick={() => setMode(nextLoopMode(mode))}
+      className={`min-h-11 shrink-0 rounded-ctl border px-2 text-note ${
+        mode === 'off' ? 'border-line text-muted' : 'border-accent bg-accent-soft text-accent'
+      }`}
+    >
+      {LOOP_LABELS[mode]}
+    </button>
   );
 }
 

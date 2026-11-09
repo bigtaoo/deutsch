@@ -1,18 +1,18 @@
-// FR-22 速背页的行为测试。纯函数（排轮、出题、合并）在 src/drill/*.test.ts 里各自测过，
+// FR-22 每日会话（变更 84）的行为测试。纯函数（排计划、排轮、出题、合并）在 src/drill/*.test.ts 里各自测过，
 // 这里测的是把它们装起来之后「点下去发生了什么」：
-//   · 单词模式亮词形、选项是中文；答错展开卡背
-//   · 标记之后中文变成可改，保存落库、立即用于正确项
+//   · 打开就开始：顶部 `x / total`，卡面是词形，选项是中文
+//   · 答错展开卡背；标记之后中文可改，保存落库、立即用于正确项
 //   · 本轮重做的那一次不进调度（FR-22.7）—— 写错的症状是「错了再对」被记成记住了
-//   · 音频模式开轮前先取发音
+//   · 斩：落 known、跳到下一张、计数 +1
+//   · 先停在这里 → 回来接着背，计数从已做的往上数（做没做完看的是进度，不是这一页记的位置）
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { getDB, _resetDBForTests } from '@/db';
 import { DB_NAME, META_KEYS } from '@/db/schema';
 import { putMeta } from '@/db/meta';
-import { getDrillState, putDrillState, emptyDrillState, withPrefs } from '@/drill/state';
+import { getDrillState } from '@/drill/state';
 import { prefetchWordAudio } from '@/dict/audio';
-import { scheduleDrillSync } from '@/sync/trigger';
 import type { CachedWordbank } from '@/drill/types';
 
 vi.mock('@/sync/config', () => ({ SYNC_API_BASE: '', isSyncConfigured: () => false }));
@@ -86,38 +86,26 @@ function choiceButton(text: string): HTMLElement {
   return btn;
 }
 
-async function startWordRound() {
-  await putDrillState(withPrefs(emptyDrillState(), { mode: 'word', roundSize: 10 }, 1));
+function wrongChoice(w: string): string {
+  return Object.values(ZH).find(
+    (t) => t !== ZH[w] && screen.getAllByRole('button').some((b) => b.textContent?.replace(/^\d/, '') === t),
+  )!;
+}
+
+async function openSession() {
   render(<DrillPage />);
-  fireEvent.click(await screen.findByRole('button', { name: '开始一轮' }));
   await screen.findByText('这个词是什么意思');
 }
 
-describe('首页', () => {
-  it('写出词库大小与「到期 / 没学过」，三大类各带词数', async () => {
-    render(<DrillPage />);
-    expect(await screen.findByText(/还没学过 6/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: '日常（6）' })).toBeTruthy();
-    expect(screen.getByText(/词库 6 个词/)).toBeTruthy();
+const tick = (ms: number) =>
+  act(async () => {
+    await new Promise((r) => setTimeout(r, ms));
   });
 
-  it('从没拿到过词库、也没有自己加的词 → 拦路横幅，说清下一步', async () => {
-    await putMeta(META_KEYS.drillWordbank, undefined);
-    render(<DrillPage />);
-    expect(await screen.findByText('词库还没下载')).toBeTruthy();
-  });
-
-  it('切模式落库并触发同步（偏好跟着账号走）', async () => {
-    render(<DrillPage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Aa 单词' }));
-    await waitFor(async () => expect((await getDrillState()).prefs.mode).toBe('word'));
-    expect(scheduleDrillSync).toHaveBeenCalled();
-  });
-});
-
-describe('单词模式一轮', () => {
-  it('选项是四个中文，其中一个是卡面那个词的中文', async () => {
-    await startWordRound();
+describe('打开就开始', () => {
+  it('顶部是 0 / 6，卡面词形，四个中文选项里有正确的那个', async () => {
+    await openSession();
+    expect(screen.getByText('0 / 6')).toBeTruthy();
     const w = shownWord();
     expect(choiceButton(ZH[w])).toBeTruthy();
     const texts = Object.values(ZH);
@@ -128,17 +116,42 @@ describe('单词模式一轮', () => {
     expect(choiceTexts).toHaveLength(4);
   });
 
+  it('开始前把今天这批的发音取好', async () => {
+    await openSession();
+    expect(prefetchWordAudio).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(prefetchWordAudio).mock.calls[0][0]).toHaveLength(6);
+  });
+
+  it('今天的计划落库 —— 换个页面再来，分母不变', async () => {
+    await openSession();
+    const s = await getDrillState();
+    expect(s.day?.ids).toHaveLength(6);
+  });
+
+  it('池子是空的（没词库、也没自己加的词）→ 不出空卡', async () => {
+    await putMeta(META_KEYS.drillWordbank, undefined);
+    render(<DrillPage />);
+    expect(await screen.findByText('今天的背完了。')).toBeTruthy();
+  });
+});
+
+describe('作答', () => {
+  it('答对：进度写 `word:`，计数 +1', async () => {
+    await openSession();
+    const w = shownWord();
+    fireEvent.click(choiceButton(ZH[w]));
+    await waitFor(async () => expect((await getDrillState()).progress[`word:${w.toLowerCase()}`]).toBeDefined());
+    expect((await getDrillState()).progress[`audio:${w.toLowerCase()}`]).toBeUndefined();
+    await screen.findByText('1 / 6');
+  });
+
   it('答错：进调度（Again）、展开卡背；标记 → 改中文 → 保存，立即成为正确项', async () => {
-    await startWordRound();
+    await openSession();
     const w = shownWord();
     const id = w.toLowerCase();
-    const wrong = Object.values(ZH).find(
-      (t) => t !== ZH[w] && screen.getAllByRole('button').some((b) => b.textContent?.replace(/^\d/, '') === t),
-    )!;
-    fireEvent.click(choiceButton(wrong));
+    fireEvent.click(choiceButton(wrongChoice(w)));
 
     await waitFor(async () => expect((await getDrillState()).progress[`word:${id}`]).toBeDefined());
-    expect((await getDrillState()).progress[`audio:${id}`]).toBeUndefined(); // 另一个模式不动
 
     fireEvent.click(await screen.findByRole('button', { name: '☆ 标记' }));
     const input = await screen.findByLabelText('改正确答案的中文');
@@ -151,48 +164,61 @@ describe('单词模式一轮', () => {
     expect(choiceButton('租房押金（改）').className).toContain('border-ok');
   });
 
-  it('错了的词本轮内再出，重做那一次答对**不再评分**', async () => {
-    await startWordRound();
+  it('错了的词隔几张再出，重做那一次答对**不再评分**、也不再计数', async () => {
+    await openSession();
     const first = shownWord();
     const id = first.toLowerCase();
-    const wrong = Object.values(ZH).find(
-      (t) => t !== ZH[first] && screen.getAllByRole('button').some((b) => b.textContent?.replace(/^\d/, '') === t),
-    )!;
-    fireEvent.click(choiceButton(wrong));
+    fireEvent.click(choiceButton(wrongChoice(first)));
     await screen.findByRole('button', { name: '继续 (Space)' });
     const graded = (await getDrillState()).progress[`word:${id}`];
 
     fireEvent.click(screen.getByRole('button', { name: '继续 (Space)' }));
-    // 一路答对，直到那个词作为重做回来
     for (let i = 0; i < 10; i++) {
       await screen.findByText('这个词是什么意思');
       await waitFor(() => expect(document.querySelector('p.text-word')).toBeTruthy());
       const w = shownWord();
       if (w === first) break;
       fireEvent.click(choiceButton(ZH[w]));
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 700));
-      });
+      await tick(700);
     }
     expect(shownWord()).toBe(first);
     expect(screen.getByText('重做')).toBeTruthy();
+    // 斩只给第一次：重做时不出
+    expect(screen.queryByRole('button', { name: '斩' })).toBeNull();
+    const before = screen.getByText(/^\d+ \/ 6$/).textContent;
     fireEvent.click(choiceButton(ZH[first]));
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50));
-    });
+    await tick(50);
     expect((await getDrillState()).progress[`word:${id}`]).toEqual(graded);
+    expect(screen.getByText(/^\d+ \/ 6$/).textContent).toBe(before);
   }, 20_000);
 });
 
-describe('音频模式', () => {
-  it('开轮前先把这一轮的发音取好', async () => {
-    await putDrillState(withPrefs(emptyDrillState(), { mode: 'audio', roundSize: 10 }, 1));
-    render(<DrillPage />);
-    fireEvent.click(await screen.findByRole('button', { name: '开始一轮' }));
-    await screen.findByText(/听这个词，选出它的意思/);
-    expect(prefetchWordAudio).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(prefetchWordAudio).mock.calls[0][0]).toHaveLength(6);
-    // 音频模式卡面上不给词形
-    expect(document.querySelector('p.text-word')).toBeNull();
+describe('斩', () => {
+  it('落 known、跳到下一张、计数 +1，不写进度', async () => {
+    await openSession();
+    const w = shownWord();
+    fireEvent.click(screen.getByRole('button', { name: '斩' }));
+    await screen.findByText('1 / 6');
+    const s = await getDrillState();
+    expect(s.marks[w.toLowerCase()]?.known).toBe(true);
+    expect(s.progress[`word:${w.toLowerCase()}`]).toBeUndefined();
+    expect(shownWord()).not.toBe(w);
+  });
+});
+
+describe('先停在这里', () => {
+  it('停下给小结；再打开从已做的往上数，做过的不再出', async () => {
+    await openSession();
+    const w = shownWord();
+    fireEvent.click(choiceButton(ZH[w]));
+    await screen.findByText('1 / 6');
+    await tick(700);
+    fireEvent.click(screen.getByRole('button', { name: '先停在这里' }));
+    expect(await screen.findByText(/先停在这里，回来接着背/)).toBeTruthy();
+    cleanup();
+
+    await openSession();
+    expect(screen.getByText('1 / 6')).toBeTruthy();
+    expect(shownWord()).not.toBe(w);
   });
 });

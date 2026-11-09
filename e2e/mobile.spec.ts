@@ -19,12 +19,12 @@ const inset = (page: import('@playwright/test').Page) =>
     ),
   );
 
-test('底部标签栏：三个活动，拇指可达', async ({ page }) => {
+test('底部标签栏：两个活动，拇指可达', async ({ page }) => {
   await openApp(page);
 
   const tabs = page.locator('nav.fixed.inset-x-0.bottom-0');
   await expect(tabs).toBeVisible();
-  await expect(tabs.locator('a')).toHaveText(['课程', '复习', '生词本']);
+  await expect(tabs.locator('a')).toHaveText([/^课程/, /^单词/]); // 单词后面可能跟着今天剩几个的角标
 
   // §12.1 把热区从约 30px 提到 44px 就是这条规定的由来。
   for (const link of await tabs.locator('a').all()) {
@@ -37,12 +37,13 @@ test('点底部标签真的换页，并且当前那个是高亮的', async ({ pa
   await openApp(page);
   const tabs = page.locator('nav.fixed.inset-x-0.bottom-0');
 
-  await tabs.getByRole('link', { name: '生词本' }).click();
+  await tabs.getByRole('link', { name: /^单词/ }).click();
   await expect(page).toHaveURL(/#\/vocab$/);
-  await expect(tabs.locator('a[aria-current="page"]')).toHaveText('生词本');
+  await expect(tabs.locator('a[aria-current="page"]')).toHaveText(/^单词/);
 
-  await tabs.getByRole('link', { name: '复习' }).click();
-  await expect(page).toHaveURL(/#\/review$/);
+  await tabs.getByRole('link', { name: /^课程/ }).click();
+  await expect(page).toHaveURL(/#\/lessons$/);
+  await expect(tabs.locator('a[aria-current="page"]')).toHaveText(/^课程/);
 });
 
 test('详情页收起标签栏 —— 底部归音频条（§12.2：一次只有一层）', async ({ page }) => {
@@ -71,7 +72,7 @@ test('--bottom-inset 按实测高度算出来，页面内容不会被标签栏�
 });
 
 test('页面不横向滚动 —— 窄屏上出现横向滚动条就是有东西溢出了', async ({ page }) => {
-  for (const hash of ['#/lessons', '#/vocab', '#/review', '#/record', '#/settings', '#/import']) {
+  for (const hash of ['#/lessons', '#/vocab', '#/drill', '#/record', '#/settings', '#/import']) {
     await page.goto(`/${hash}`);
     await expect(page.locator('main')).not.toBeEmpty();
     const overflow = await page.evaluate(

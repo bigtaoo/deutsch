@@ -22,14 +22,15 @@ import { useLessonStore, isMaterialMissing, isRehydratable } from '@/state/useLe
 import { useAlignStore } from '@/state/useAlignStore';
 import { rehydrateLesson } from '@/sources/importLesson';
 import { hasTimings } from '@/align/apply';
+import { harvestLesson } from '@/drill/harvest';
+import { useSettingsStore } from '@/state/useSettingsStore';
+import { scheduleDrillSync } from '@/sync/trigger';
 import { bindPickedAudio, isMultiTrack, listedAudioFiles, restoreServerAudio } from '@/lesson/bindAudio';
 import { SentencesTab } from './lesson/SentencesTab';
 import { AlignStatus } from './lesson/AlignStatus';
 import { ListenTab } from './lesson/ListenTab';
 import { TranslationTab } from './lesson/TranslationTab';
 import { ShadowingTab } from './lesson/ShadowingTab';
-import { StudyTab } from './lesson/StudyTab';
-import { DictationTab } from './lesson/DictationTab';
 import { Banner, Button, EmptyState, FilePicker, Hint, Note, formatBytes, formatTime } from '@/components/ui';
 import { translationCoverage } from '@/lesson/translation';
 import type { Lesson } from '@/types/models';
@@ -41,8 +42,6 @@ function readiness(
 ): { ready: boolean; why: string } {
   const usable = lesson.sentences.filter((s) => !s.excluded);
   const timed = usable.filter((s) => s.startTime !== undefined);
-  const dictatable = usable.filter((s) => s.blanks.length > 0 && s.startTime !== undefined);
-  const blanks = usable.reduce((sum, s) => sum + s.blanks.length, 0);
 
   switch (tab) {
     case 'listen':
@@ -53,12 +52,6 @@ function readiness(
       return timed.length > 0
         ? { ready: true, why: `可循环 ${timed.length} 句` }
         : { ready: false, why: '还没有时间戳 —— 句子没有可播的区间' };
-    case 'study':
-      return { ready: true, why: blanks > 0 ? `已挖空 ${blanks} 处` : '还没标过生词' };
-    case 'dictation':
-      return dictatable.length > 0
-        ? { ready: true, why: `${dictatable.length} 句可听写` }
-        : { ready: false, why: '需要「有时间戳 + 有挖空」的句子，去「学词」标几个词' };
   }
 }
 
@@ -67,6 +60,20 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
   const cache = useLessonStore((s) => s.caches[lessonId]);
   const loaded = useLessonStore((s) => s.loaded);
   const menuRef = useRef<HTMLDetailsElement>(null);
+  const timed = lesson ? hasTimings(lesson.sentences) : false;
+
+  // FR-22.14：对齐过的课，新词自动进速背。每课只跑一次（harvest.ts 记着），这里只管触发。
+  useEffect(() => {
+    if (!timed) return;
+    const current = useLessonStore.getState().lessons.find((l) => l.id === lessonId);
+    if (!current) return;
+    const known = useSettingsStore.getState().settings.knownWords ?? [];
+    void harvestLesson(current, known)
+      .then((r) => {
+        if (r.status === 'done' && r.added > 0) scheduleDrillSync();
+      })
+      .catch(() => undefined);
+  }, [lessonId, timed]);
 
   if (!loaded) return <EmptyState>加载中…</EmptyState>;
   if (!lesson) return <EmptyState>找不到这一课。它可能已被删除。</EmptyState>;
@@ -179,8 +186,6 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
 
           {tab === 'listen' && <ListenTab lesson={lesson} cache={cache} />}
           {tab === 'shadowing' && <ShadowingTab lesson={lesson} cache={cache} />}
-          {tab === 'study' && <StudyTab lesson={lesson} cache={cache} />}
-          {tab === 'dictation' && <DictationTab lesson={lesson} cache={cache} />}
         </>
       )}
     </div>

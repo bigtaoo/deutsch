@@ -54,11 +54,11 @@ export function LessonsPage() {
 
       {dueCount > 0 && (
         <a
-          href={href({ name: 'review' })}
+          href={href({ name: 'vocab' })}
           className="flex items-center gap-3 rounded-box border border-accent/40 bg-accent-soft px-4 py-3 text-ui text-accent"
         >
           <span className="tnum text-title font-semibold">{dueCount}</span>
-          <span className="flex-1">张卡今天到期</span>
+          <span className="flex-1">个词今天还没背</span>
           <span aria-hidden>›</span>
         </a>
       )}

@@ -37,8 +37,7 @@ function isTyping(): boolean {
 /**
  * 刷新，但不在人打字的当口刷。
  *
- * 听写的答案只活在 React state 里（`DictationTab` 的 `answers`，没有落 IndexedDB），
- * 复习和跟读的当前进度同理 —— 打了半句被静默刷掉，比看到旧版更难接受。
+ * 跟读与速背的当前进度只活在 React state 里（没有落 IndexedDB；变更 84 之前还有听写的答案） —— 打了半句被静默刷掉，比看到旧版更难接受。
  *
  * 只等到光标离开，不等更久：`skipWaiting` + `cleanupOutdatedCaches` 意味着新 SW 一激活，
  * 旧构建的预缓存就已经被删了。这个页面之后再去按需加载旧 chunk（词典分桶、对齐的

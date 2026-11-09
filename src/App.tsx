@@ -8,7 +8,7 @@ import { useSyncStore } from '@/state/useSyncStore';
 import { connectStudyClock, useStudyStore } from '@/state/useStudyStore';
 import { attachStudyClockListeners, studyClock } from '@/study/tracker';
 import { isPracticeRoute } from '@/study/surface';
-import { setSyncHooks, startSyncAutoRetry, syncNow } from '@/sync/trigger';
+import { scheduleDrillSync, setSyncHooks, startSyncAutoRetry, syncNow } from '@/sync/trigger';
 import { audioPlayer } from '@/audio/player';
 import { hideNativeSplash, nativePlatform } from '@/platform/native';
 import { initSafeArea } from '@/platform/safeArea';
@@ -23,7 +23,7 @@ import { BookImportPage } from '@/pages/BookImportPage';
 import { LessonPage } from '@/pages/LessonPage';
 import { SourcesPage } from '@/pages/SourcesPage';
 import { VocabPage } from '@/pages/VocabPage';
-import { ReviewPage } from '@/pages/ReviewPage';
+import { migrateVocabToDrill } from '@/drill/migrate';
 import { DrillPage } from '@/pages/DrillPage';
 import { CachePage } from '@/pages/CachePage';
 import { RecordPage } from '@/pages/RecordPage';
@@ -59,7 +59,14 @@ function App() {
         // FR-11.19：启动时同步一次 —— 先把排队的推出去，再把别的设备改过的拉回来。
         // **必须等这五张表真的读完**：拉取会往库里写，写完由 onRemoteDataWritten 让 store
         // 重读，而初次 load() 如果晚于那次重读，界面就退回到拉取之前的旧值了。
-        void syncNow();
+        // 变更 84：旧生词本迁进速背 —— 等同步拉完再迁（另一台设备迁过的进度先合进来，就不会被这里重写）。
+        void Promise.resolve(syncNow())
+          .catch(() => undefined)
+          .then(() => migrateVocabToDrill())
+          .then((n) => {
+            if (n) scheduleDrillSync();
+          })
+          .catch(() => undefined);
       },
     });
 
@@ -131,7 +138,6 @@ function App() {
         {route.name === 'sources' && <SourcesPage />}
         {route.name === 'lesson' && <LessonPage lessonId={route.lessonId} tab={route.tab} />}
         {route.name === 'vocab' && <VocabPage />}
-        {route.name === 'review' && <ReviewPage />}
         {route.name === 'drill' && <DrillPage />}
         {route.name === 'cache' && <CachePage />}
         {route.name === 'record' && <RecordPage />}

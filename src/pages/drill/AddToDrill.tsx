@@ -1,7 +1,7 @@
 // FR-22.10：查词面板里的「加入速背」。
 //
-// 与「加入生词本」**并列而不合并**：速背是独立的功能，一个词进不进 FSRS 复习
-// 与进不进速背是两个决定（SPEC FR-22.10）。
+// 变更 84 起它是查词唯一的去处（生词本与复习撤掉了）。加进来的词带 `src:'lookup'`，
+// 排每天 200 个的新词时排在课程词之后、词库之前（FR-22.6′）。
 //
 // 中文预填：内置词典有中文就用第一条；没有、而 AI 可用，就问一次（按词义给一句）。
 // 预填**只是预填**，输入框随时可改 —— 词典的中文不准正是这个功能存在的理由之一。
@@ -12,14 +12,12 @@ import { aiAvailable } from '@/ai/explain';
 import { glossWithAi } from '@/ai/gloss';
 import { getDrillState, updateDrillState, withCustom } from '@/drill/state';
 import { customItemId, findInWordbank, getCachedWordbank } from '@/drill/wordbank';
-import type { DrillPos } from '@/drill/types';
+import { toDrillPos } from '@/drill/harvest';
 import type { DictPos } from '@/dict/types';
 import { scheduleDrillSync } from '@/sync/trigger';
 import { Button, Hint, Note, field } from '@/components/ui';
 
-export function toDrillPos(pos: DictPos | undefined): DrillPos {
-  return pos === 'noun' || pos === 'verb' || pos === 'adj' || pos === 'adv' ? pos : 'other';
-}
+export { toDrillPos };
 
 type Status = 'checking' | 'ready' | 'in-bank' | 'in-mine' | 'added';
 
@@ -81,15 +79,15 @@ export function AddToDrill({
   if (status === 'checking') return null;
   if (status === 'in-bank' || status === 'in-mine') {
     return (
-      <Note tone="accent" action={<a className="underline" href={href({ name: 'drill' })}>去速背</a>}>
+      <Note tone="accent" action={<a className="underline" href={href({ name: 'vocab' })}>去背</a>}>
         <b>{word}</b> {status === 'in-bank' ? '已在速背词库里' : '已经加进速背了'}。
       </Note>
     );
   }
   if (status === 'added') {
     return (
-      <Note tone="ok" action={<a className="underline" href={href({ name: 'drill' })}>去速背</a>}>
-        <b>{word}</b> 已加进速背，下一轮新词里排最前。
+      <Note tone="ok" action={<a className="underline" href={href({ name: 'vocab' })}>去背</a>}>
+        <b>{word}</b> 已加进速背，新词里排在前面。
       </Note>
     );
   }
@@ -98,7 +96,11 @@ export function AddToDrill({
     const text = draft.trim();
     if (!text) return;
     await updateDrillState((s) =>
-      withCustom(s, { id: customItemId(word), w: word, p: toDrillPos(pos), g: gender, zh: text }, Date.now()),
+      withCustom(
+        s,
+        { id: customItemId(word), w: word, p: toDrillPos(pos), g: gender, zh: text, src: 'lookup' },
+        Date.now(),
+      ),
     );
     scheduleDrillSync();
     setStatus('added');

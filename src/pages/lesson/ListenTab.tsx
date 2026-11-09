@@ -21,6 +21,7 @@ import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
 import { AudioBar } from '@/components/AudioBar';
 import { LessonNotes } from './LessonNotes';
+import { useLoopPlayback } from './loop';
 import { followScrollTarget, pageLiftTarget } from './followScroll';
 import { Button, Hint } from '@/components/ui';
 import { useSettingsStore } from '@/state/useSettingsStore';
@@ -32,6 +33,7 @@ const RESUME_MS = 5000;
 
 export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
   const audio = useLessonAudio(lesson.id);
+  useLoopPlayback(lesson, audio);
   const time = useAudioTime();
   const [expanded, setExpanded] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -259,6 +261,7 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
         audio={audio}
         rate={settings.playbackRate}
         onRateChange={(rate) => void update({ playbackRate: rate })}
+        loop
       />
     </div>
   );

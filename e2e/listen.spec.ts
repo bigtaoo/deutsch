@@ -161,3 +161,41 @@ test('点了播放，整页自己往上推，文本框顶到导航下面（变�
     .toBeLessThan(40);
   await page.getByRole('button', { name: '暂停', exact: true }).click();
 });
+
+// FR-5.7 循环播放（变更 84）。loop.test.ts 测了档位与顺序；这里守 jsdom 里没有的那半边：
+// 真的 <audio> 放到头、真的触发 'ended'，然后真的从头再放 —— 手机放一边当 podcast 听靠的就是这一下。
+test('循环键三档轮换、刷新还在；「本课循环」放到头会从头再放', async ({ page }) => {
+  // 播放器的 <audio> 不挂在 DOM 上：在它第一次 play() 时记下来，好把进度拨到结尾。
+  await page.addInitScript(() => {
+    const orig = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (this: HTMLMediaElement) {
+      (window as unknown as { __media?: HTMLMediaElement }).__media = this;
+      return orig.call(this);
+    };
+  });
+  await seedTimedLesson(page);
+
+  const loop = page.getByRole('button', { name: /^循环：/ });
+  await expect(loop).toHaveAccessibleName('循环：不循环');
+  await loop.click();
+  await expect(loop).toHaveAccessibleName('循环：本课循环');
+  await page.reload();
+  await expect(page.getByRole('button', { name: '循环：本课循环' })).toBeVisible();
+
+  await page.getByRole('button', { name: '播放', exact: true }).click();
+  await page.waitForFunction(() => !!(window as unknown as { __media?: HTMLMediaElement }).__media);
+  await page.evaluate(() => {
+    const m = (window as unknown as { __media: HTMLMediaElement }).__media;
+    m.currentTime = m.duration - 0.3;
+  });
+  // 放到头之后又从头开始，并且仍在播放
+  await page.waitForFunction(() => {
+    const m = (window as unknown as { __media: HTMLMediaElement }).__media;
+    return !m.paused && m.currentTime > 0 && m.currentTime < 5;
+  }, undefined, { timeout: 10_000 });
+
+  await page.getByRole('button', { name: '循环：本课循环' }).click();
+  await expect(page.getByRole('button', { name: '循环：顺播本组' })).toBeVisible();
+  await page.getByRole('button', { name: '循环：顺播本组' }).click();
+  await expect(page.getByRole('button', { name: '循环：不循环' })).toBeVisible();
+});
