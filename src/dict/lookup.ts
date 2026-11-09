@@ -119,12 +119,25 @@ export async function lookupDict(surface: string): Promise<DictLookup | null> {
   const exact = await rawEntry(key);
   if (exact) return { entry: exact, via: 'exact' };
 
+  // 一个词形可以还原到好几个词元，而键是小写的，大小写信息在这里丢了：
+  // `Unterlagen` 既是 Unterlage 的复数，也是 unterliegen 的过去式，词形表里 unterliegen 排在前面，
+  // 卡背就出了 unterliegen 的例句（变更 85）。德语名词首字母大写，所以按查询的大小写挑：
+  // 大写开头优先大写词头（名词），小写开头优先小写词头；都对不上才退回第一个查到的。
   const lemmaKeys = await resolveForms(trimmed);
+  const wantCapital = isCapitalized(trimmed);
+  let fallback: DictEntry | null = null;
   for (const lemmaKey of lemmaKeys) {
     const entry = await rawEntry(lemmaKey);
-    if (entry) return { entry, via: 'form', queried: trimmed };
+    if (!entry) continue;
+    if (isCapitalized(entry.w) === wantCapital) return { entry, via: 'form', queried: trimmed };
+    fallback ??= entry;
   }
-  return null;
+  return fallback ? { entry: fallback, via: 'form', queried: trimmed } : null;
+}
+
+function isCapitalized(s: string): boolean {
+  const c = s.charAt(0);
+  return c !== c.toLowerCase() && c === c.toUpperCase();
 }
 
 /**

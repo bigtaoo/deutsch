@@ -97,9 +97,10 @@ describe('整页', () => {
   it('已标记的词可以改中文', async () => {
     await putDrillState(withMark(emptyDrillState(), 'mieter', { flagged: true }, 1));
     render(<VocabPage />);
-    const input = await screen.findByLabelText('Mieter 的中文');
+    // 全量并行跑时机器忙，默认 1 秒偶尔等不到（变更 85 收尾时抖过一次）
+    const input = await screen.findByLabelText('Mieter 的中文', undefined, { timeout: 5000 });
     fireEvent.change(input, { target: { value: '房客' } });
     fireEvent.click(screen.getByRole('button', { name: '保存' }));
-    await waitFor(async () => expect((await getDrillState()).marks.mieter?.zh).toBe('房客'));
+    await waitFor(async () => expect((await getDrillState()).marks.mieter?.zh).toBe('房客'), { timeout: 5000 });
   });
 });

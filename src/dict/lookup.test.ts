@@ -10,12 +10,15 @@ const WORDS: Record<string, DictEntry> = {
   laufen: { w: 'laufen', s: [{ p: 'verb', de: ['sich schnell fortbewegen'], en: ['run'] }], f: 5000 },
   plattform: { w: 'Plattform', s: [{ p: 'noun', g: 'f', pl: 'Plattformen', de: ['ebene erhöhte Fläche'] }] },
   zuversicht: { w: 'Zuversicht', s: [{ p: 'noun', g: 'f', pl: 'Zuversichten' }] },
+  unterliegen: { w: 'unterliegen', s: [{ p: 'verb', de: ['besiegt werden'] }] },
+  unterlage: { w: 'Unterlage', s: [{ p: 'noun', g: 'f', pl: 'Unterlagen', de: ['Dokumente'] }] },
 };
 
 const FORMS: Record<string, string[]> = {
   gelaufen: ['laufen'],
   plattformen: ['plattform'],
   abgewogen: ['abwägen', 'abwiegen'], // 两个候选，且第一个在词典里查不到
+  unterlagen: ['unterliegen', 'unterlage'], // 真词形表的顺序：动词在前
 };
 
 let fetchCount: Record<string, number>;
@@ -80,6 +83,16 @@ describe('lookupDict', () => {
     expect(await lookupDict('abgewogen')).toBeNull();
     const urls = Object.keys(fetchCount).filter((u) => u.includes('/w/'));
     expect(urls.length).toBeGreaterThanOrEqual(2); // abwägen 与 abwiegen 各查了一次
+  });
+
+  it('一个词形还原到名词和动词两个词元：按查询的大小写挑（Unterlagen 不是 unterliegen，变更 85）', async () => {
+    expect((await lookupDict('Unterlagen'))?.entry.w).toBe('Unterlage');
+    __resetDictCaches();
+    expect((await lookupDict('unterlagen'))?.entry.w).toBe('unterliegen');
+  });
+
+  it('大小写对不上任何候选时退回第一个查到的', async () => {
+    expect((await lookupDict('Gelaufen'))?.entry.w).toBe('laufen');
   });
 
   it('查不到返回 null，不抛', async () => {
