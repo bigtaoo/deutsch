@@ -12,7 +12,7 @@ import { useVocabStore } from '@/state/useVocabStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useStudyStore } from '@/state/useStudyStore';
 import { Banner, Button, Hint, Note, Section, field } from '@/components/ui';
-import { lastSfxEvent, playSfx, preloadSfx, wakeSfx } from '@/audio/sfx';
+import { playSfx, preloadSfx, sfxEvents, wakeSfx } from '@/audio/sfx';
 
 const DRILL_META_KEY = 'lastRestoreDrillAt';
 const DRILL_INTERVAL_MS = 365 * 86_400_000;
@@ -186,24 +186,39 @@ export function StudySettingsSection() {
 
 /**
  * 试听一声「答对」。变更 80：音效在 iPhone 上前后修了三次都没人能当场确认响没响 ——
- * 复习页里要先有到期卡、再答一题才听得到。这里点一下就知道，旁边那行字说的是
- * 这一下走到了哪一步（同一份记录也在诊断报告里）。
+ * 复习页里要先有到期卡、再答一题才听得到。这里点一下就知道。
+ *
+ * 变更 87：旁边那行字改成列出**这一趟走过的每一步**。上一次只给看最后一笔，
+ * 而最后一笔恰恰是症状不是原因 —— 真机报回来的「还没取到，跳过」只说了没声音，
+ * 没说为什么三个文件一个都没取到，于是又白费了一个来回。
  */
 function SfxTrial() {
-  const [result, setResult] = useState<string | null>(null);
+  const [lines, setLines] = useState<string[] | null>(null);
   const tryIt = () => {
-    // 手势当下先把上下文叫醒，再去取文件 —— 顺序反过来，手势就过去了。
+    // 手势当下先解锁，再下播放指令 —— 顺序反过来，手势就过去了。
     wakeSfx();
-    setResult('…');
+    setLines(['…']);
     void preloadSfx().then(() => {
       playSfx('right');
-      window.setTimeout(() => setResult(lastSfxEvent() ?? '没有任何记录'), 1700);
+      window.setTimeout(() => {
+        const events = sfxEvents();
+        setLines(events.length ? events.slice(-10) : ['没有任何记录']);
+      }, 1700);
     });
   };
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-1">
       <Button onClick={tryIt}>试听</Button>
-      {result && <Hint>{result}</Hint>}
+      {lines && (
+        <Hint>
+          {lines.map((line, i) => (
+            <span key={i} className="block tnum">
+              {line}
+            </span>
+          ))}
+        </Hint>
+      )}
     </div>
   );
 }
+

@@ -59,22 +59,28 @@ describe('audio session', () => {
   });
 
   it('音效响之前会话已是 playback', async () => {
+    // 变更 87：音效改走 <audio> 了，所以探针也跟着落到 play() 上 ——
+    // 上一版这条是从 AudioContext 的 createBufferSource().start 里取的，
+    // 那条路现在整个不存在，探针会一直空着（而断言照样"通过"地红）。
     const seen: string[] = [];
-    class Ctx {
-      state = 'running';
-      destination = {};
-      createGain() {
-        return { gain: { value: 0 }, connect() {} };
-      }
-      createBufferSource() {
-        return { connect() {}, start: () => seen.push(fake.type) };
-      }
-      async decodeAudioData() {
-        return {};
+    class FakeAudio {
+      preload = '';
+      volume = 1;
+      loop = true;
+      muted = false;
+      paused = true;
+      currentTime = 0;
+      readyState = 0;
+      error: unknown = null;
+      addEventListener(): void {}
+      load(): void {}
+      pause(): void {}
+      play(): Promise<void> {
+        seen.push(fake.type);
+        return Promise.resolve();
       }
     }
-    vi.stubGlobal('AudioContext', Ctx);
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })));
+    vi.stubGlobal('Audio', FakeAudio);
     await preloadSfx();
     fake.type = 'auto'; // 比如被别处改回去了
     playSfx('tap');

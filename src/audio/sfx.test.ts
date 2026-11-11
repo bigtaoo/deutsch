@@ -1,61 +1,93 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { playSfx, preloadSfx, resetSfxForTests, sfxStatus, wakeSfx } from './sfx';
+import { playSfx, preloadSfx, resetSfxForTests, sfxEvents, sfxStatus, wakeSfx } from './sfx';
 
-interface FakeSource {
-  buffer: unknown;
-  connect: (target: unknown) => void;
-  start: () => void;
-}
+/**
+ * 变更 87：音效从 Web Audio 改成 <audio>。
+ *
+ * 这一份守的是**真机上那个三次没修对的 bug**：旧实现里 `preloadSfx` 幂等且失败不重试，
+ * 开头那一次 fetch/decode 失败就把音效永久关掉，之后每一声都从「还没取到，跳过」
+ * 这个出口走掉 —— 连设置页的试听也救不回来。所以下面最要紧的两条是「失败之后会重试」
+ * 和「不再有跳过这个出口」。
+ */
 
-class FakeContext {
-  static instances: FakeContext[] = [];
-  // 'interrupted' 是 WebKit 在 iOS 上的非标准状态，类型里没有。
-  state: AudioContextState | 'interrupted' = 'suspended';
-  /** resume 要等多久才落地；null = 永不 settle（iOS 上被打断时见过的那种）。 */
-  resumeDelayMs: number | null = 0;
-  resumed = 0;
-  sources: FakeSource[] = [];
-  gain = { gain: { value: 0 }, connect: vi.fn() };
-  destination = {};
-  decoded: ArrayBuffer[] = [];
+type Listener = () => void;
 
-  constructor() {
-    FakeContext.instances.push(this);
+class FakeAudio {
+  static instances: FakeAudio[] = [];
+  src: string;
+  preload = '';
+  volume = 1;
+  loop = true;
+  muted = false;
+  paused = true;
+  currentTime = 7;
+  readyState = 0;
+  error: { code: number } | null = null;
+  plays = 0;
+  pauses = 0;
+  loads = 0;
+  /** ok = 播得出来；reject = iOS 那种「不在手势里」被拒。 */
+  behavior: 'ok' | 'reject' = 'ok';
+  /** 播放落地要多久。回归测试要的是真实延迟，零延迟会让竞态自己收敛。 */
+  playDelayMs = 1;
+  private listeners = new Map<string, Listener[]>();
+
+  constructor(src?: string) {
+    this.src = src ?? '';
+    FakeAudio.instances.push(this);
   }
-  createGain() {
-    return this.gain as unknown as GainNode;
+
+  addEventListener(type: string, fn: Listener): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(fn);
+    this.listeners.set(type, list);
   }
-  createBufferSource() {
-    const source: FakeSource = { buffer: null, connect: vi.fn(), start: vi.fn() };
-    this.sources.push(source);
-    return source as unknown as AudioBufferSourceNode;
+
+  /** 让测试能模拟「这个文件加载失败了」。 */
+  failLoading(code = 4): void {
+    this.error = { code };
+    this.readyState = 0;
+    for (const fn of this.listeners.get('error') ?? []) fn();
   }
-  async decodeAudioData(data: ArrayBuffer) {
-    this.decoded.push(data);
-    return { duration: 0.1 } as AudioBuffer;
+
+  load(): void {
+    this.loads += 1;
+    this.error = null;
   }
-  resume() {
-    this.resumed += 1;
-    const delay = this.resumeDelayMs;
-    if (delay === null) return new Promise<void>(() => {});
+
+  play(): Promise<void> {
+    this.plays += 1;
+    this.paused = false;
+    if (this.behavior === 'reject') {
+      return Promise.reject(new Error('NotAllowedError: play() failed'));
+    }
     return new Promise<void>((resolve) => {
       setTimeout(() => {
-        this.state = 'running';
+        this.readyState = 4;
         resolve();
-      }, delay);
+      }, this.playDelayMs);
     });
+  }
+
+  pause(): void {
+    this.pauses += 1;
+    this.paused = true;
   }
 }
 
-function okFetch(): ReturnType<typeof vi.fn> {
-  return vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) }));
+function byName(name: string): FakeAudio | undefined {
+  return FakeAudio.instances.find((a) => a.src.includes(name));
+}
+
+/** 等到最近这一批 play() 的 promise 都落地。 */
+async function settle(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 10));
 }
 
 beforeEach(() => {
   resetSfxForTests();
-  FakeContext.instances = [];
-  vi.stubGlobal('AudioContext', FakeContext);
-  vi.stubGlobal('fetch', okFetch());
+  FakeAudio.instances = [];
+  vi.stubGlobal('Audio', FakeAudio);
 });
 
 afterEach(() => {
@@ -63,153 +95,204 @@ afterEach(() => {
   resetSfxForTests();
 });
 
-describe('preloadSfx', () => {
-  it('三个文件一次取完', async () => {
+describe('预热', () => {
+  it('建三个元素，各自指向自己的文件，音量压过一道', async () => {
     await preloadSfx();
-    const urls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.endsWith('sfx/tap.wav'))).toBe(true);
-    expect(urls.some((u) => u.endsWith('sfx/right.wav'))).toBe(true);
-    expect(urls.some((u) => u.endsWith('sfx/wrong.wav'))).toBe(true);
-  });
-
-  it('幂等：进两次复习页只取一轮', async () => {
-    await preloadSfx();
-    await preloadSfx();
-    expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
-  });
-
-  it('一个文件取不到，另外两个照常 —— 不能因为一声没有就整块哑掉', async () => {
-    let n = 0;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        n += 1;
-        if (n === 1) throw new Error('offline');
-        return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
-      }),
-    );
-    await expect(preloadSfx()).resolves.toBeUndefined();
-    expect(FakeContext.instances[0].decoded).toHaveLength(2);
-  });
-
-  it('没有 AudioContext（老 WebView / jsdom）时安安静静地什么都不做', async () => {
-    vi.unstubAllGlobals();
-    resetSfxForTests();
-    vi.stubGlobal('AudioContext', undefined);
-    vi.stubGlobal('webkitAudioContext', undefined);
-    vi.stubGlobal('fetch', okFetch());
-    await expect(preloadSfx()).resolves.toBeUndefined();
-    expect((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
-  });
-});
-
-describe('playSfx', () => {
-  it('预取完之后点一下就响，并且 resume 了上下文（iOS 手势链）', async () => {
-    await preloadSfx();
-    const ctx = FakeContext.instances[0];
-    playSfx('tap');
-    expect(ctx.resumed).toBe(1);
-    // start() 要等 resume() 的 promise 真的 resolve 才发生——WKWebView 上，
-    // suspended 时排的音在 resume 之后并不会响，所以这里不能提前断言。
-    expect(ctx.sources).toHaveLength(0);
-    await vi.waitFor(() => expect(ctx.sources).toHaveLength(1));
-    expect(ctx.sources[0].start).toHaveBeenCalled();
-  });
-
-  it('还没预取完就点 —— 这一下没声音，但不抛、也不排队补一声迟到的', () => {
-    expect(() => playSfx('right')).not.toThrow();
-    expect(FakeContext.instances[0]?.sources ?? []).toHaveLength(0);
-  });
-
-  it('接到 destination 之前先过统一衰减 —— 提示音不能盖住正在听的那一句', async () => {
-    await preloadSfx();
-    const ctx = FakeContext.instances[0];
-    expect(ctx.gain.gain.value).toBeGreaterThan(0);
-    expect(ctx.gain.gain.value).toBeLessThan(1);
-    playSfx('wrong');
-    await vi.waitFor(() => expect(ctx.sources).toHaveLength(1));
-    expect(ctx.sources[0].connect).toHaveBeenCalledWith(ctx.gain);
-  });
-
-  it('上下文已经在跑时不重复 resume', async () => {
-    await preloadSfx();
-    const ctx = FakeContext.instances[0];
-    ctx.state = 'running';
-    playSfx('tap');
-    expect(ctx.resumed).toBe(0);
-  });
-
-  // 变更 80：iOS 上「刚放完一句德语 → 马上点选项」时上下文停在 interrupted。
-  // 旧代码只认 suspended，看到别的状态就直接 start()，排进不在跑的上下文里静默丢掉。
-  it('interrupted 也要先 resume，等真的在跑了才 start', async () => {
-    await preloadSfx();
-    const ctx = FakeContext.instances[0];
-    ctx.state = 'interrupted';
-    ctx.resumeDelayMs = 30;
-    playSfx('tap');
-    expect(ctx.resumed).toBe(1);
-    expect(ctx.sources).toHaveLength(0);
-    await vi.waitFor(() => expect(ctx.sources).toHaveLength(1));
-    expect(ctx.state).toBe('running');
-  });
-
-  it('resume 永不 settle 时这一声放弃，不在一秒半以后迟到地响，并记下原因', async () => {
-    vi.useFakeTimers();
-    try {
-      await preloadSfx();
-      const ctx = FakeContext.instances[0];
-      ctx.resumeDelayMs = null;
-      playSfx('right');
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(ctx.sources).toHaveLength(0);
-      const log = sfxStatus().events.join(' | ');
-      expect(log).toMatch(/resume 超时/);
-      expect(log).toMatch(/这一声没了/);
-    } finally {
-      vi.useRealTimers();
+    expect(FakeAudio.instances).toHaveLength(3);
+    for (const name of ['tap.wav', 'right.wav', 'wrong.wav']) {
+      const el = byName(name);
+      expect(el, name).toBeDefined();
+      expect(el?.preload).toBe('auto');
+      expect(el?.volume).toBeCloseTo(0.55);
+      // 音效是一声就完的东西 —— 开着 loop 会被当成一段媒体接管。
+      expect(el?.loop).toBe(false);
     }
   });
 
-  it('同时点两下只发一趟 resume，两声都在它落地之后响', async () => {
+  it('反复调不会把元素建成第二份', async () => {
     await preloadSfx();
-    const ctx = FakeContext.instances[0];
-    ctx.resumeDelayMs = 30;
-    playSfx('tap');
-    playSfx('right');
-    expect(ctx.resumed).toBe(1);
-    await vi.waitFor(() => expect(ctx.sources).toHaveLength(2));
+    await preloadSfx();
+    await preloadSfx();
+    expect(FakeAudio.instances).toHaveLength(3);
   });
 
-  it('上下文被系统 close 了就重建一个，解码好的三声照用', async () => {
+  it('**加载失败之后再调会重新 load** —— 旧实现在这里把音效永久关掉了', async () => {
     await preloadSfx();
-    const first = FakeContext.instances[0];
-    first.state = 'closed';
-    playSfx('wrong');
-    expect(FakeContext.instances).toHaveLength(2);
-    const second = FakeContext.instances[1];
-    await vi.waitFor(() => expect(second.sources).toHaveLength(1));
-    expect(first.sources).toHaveLength(0);
+    const el = byName('right.wav');
+    const before = el?.loads ?? 0;
+    el?.failLoading();
+    expect(sfxEvents().join('\n')).toContain('right：加载失败');
+
+    await preloadSfx();
+    expect(el?.loads, '失败过的元素应该被重新 load').toBe(before + 1);
   });
 
-  it('还没取到文件时，这次手势照样把上下文叫醒 —— 后面那声「答对」才有得响', () => {
-    wakeSfx();
-    const ctx = FakeContext.instances[0];
-    playSfx('tap');
-    expect(ctx.resumed).toBe(1);
-    expect(sfxStatus().events.join(' | ')).toMatch(/tap：还没取到/);
+  it('正在播的那一个不会被 load() 打断', async () => {
+    await preloadSfx();
+    const el = byName('tap.wav');
+    if (!el) throw new Error('没建出 tap');
+    el.readyState = 0;
+    el.paused = false; // 正在播
+    const before = el.loads;
+    await preloadSfx();
+    expect(el.loads).toBe(before);
   });
 });
 
-describe('sfxStatus', () => {
-  it('响过一次之后，状态里有上下文状态、取到的文件和那一笔记录', async () => {
+describe('响一下', () => {
+  it('**还没加载完也照样下播放指令** —— 不再有「还没取到，跳过」这个出口', () => {
+    // 刻意不 preload：元素此刻 readyState=0。
+    playSfx('right');
+    const el = byName('right.wav');
+    expect(el, '该当场把元素建出来').toBeDefined();
+    expect(el?.plays).toBe(1);
+    expect(sfxEvents().join('\n')).not.toContain('还没取到');
+  });
+
+  it('连着答两题：从头开始，而不是排队', async () => {
     await preloadSfx();
-    FakeContext.instances[0].state = 'running';
+    const el = byName('right.wav');
+    if (!el) throw new Error('没建出 right');
+    el.currentTime = 0.4;
+    playSfx('right');
+    expect(el.currentTime).toBe(0);
+    await settle();
+  });
+
+  it('三个音效各有各的元素 —— 点选项的声音不会把「答对」顶掉', async () => {
+    await preloadSfx();
     playSfx('tap');
-    const status = sfxStatus();
-    expect(status.hasAudioContext).toBe(true);
-    expect(status.state).toBe('running');
-    expect(status.loaded.sort()).toEqual(['right', 'tap', 'wrong']);
-    expect(status.session).toMatch(/无/);
-    expect(status.events.at(-1)).toMatch(/tap：响/);
+    playSfx('right');
+    await settle();
+    expect(byName('tap.wav')?.plays).toBeGreaterThanOrEqual(1);
+    expect(byName('right.wav')?.plays).toBeGreaterThanOrEqual(1);
+    expect(byName('tap.wav')).not.toBe(byName('right.wav'));
+  });
+
+  it('播成功留一笔，带上加载状态', async () => {
+    await preloadSfx();
+    playSfx('right');
+    await settle();
+    expect(sfxEvents().join('\n')).toMatch(/right：响 readyState=\d/);
+  });
+
+  it('被拒也留一笔 —— 静默失败正是前三次没人说得清卡在哪的原因', async () => {
+    await preloadSfx();
+    const el = byName('wrong.wav');
+    if (!el) throw new Error('没建出 wrong');
+    el.behavior = 'reject';
+    playSfx('wrong');
+    await settle();
+    expect(sfxEvents().join('\n')).toContain('wrong：被拒');
+  });
+
+  it('没有 Audio 的环境里不抛，只留一笔', () => {
+    vi.stubGlobal('Audio', undefined);
+    expect(() => playSfx('tap')).not.toThrow();
+    expect(sfxEvents().join('\n')).toContain('这个环境没有 Audio');
+  });
+});
+
+describe('iOS 解锁', () => {
+  it('第一次点击把三个元素静音播一下再停住 —— 之后 setTimeout 里的「答对」才放得出来', async () => {
+    await preloadSfx();
+    document.dispatchEvent(new MouseEvent('click'));
+    await settle();
+
+    for (const name of ['tap.wav', 'right.wav', 'wrong.wav']) {
+      const el = byName(name);
+      expect(el?.plays, `${name} 该被解锁播一次`).toBeGreaterThanOrEqual(1);
+      expect(el?.pauses, `${name} 该被停住`).toBeGreaterThanOrEqual(1);
+      // 解锁不该发出声音，而且事后要把静音还回去。
+      expect(el?.muted, `${name} 解锁后要恢复不静音`).toBe(false);
+    }
+    expect(sfxEvents().join('\n')).toContain('已趁手势解锁');
+  });
+
+  it('只解锁一次 —— 后面每次点击不再重播', async () => {
+    await preloadSfx();
+    document.dispatchEvent(new MouseEvent('click'));
+    await settle();
+    const names = ['tap.wav', 'right.wav', 'wrong.wav'];
+    const counts = names.map((n) => byName(n)?.plays);
+    document.dispatchEvent(new MouseEvent('click'));
+    document.dispatchEvent(new MouseEvent('click'));
+    await settle();
+    expect(names.map((n) => byName(n)?.plays)).toEqual(counts);
+  });
+
+  it('wakeSfx 当场解锁 —— 设置页的试听按钮靠它趁手势', async () => {
+    wakeSfx();
+    await settle();
+    expect(FakeAudio.instances).toHaveLength(3);
+    expect(byName('tap.wav')?.plays).toBeGreaterThanOrEqual(1);
+  });
+
+  it('解锁被拒也留一笔', async () => {
+    await preloadSfx();
+    for (const n of ['tap.wav', 'right.wav', 'wrong.wav']) {
+      const el = byName(n);
+      if (el) el.behavior = 'reject';
+    }
+    wakeSfx();
+    await settle();
+    expect(sfxEvents().join('\n')).toContain('解锁被拒');
+  });
+});
+
+describe('会话类别', () => {
+  it('播之前声明一次 playback —— 否则 WebKit 归成环境音，跟着静音开关走', async () => {
+    const audioSession = { type: 'ambient' };
+    vi.stubGlobal('navigator', { ...navigator, audioSession });
+    await preloadSfx();
+    playSfx('tap');
+    expect(audioSession.type).toBe('playback');
+    await settle();
+  });
+
+  it('录音期间不改类别 —— play-and-record 被改掉就收不了麦', async () => {
+    const audioSession = { type: 'play-and-record' };
+    vi.stubGlobal('navigator', { ...navigator, audioSession });
+    await preloadSfx();
+    playSfx('tap');
+    expect(audioSession.type).toBe('play-and-record');
+    await settle();
+  });
+});
+
+describe('诊断', () => {
+  it('每个元素的加载状态都报出来，解锁与否也报', async () => {
+    await preloadSfx();
+    const right = byName('right.wav');
+    if (right) right.readyState = 4;
+    const s = sfxStatus();
+    expect(s.hasAudioContext).toBe(true);
+    expect(s.state).toContain('未解锁');
+    expect(s.state).toContain('tap=readyState=0');
+    expect(s.state).toContain('right=readyState=4');
+    expect(s.loaded).toEqual(['right']);
+  });
+
+  it('解锁之后 state 会说已解锁', async () => {
+    await preloadSfx();
+    wakeSfx();
+    await settle();
+    expect(sfxStatus().state).toContain('已解锁');
+  });
+
+  it('加载失败的那个不算进 loaded', async () => {
+    await preloadSfx();
+    const el = byName('right.wav');
+    if (!el) throw new Error('没建出 right');
+    el.readyState = 4;
+    el.failLoading();
+    expect(sfxStatus().loaded).not.toContain('right');
+  });
+
+  it('记录有上限，不会无限涨', async () => {
+    await preloadSfx();
+    for (let i = 0; i < 60; i += 1) playSfx('tap');
+    await settle();
+    expect(sfxEvents().length).toBeLessThanOrEqual(24);
   });
 });
