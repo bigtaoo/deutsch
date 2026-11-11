@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { collectDeviceReport, reportToText, runUpdaterSelfTest, sendDeviceReport } from './bridgeDiag';
+import {
+  autoSendReport,
+  collectDeviceReport,
+  reportToText,
+  resetAutoReportForTests,
+  runUpdaterSelfTest,
+  sendDeviceReport,
+} from './bridgeDiag';
 import { resetBridgeWarmupForTests } from './nativeUpdate';
 import { nativePlatform } from './native';
 import { installConsoleTap, resetConsoleTapForTests } from './consoleTap';
@@ -113,15 +120,15 @@ describe('collectDeviceReport / reportToText', () => {
   it('把自检、插件注册、上次查更新和 console 收进同一份报告', async () => {
     installConsoleTap();
     console.info('🟢 Capacitor-updater : init for device abc');
-    const report = await collectDeviceReport(await runUpdaterSelfTest());
-    expect(report.schema).toBe(2);
+    const report = await collectDeviceReport(await runUpdaterSelfTest(), 'manual');
+    expect(report.schema).toBe(3);
     expect(report.platform).toBe('ios');
     expect(report.selfTest).toHaveLength(9);
     expect(report.console.some((l) => l.text.includes('init for device abc'))).toBe(true);
   });
 
   it('纯文本形式把自检排成一眼能扫的几行', async () => {
-    const text = reportToText(await collectDeviceReport(await runUpdaterSelfTest()));
+    const text = reportToText(await collectDeviceReport(await runUpdaterSelfTest(), 'manual'));
     expect(text).toContain('桥自检：');
     expect(text).toContain('getPluginVersion → ok');
     expect(text).toContain('App.getInfo → ok');
@@ -129,7 +136,7 @@ describe('collectDeviceReport / reportToText', () => {
 
   // 变更 80：音效在 iPhone 上修了三次都说不清卡在哪 —— 报告里要有它的那一段。
   it('报告带上音效链的状态', async () => {
-    const report = await collectDeviceReport([]);
+    const report = await collectDeviceReport([], 'manual');
     expect(report.sfx).toBeDefined();
     expect(reportToText(report)).toMatch(/音效：AudioContext/);
   });
@@ -139,7 +146,7 @@ describe('sendDeviceReport', () => {
   it('带上会话令牌 POST 到 /v1/diag', async () => {
     vi.mocked(getSessionToken).mockResolvedValue('tok');
     vi.mocked(syncFetch).mockResolvedValue({ id: '1758600000000-abc123' });
-    const report = await collectDeviceReport([]);
+    const report = await collectDeviceReport([], 'manual');
     expect(await sendDeviceReport(report)).toEqual({ id: '1758600000000-abc123' });
     expect(vi.mocked(syncFetch)).toHaveBeenCalledWith('/v1/diag', {
       method: 'POST',
@@ -152,7 +159,79 @@ describe('sendDeviceReport', () => {
   // 「复制诊断」那条路的话，而不是一个看不懂的 401。
   it('没登录时说清楚该走另一条路，不发空请求', async () => {
     vi.mocked(getSessionToken).mockResolvedValue(undefined);
-    await expect(sendDeviceReport(await collectDeviceReport([]))).rejects.toThrow('复制诊断');
+    await expect(sendDeviceReport(await collectDeviceReport([], 'manual'))).rejects.toThrow('复制诊断');
     expect(vi.mocked(syncFetch)).not.toHaveBeenCalled();
+  });
+});
+
+// ── 自动上报（变更 88）──────────────────────────────────────────────
+// 这一组守的是两条硬性质，两条都是「坏了也不会有人发现」的那种：
+// ① 它挂在被诊断的功能后面，**永不抛错** —— 上报失败不能把音效、查更新一起带倒；
+// ② 结果**一定可见** —— 静默的自动上报等于没上报，而那正是它要治的病。
+describe('autoSendReport', () => {
+  beforeEach(() => {
+    resetAutoReportForTests();
+    vi.mocked(getSessionToken).mockResolvedValue('tok');
+    vi.mocked(syncFetch).mockResolvedValue({ id: '1790000000000-abc123-sfx' });
+  });
+
+  it('发出去了就把 id 说出来 —— 他照着这个 id 问我', async () => {
+    expect(await autoSendReport('sfx')).toContain('1790000000000-abc123-sfx');
+    expect(vi.mocked(syncFetch)).toHaveBeenCalledWith(
+      '/v1/diag',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('把触发源和按钮上那一行结论一起带上', async () => {
+    await autoSendReport('sfx', { note: 'right:还没取到，跳过' });
+    const body = vi.mocked(syncFetch).mock.calls[0]?.[1]?.body as {
+      trigger: string;
+      note: string;
+      schema: number;
+    };
+    expect(body.trigger).toBe('sfx');
+    expect(body.note).toBe('right:还没取到，跳过');
+    expect(body.schema).toBe(3);
+  });
+
+  // 没登录是最常见的失败，而它恰恰发生在诊断最用得上的时候。
+  it('发不出去不抛错，返回的是为什么', async () => {
+    vi.mocked(getSessionToken).mockResolvedValue(undefined);
+    const line = await autoSendReport('check-update');
+    expect(line).toContain('没上报');
+    expect(line).toContain('复制诊断');
+  });
+
+  it('收集报告的过程自己炸了也不抛 —— 它不能把被诊断的那个功能带倒', async () => {
+    vi.mocked(syncFetch).mockRejectedValue(new Error('offline'));
+    await expect(autoSendReport('dict')).resolves.toContain('offline');
+  });
+
+  it('同一个按钮连点只发一份', async () => {
+    await autoSendReport('sfx');
+    expect(await autoSendReport('sfx')).toContain('跳过');
+    expect(vi.mocked(syncFetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it('不同按钮互不相干 —— 一轮排查里本来就要点好几个', async () => {
+    await autoSendReport('sfx');
+    await autoSendReport('selftest');
+    expect(vi.mocked(syncFetch)).toHaveBeenCalledTimes(2);
+  });
+
+  // 失败之后那 3 秒恰恰是最该放行的 3 秒：他看到「还没登录」，去登录，回来再点一次。
+  it('上一次失败了，紧接着再点不被节流挡掉', async () => {
+    vi.mocked(getSessionToken).mockResolvedValue(undefined);
+    expect(await autoSendReport('sfx')).toContain('没上报');
+    vi.mocked(getSessionToken).mockResolvedValue('tok');
+    expect(await autoSendReport('sfx')).toContain('1790000000000');
+  });
+
+  it('报告的纯文本头一行就说清楚是哪个按钮点出来的', async () => {
+    const report = await collectDeviceReport([], 'check-update', '一条记录都没有');
+    const text = reportToText(report);
+    expect(text).toContain('check-update');
+    expect(text).toContain('一条记录都没有');
   });
 });

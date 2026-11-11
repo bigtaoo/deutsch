@@ -57,9 +57,39 @@ describe('createFileDiagSink', () => {
   // 而一份报告可以有几百 KB。
   it('超过保留上限就删最旧的', () => {
     const sink = createFileDiagSink(root);
-    for (let i = 0; i < 35; i += 1) sink.save('u1', { i });
-    expect(sink.list('u1')).toHaveLength(30);
-    expect(readdirSync(join(root, 'u1'))).toHaveLength(30);
+    for (let i = 0; i < 65; i += 1) sink.save('u1', { i });
+    expect(sink.list('u1')).toHaveLength(60);
+    expect(readdirSync(join(root, 'u1'))).toHaveLength(60);
+  });
+
+  // 变更 88：触发源进文件名，是为了 `ls -lt` **不用打开文件**就知道哪份是试听、
+  // 哪份是查更新。一目录同样的时间戳跟没有一样。
+  it('触发源拼进文件名，存、列、读三条路都认它', () => {
+    const sink = createFileDiagSink(root);
+    const saved = sink.save('u1', { x: 1 }, 'check-update');
+    expect(saved.id.endsWith('-check-update')).toBe(true);
+    expect(saved.trigger).toBe('check-update');
+    expect(sink.list('u1')[0]?.trigger).toBe('check-update');
+    expect(JSON.parse(sink.get('u1', saved.id)!)).toEqual({ x: 1 });
+  });
+
+  it('没触发源的（旧报告、或者客户端没带）照样能存能读', () => {
+    const sink = createFileDiagSink(root);
+    const saved = sink.save('u1', { x: 1 });
+    expect(saved.trigger).toBeUndefined();
+    expect(sink.list('u1')[0]?.trigger).toBeUndefined();
+    expect(sink.get('u1', saved.id)).not.toBeNull();
+  });
+
+  // 触发源来自客户端的 JSON，而它要进文件名 —— 和 id 同等危险。
+  it('不合格的触发源当没有，不让它往上跳一层', () => {
+    const sink = createFileDiagSink(root);
+    for (const bad of ['../../etc', 'Check Update', '中文', 'x'.repeat(40), '-lead']) {
+      const saved = sink.save('u1', { x: 1 }, bad);
+      expect(saved.trigger).toBeUndefined();
+      expect(saved.id).toMatch(/^[0-9]{13}-[a-z0-9]{6}$/);
+    }
+    expect(readdirSync(join(root, 'u1'))).toHaveLength(5);
   });
 
   it('id 不合格式一律回 null —— 它直接进文件路径', () => {

@@ -10,6 +10,7 @@ import { ensureGoogleReady } from '@/sync/session';
 import { RestoreSection, StudySettingsSection } from './settings/RestoreSection';
 import { DictSection } from './settings/DictSection';
 import { VersionSection } from './settings/VersionSection';
+import { useAutoReport } from './settings/useAutoReport';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useVocabStore } from '@/state/useVocabStore';
@@ -100,6 +101,9 @@ function AppearanceSection() {
 function StorageSection() {
   const [persistence, setPersistence] = useState<StoragePersistenceStatus | null>(null);
   const [estimate, setEstimate] = useState<StorageEstimateResult | null>(null);
+  // 变更 88：持久化被拒是「数据自己消失了」这类报障的头号成因，
+  // 而它在 iOS 上还跟「添加到主屏幕」没没有有关 —— 那两件事都在报告里。
+  const auto = useAutoReport('persist');
 
   useEffect(() => {
     void getStorageEstimate().then(setEstimate);
@@ -108,6 +112,13 @@ function StorageSection() {
   const requestPersist = async () => {
     const status = await initStoragePersistence();
     setPersistence(status);
+    auto.report({
+      note: status.persisted
+        ? '已获得持久化存储'
+        : status.unsupported
+          ? '此浏览器不支持持久化存储请求'
+          : '没拿到持久化存储',
+    });
   };
 
   return (
@@ -129,6 +140,7 @@ function StorageSection() {
         ) : (
           <Note tone="warn">没拿到持久化存储，数据仍可能被浏览器驱逐。</Note>
         ))}
+      {auto.note}
     </Section>
   );
 }

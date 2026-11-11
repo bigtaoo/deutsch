@@ -20,23 +20,41 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** 每个用户最多留多少份。超了删最旧的。 */
-const KEEP_PER_USER = 30;
+/**
+ * 每个用户最多留多少份。超了删最旧的。
+ *
+ * 变更 88 从 30 提到 60：诊断按钮改成自动上报之后，一个排查的晚上就能攒十几份，
+ * 而 30 份意味着两三天前那份「还正常的时候是什么样」会被挤掉 —— 而对照组恰恰是
+ * 这些报告最值钱的那一半。每份几百 KB，60 份也就十几 MB。
+ */
+const KEEP_PER_USER = 60;
 
 export interface DiagEntry {
   id: string;
   at: number;
   bytes: number;
+  /** 哪个按钮点出来的（变更 88）。旧报告没有这一项。 */
+  trigger?: string;
 }
 
 export interface DiagSink {
-  save(userId: string, report: unknown): DiagEntry;
+  save(userId: string, report: unknown, trigger?: string): DiagEntry;
   list(userId: string): DiagEntry[];
   get(userId: string, id: string): string | null;
 }
 
-/** 文件名只允许这些字符 —— id 直接进路径，别让它能往上跳一层。 */
-const ID_RE = /^[0-9]{13}-[a-z0-9]{6}$/;
+/**
+ * 文件名只允许这些字符 —— id 直接进路径，别让它能往上跳一层。
+ * 末尾那一段是触发源（变更 88），可有可无：它在那儿是为了 `ls -lt` **不用打开文件**
+ * 就知道哪份是试听、哪份是查更新。没有它的话，一目录同样的时间戳跟没有一样。
+ */
+const ID_RE = /^[0-9]{13}-[a-z0-9]{6}(-[a-z][a-z-]{0,15})?$/;
+
+/** 触发源来自客户端的 JSON，而它要进文件名 —— 不合格的就当没有。 */
+function safeTrigger(trigger: string | undefined): string {
+  if (!trigger) return '';
+  return /^[a-z][a-z-]{0,15}$/.test(trigger) ? `-${trigger}` : '';
+}
 
 /** 用户 id 是 Google 的 sub（一串数字），但还是按最坏情况过一遍。 */
 function safeUserDir(userId: string): string {
@@ -61,16 +79,17 @@ export function createFileDiagSink(rootDir: string): DiagSink {
       .filter((n) => n.endsWith('.json') && ID_RE.test(n.slice(0, -5)))
       .map((n) => {
         const id = n.slice(0, -5);
-        return { id, at: Number(id.slice(0, 13)), bytes: statSync(join(dir, n)).size };
+        const trigger = id.slice(21) || undefined;
+        return { id, at: Number(id.slice(0, 13)), bytes: statSync(join(dir, n)).size, trigger };
       })
       // 同一毫秒进来的两份按 id 排，别让顺序取决于 readdir —— 删旧的那一步也靠这个顺序。
       .sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   };
 
   return {
-    save(userId, report) {
+    save(userId, report, trigger) {
       const dir = userDir(userId);
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, '0')}`;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8).padEnd(6, '0')}${safeTrigger(trigger)}`;
       const text = JSON.stringify(report, null, 2);
       writeFileSync(join(dir, `${id}.json`), text, 'utf8');
       // 先写再删：新的那一份永远不会因为清理失败而丢。
@@ -81,7 +100,7 @@ export function createFileDiagSink(rootDir: string): DiagSink {
           // 删不掉就留着，下一次再试。诊断不该因为清理失败而失败。
         }
       }
-      return { id, at: Number(id.slice(0, 13)), bytes: Buffer.byteLength(text) };
+      return { id, at: Number(id.slice(0, 13)), bytes: Buffer.byteLength(text), trigger: id.slice(21) || undefined };
     },
 
     list(userId) {

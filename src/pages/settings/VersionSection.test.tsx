@@ -24,6 +24,7 @@ import {
 } from '@/platform/nativeUpdate';
 import { nativePlatform } from '@/platform/native';
 import {
+  autoSendReport,
   collectDeviceReport,
   runUpdaterSelfTest,
   sendDeviceReport,
@@ -49,6 +50,7 @@ vi.mock('@/platform/bridgeDiag', () => ({
   runUpdaterSelfTest: vi.fn(),
   collectDeviceReport: vi.fn(),
   sendDeviceReport: vi.fn(),
+  autoSendReport: vi.fn(),
   reportToText: vi.fn(() => '一份诊断全文'),
 }));
 
@@ -79,6 +81,7 @@ const mockStorageError = vi.mocked(readStorageWriteError);
 const mockSelfTest = vi.mocked(runUpdaterSelfTest);
 const mockCollect = vi.mocked(collectDeviceReport);
 const mockSend = vi.mocked(sendDeviceReport);
+const mockAuto = vi.mocked(autoSendReport);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -98,6 +101,7 @@ beforeEach(() => {
   mockSelfTest.mockResolvedValue([]);
   mockCollect.mockResolvedValue({} as never);
   mockSend.mockResolvedValue({ id: '1758600000000-abc123' });
+  mockAuto.mockResolvedValue('已自动上报：1790000000000-abc123-selftest');
 });
 
 afterEach(() => {
@@ -378,6 +382,56 @@ describe('VersionSection 的桥自检', () => {
     // 头一个特别慢、后面都快 —— 这个形状就是「插件 load() 慢」而不是「桥哑了」。
     await waitFor(() => expect(screen.getByText(/getPluginVersion → ok（8123ms）/)).toBeInTheDocument());
     expect(screen.getByText(/current → ok（4ms）/)).toBeInTheDocument();
+  });
+
+  // ── 自动上报（变更 88）──
+  // 它要治的病是「屏幕上的东西要靠人手打给我」，而手打必然只传最显眼的那一行。
+  // 所以这两条盯的是：按钮干完活之后**真的发了**，而且带上了屏幕上那一行结论。
+  it('跑完自检就自动上报，把每个方法的耗时一并带上', async () => {
+    ios();
+    mockSelfTest.mockResolvedValue([
+      { method: 'getPluginVersion', outcome: 'ok', ms: 8123 },
+      { method: 'App.getInfo', outcome: 'ok', ms: 3 },
+    ]);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('跑一次桥自检')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('跑一次桥自检'));
+    await waitFor(() => expect(mockAuto).toHaveBeenCalledWith('selftest', expect.anything()));
+    const opts = mockAuto.mock.calls[0]?.[1] as { note?: string; selfTest?: unknown[] };
+    expect(opts.selfTest).toHaveLength(2);
+    expect(opts.note).toContain('getPluginVersion=ok(8123ms)');
+    // 上报结果本身也要看得见 —— 静默的自动上报等于没上报。
+    await waitFor(() => expect(screen.getByText(/已自动上报/)).toBeInTheDocument());
+  });
+
+  it('查一次更新之后自动上报，带上那一趟走到哪一步', async () => {
+    ios();
+    mockCheck.mockResolvedValue(null);
+    mockLog.mockReturnValue({
+      at: 1_790_000_000_000,
+      outcome: 'timeout',
+      steps: ['platform:ios', 'import:begin'],
+    } as never);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('现在就查一次更新'));
+    await waitFor(() => expect(mockAuto).toHaveBeenCalledWith('check-update', expect.anything()));
+    const note = (mockAuto.mock.calls[0]?.[1] as { note?: string }).note ?? '';
+    expect(note).toContain('timeout');
+    expect(note).toContain('platform:ios → import:begin');
+  });
+
+  // 变更 59 那一次，「一条记录都没有」才是决定性证据——它说明
+  // `checkNativeUpdate()` 从来没跑完过一次。那份报告里必须说得出这件事。
+  it('一条记录都没有时，上报的那一行明说它没跑完过', async () => {
+    ios();
+    mockCheck.mockResolvedValue(null);
+    mockLog.mockReturnValue(null);
+    render(<VersionSection />);
+    await waitFor(() => expect(screen.getByText('现在就查一次更新')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('现在就查一次更新'));
+    await waitFor(() => expect(mockAuto).toHaveBeenCalled());
+    expect((mockAuto.mock.calls[0]?.[1] as { note?: string }).note).toContain('没跑完过');
   });
 
   it('发到服务器成功后把 id 说出来 —— 我在 VPS 上按它取那一份', async () => {

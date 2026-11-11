@@ -13,6 +13,7 @@ import { useSettingsStore } from '@/state/useSettingsStore';
 import { useStudyStore } from '@/state/useStudyStore';
 import { Banner, Button, Hint, Note, Section, field } from '@/components/ui';
 import { playSfx, preloadSfx, sfxEvents, wakeSfx } from '@/audio/sfx';
+import { useAutoReport } from './useAutoReport';
 
 const DRILL_META_KEY = 'lastRestoreDrillAt';
 const DRILL_INTERVAL_MS = 365 * 86_400_000;
@@ -28,6 +29,11 @@ export function RestoreSection() {
     void getMeta<number>(DRILL_META_KEY).then((value) => setLastDrillAt(value ?? null));
   }, []);
 
+  // 变更 88：**只在它没走通时自动上报**。别的几个按钮是诊断按钮（点它就是为了看结果），
+  // 而一键恢复是一个真的会改数据的操作，正常跑完的那一份报告没人会去读 ——
+  // 而它每份几百 KB，会把收件箱里真正要看的那几份挤掉。没走通的那一次才是他会来问我的。
+  const auto = useAutoReport('restore-failed');
+
   const run = async () => {
     setBusy(true);
     setError(null);
@@ -35,6 +41,9 @@ export function RestoreSection() {
     try {
       const outcome = await restoreFromServer();
       setResult(outcome);
+      if (outcome.failures.length > 0) {
+        auto.report({ note: `有 ${outcome.failures.length} 份没读出来：${outcome.failures.join('；')}` });
+      }
       await putMeta(DRILL_META_KEY, Date.now());
       setLastDrillAt(Date.now());
       // 恢复写的是 IndexedDB，内存里的 store 要重新读一遍才能看到（设置也在内，§0 变更 28；
@@ -46,7 +55,9 @@ export function RestoreSection() {
         useStudyStore.getState().load(),
       ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      auto.report({ note: `恢复失败：${message}` });
     } finally {
       setBusy(false);
     }
@@ -114,6 +125,7 @@ export function RestoreSection() {
           {lastDrillAt && (
             <Hint>上次恢复：{new Date(lastDrillAt).toLocaleString('zh-CN', { hour12: false })}</Hint>
           )}
+          {auto.note}
         </>
       )}
     </Section>
@@ -191,9 +203,13 @@ export function StudySettingsSection() {
  * 变更 87：旁边那行字改成列出**这一趟走过的每一步**。上一次只给看最后一笔，
  * 而最后一笔恰恰是症状不是原因 —— 真机报回来的「还没取到，跳过」只说了没声音，
  * 没说为什么三个文件一个都没取到，于是又白费了一个来回。
+ *
+ * 变更 88：这几行同时自动上报。上面那段话说的「白费了一个来回」正是因为屏幕上的东西
+ * 要靠人手打给我 —— 手打必然只传最显眼的一行，而救了这次的恰恰是不起眼的那一行。
  */
 function SfxTrial() {
   const [lines, setLines] = useState<string[] | null>(null);
+  const auto = useAutoReport('sfx');
   const tryIt = () => {
     // 手势当下先解锁，再下播放指令 —— 顺序反过来，手势就过去了。
     wakeSfx();
@@ -203,6 +219,9 @@ function SfxTrial() {
       window.setTimeout(() => {
         const events = sfxEvents();
         setLines(events.length ? events.slice(-10) : ['没有任何记录']);
+        // 在这个回调里发，不在 playSfx 之后立刻发：play() 的结果是异步落的，
+        // 早发一步，报告里那几笔就还没写进去 —— 发出去的会是一份没有结论的报告。
+        auto.report({ note: events.at(-1) ?? '没有任何记录' });
       }, 1700);
     });
   };
@@ -218,6 +237,7 @@ function SfxTrial() {
           ))}
         </Hint>
       )}
+      {auto.note}
     </div>
   );
 }

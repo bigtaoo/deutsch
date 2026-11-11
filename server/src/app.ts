@@ -451,7 +451,12 @@ export function createApp(deps: AppDeps): Hono<{ Variables: Variables }> {
     } catch {
       return c.json({ error: '诊断报告不是合法 JSON' }, 400);
     }
-    return c.json(deps.diag.save(c.get('userId'), report));
+    // 触发源拿出来拼进文件名（变更 88）。形状仍然由客户端定 —— 这里只是把一个
+    // 字符串字段递下去，save() 自己把不合格的当没有（它要进路径）。
+    const trigger = (report as { trigger?: unknown } | null)?.trigger;
+    return c.json(
+      deps.diag.save(c.get('userId'), report, typeof trigger === 'string' ? trigger : undefined),
+    );
   });
 
   app.get('/v1/diag', (c) => {

@@ -20,6 +20,7 @@ import { useSettingsStore } from '@/state/useSettingsStore';
 import { nativePlatform, type NativePlatform } from '@/platform/native';
 import type { DictMeta } from '@/dict/types';
 import { Button, Disclosure, Hint, Note, Section } from '@/components/ui';
+import { useAutoReport } from './useAutoReport';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -34,6 +35,7 @@ export function DictSection() {
   const [audio, setAudio] = useState<{ count: number; bytes: number } | null>(null);
   const [probe, setProbe] = useState<string | null>(null);
   const [voice, setVoice] = useState<string | null>(null);
+  const auto = useAutoReport('dict');
 
   useEffect(() => {
     void dictMeta().then(setMeta);
@@ -52,11 +54,13 @@ export function DictSection() {
     setProbe('查询中…');
     // 用一个必然在词典里、且能试到词形还原那条路的词。
     const hit = await lookupDict('Plattformen');
-    setProbe(
-      hit
-        ? `✅ 查得到：Plattformen → ${hit.entry.w}（${hit.via === 'form' ? '经词形还原' : '直接命中'}）`
-        : '❌ 查不到 —— 词典没部署，或者分桶文件取不到',
-    );
+    const line = hit
+      ? `✅ 查得到：Plattformen → ${hit.entry.w}（${hit.via === 'form' ? '经词形还原' : '直接命中'}）`
+      : '❌ 查不到 —— 词典没部署，或者分桶文件取不到';
+    setProbe(line);
+    // 变更 88：结论连同整份设备诊断一起上去。这一行里「查不到」的两种成因
+    // （没部署 / 取不到）要靠报告里的平台和 console 才分得开，光这一行分不开。
+    auto.report({ note: line });
   };
 
   return (
@@ -89,6 +93,7 @@ export function DictSection() {
       )}
 
       {probe && <Note tone={probe.startsWith('❌') ? 'danger' : 'ok'}>{probe}</Note>}
+      {auto.note}
 
       <label className="flex items-center gap-2 pt-1 text-ui">
         <input

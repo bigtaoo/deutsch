@@ -51,12 +51,15 @@ const verifyGoogleIdToken: GoogleVerifier = async (idToken) => {
 /** 内存版收件箱 —— 路由测试不该碰真盘（文件那一份自己在 diag.test.ts 里测）。 */
 function memoryDiag() {
   const saved = new Map<string, string>();
+  /** 每一次 save 拿到的触发源（变更 88）—— 路由有没有把它递下去就看这里。 */
+  const triggers: (string | undefined)[] = [];
   return {
     sink: {
-      save(userId: string, report: unknown) {
-        const id = `${Date.now()}-abc123`;
+      save(userId: string, report: unknown, trigger?: string) {
+        const id = `${Date.now()}-abc123${trigger ? '-' + trigger : ''}`;
         saved.set(`${userId}/${id}`, JSON.stringify(report));
-        return { id, at: Date.now(), bytes: 1 };
+        triggers.push(trigger);
+        return { id, at: Date.now(), bytes: 1, trigger };
       },
       list: (userId: string) =>
         [...saved.keys()]
@@ -65,6 +68,7 @@ function memoryDiag() {
       get: (userId: string, id: string) => saved.get(`${userId}/${id}`) ?? null,
     },
     saved,
+    triggers,
   };
 }
 
@@ -418,6 +422,30 @@ describe('/v1/diag', () => {
     const one = await app.request('/v1/diag/' + id, authed(token));
     expect(one.status).toBe(200);
     expect((await one.json()) as { schema: number }).toEqual({ schema: 1 });
+  });
+
+  // 变更 88：报告的形状仍然由客户端定，这里只把一个字符串字段递下去，
+  // 不合格的由 save() 自己当没有（它要进路径）。
+  it('把报告里的触发源递给收件箱', async () => {
+    const diag = memoryDiag();
+    const { app } = setup({ diag: diag.sink });
+    const { token } = await login(app);
+    await app.request(
+      '/v1/diag',
+      authed(token, { method: 'POST', body: JSON.stringify({ schema: 3, trigger: 'sfx' }) }),
+    );
+    expect(diag.triggers).toEqual(['sfx']);
+  });
+
+  it('触发源不是字符串、或者根本没带时，照样收下来', async () => {
+    const diag = memoryDiag();
+    const { app } = setup({ diag: diag.sink });
+    const { token } = await login(app);
+    for (const body of ['{"trigger":42}', '{"schema":3}', 'null']) {
+      const res = await app.request('/v1/diag', authed(token, { method: 'POST', body }));
+      expect(res.status).toBe(200);
+    }
+    expect(diag.triggers).toEqual([undefined, undefined, undefined]);
   });
 
   // 整块可缺席：没给收件箱时说清楚，手机上退回「复制诊断」那条路。

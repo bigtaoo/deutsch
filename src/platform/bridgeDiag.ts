@@ -23,6 +23,16 @@
 // 会话令牌，多一个 `POST /v1/diag` 的成本几乎是零，而收益是「手机上点一下，
 // 我在 VPS 上直接读」。**但它不能是唯一的出口**：真出问题的时候登录本身也可能是坏的，
 // 所以同一份报告也能复制到剪贴板（`reportToText`），两条路各自独立。
+//
+// ── 为什么诊断按钮都自动上报（变更 88）──
+// 上面那个「发到服务器」是**手动**的：先点诊断按钮看结果，再想起来点一次上报。
+// 而真机上每一轮排查的实际样子是 —— 他点了按钮，看见一行字，把那一行**手打**给我，
+// 于是我只拿到了他认为重要的那一行。变更 87 那次尤其典型：三次「修好了」都修错了地方，
+// 直到第四次他偶然贴出 `right：还没取到，跳过` 这一行，断点才第一次指对。
+// 这不是他的问题，是出口的问题：**凡是会产生诊断数据的按钮，结果就该自己上去**，
+// 完整的一份，不靠人转述、也不靠人记得再点一次。所以有了 `autoSendReport()` ——
+// 它永不抛错（诊断失败不该把被诊断的功能也带倒），但**结果一定可见**：发出去了给
+// 报告 id，没发出去就说为什么（最常见的是没登录）。看不见的自动上报等于没上报。
 
 import { nativePlatform, type NativePlatform } from './native';
 import {
@@ -146,11 +156,40 @@ export async function runUpdaterSelfTest(): Promise<MethodOutcome[]> {
 /** 上报时最多带多少行 console。整份报告控制在几百 KB 以内。 */
 const MAX_REPORT_LINES = 300;
 
+/**
+ * 哪个按钮产生了这份报告（变更 88）。
+ *
+ * 它的用处全在服务器那一头：自动上报之后收件箱里一天能堆十几份，而**不打开文件就
+ * 知道这份是哪个按钮点出来的**，才谈得上「我在 VPS 上直接读」。服务端把它拼进文件名，
+ * `ls -lt` 一眼就分得出。名字只能是小写字母和连字符 —— 它要进路径。
+ */
+export type DiagTrigger =
+  /** 设置页「试听」（音效，FR-10.12）。 */
+  | 'sfx'
+  /** 「跑一次桥自检」。 */
+  | 'selftest'
+  /** 「现在就查一次更新」（热更）。 */
+  | 'check-update'
+  /** 「查一个词试试」（词典）。 */
+  | 'dict'
+  /** 「申请持久化存储」。 */
+  | 'persist'
+  /** 「一键恢复」—— 只在它没走通时上报，理由见 RestoreSection。 */
+  | 'restore-failed'
+  /** 「发到服务器」：他自己点的那一次。 */
+  | 'manual';
+
 /** 一份完整的设备诊断。服务器上原样存一个 JSON 文件。 */
 export interface DeviceReport {
   at: number;
   /** 报告格式版本 —— 以后改了形状，服务器上那堆旧文件还认得出来是哪一代。 */
-  schema: 2;
+  schema: 3;
+  /** 哪个按钮点出来的（变更 88 之前的报告没有这一项）。 */
+  trigger: DiagTrigger;
+  /** 那个按钮自己在界面上显示的那一行结果。
+   *  词典自检、持久化存储这些的结论**只存在于界面上**，不在下面任何一个字段里 ——
+   *  不把它带上，服务器上拿到的就是一份看不出结论的报告。 */
+  note?: string;
   platform: NativePlatform;
   userAgent: string;
   screen: string;
@@ -175,11 +214,17 @@ export interface DeviceReport {
 /**
  * 收一份报告。`selfTest` 由调用方传进来（跑一次要好几秒，不该藏在这个函数里偷偷发生）。
  */
-export async function collectDeviceReport(selfTest: MethodOutcome[]): Promise<DeviceReport> {
+export async function collectDeviceReport(
+  selfTest: MethodOutcome[],
+  trigger: DiagTrigger,
+  note?: string,
+): Promise<DeviceReport> {
   const build = await runningBuild();
   return {
     at: Date.now(),
-    schema: 2,
+    schema: 3,
+    trigger,
+    note,
     platform: await nativePlatform(),
     userAgent: typeof navigator === 'undefined' ? '' : navigator.userAgent,
     screen: typeof window === 'undefined' ? '' : `${window.screen?.width}×${window.screen?.height}`,
@@ -209,6 +254,51 @@ export async function sendDeviceReport(report: DeviceReport): Promise<{ id: stri
 }
 
 /**
+ * 同一个触发源两次上报之间至少隔这么久。
+ *
+ * 防的是手滑连点：一份报告几百 KB，在手机流量上连发三份没有任何额外信息
+ * （内容几乎一样），而服务器每人只留固定份数 —— 重复的会把别的按钮那几份挤掉。
+ * 按触发源各算各的：点完试听马上点自检，两份都该上去。
+ */
+const AUTO_REPORT_GAP_MS = 3000;
+
+const lastAutoSentAt = new Map<DiagTrigger, number>();
+
+/**
+ * 诊断按钮用的自动上报（变更 88）。**永不抛错，但一定返回一句能显示的话。**
+ *
+ * 两条都是硬要求：
+ * - 不抛，是因为上报挂在被诊断的那个功能后面 —— 音效试听不该因为「没登录」
+ *   而在界面上报一个错，被诊断的东西比诊断重要。
+ * - 一定可见，是因为**静默的自动上报是最坏的一种**：他以为发出去了，我这边一份都
+ *   没有，而两边都要等到下一次对话才发现（见 `diagnostics-must-not-vanish` 那条教训）。
+ */
+export async function autoSendReport(
+  trigger: DiagTrigger,
+  opts: { selfTest?: MethodOutcome[]; note?: string } = {},
+): Promise<string> {
+  const now = Date.now();
+  const last = lastAutoSentAt.get(trigger);
+  if (last !== undefined && now - last < AUTO_REPORT_GAP_MS) return '刚发过一份，这次跳过';
+  lastAutoSentAt.set(trigger, now);
+  try {
+    const report = await collectDeviceReport(opts.selfTest ?? [], trigger, opts.note);
+    const { id } = await sendDeviceReport(report);
+    return `已自动上报：${id}`;
+  } catch (err) {
+    // 失败了就把这次的时间戳撤掉 —— 否则「没登录」之后那 3 秒内的重试也会被挡掉，
+    // 而登录完马上再点一次正是最该放行的一次。
+    lastAutoSentAt.delete(trigger);
+    return `没上报：${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/** 只给测试用：把节流记录清空。 */
+export function resetAutoReportForTests(): void {
+  lastAutoSentAt.clear();
+}
+
+/**
  * 同一份报告的纯文本形式，给「复制诊断」用。
  *
  * **不是 JSON.stringify** ：这条路的终点是聊天窗口，要的是人能扫一眼就看懂的东西。
@@ -216,7 +306,8 @@ export async function sendDeviceReport(report: DeviceReport): Promise<{ id: stri
  */
 export function reportToText(report: DeviceReport): string {
   const lines: string[] = [];
-  lines.push(`时间 ${new Date(report.at).toLocaleString()}`);
+  lines.push(`时间 ${new Date(report.at).toLocaleString()} · 来自「${report.trigger}」`);
+  if (report.note) lines.push(`按钮上显示的是：${report.note}`);
   lines.push(`平台 ${report.platform} · 屏幕 ${report.screen}`);
   lines.push(`应用壳 ${report.native ?? '问不出来'} · 前端 ${report.bundle ?? '问不出来'} · 待生效 ${report.queued ?? '无'}`);
   lines.push(

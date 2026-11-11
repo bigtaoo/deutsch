@@ -20,6 +20,7 @@ import {
 } from '@/platform/bridgeDiag';
 import { initSafeArea, safeAreaProbe, type Platform } from '@/platform/safeArea';
 import { nativePlatform } from '@/platform/native';
+import { useAutoReport } from './useAutoReport';
 import { wakeLockState } from '@/platform/wakeLock';
 
 // 版本（SPEC §12.12 / 变更 41）。**这一块存在的唯一理由是让热更不是黑箱** ——
@@ -66,6 +67,7 @@ export function VersionSection() {
   const [log, setLog] = useState<CheckLogEntry | null>(() => readLastCheckLog());
   const [checking, setChecking] = useState(false);
   const [checkNote, setCheckNote] = useState<string | null>(null);
+  const auto = useAutoReport('check-update');
 
   useEffect(() => {
     void nativePlatform().then(setPlatform);
@@ -105,7 +107,17 @@ export function VersionSection() {
       // 查完这几个数可能都变了：build 里的 queued 字段、pending、以及诊断块要读的日志。
       void runningBuild().then(setBuild);
       setPending(pendingUpdateVersion());
-      setLog(readLastCheckLog());
+      const entry = readLastCheckLog();
+      setLog(entry);
+      // 变更 88：点过就自动上报。热更那四天故障里，每一轮都是「他点一下 →
+      // 把屏幕上那几行写给我」，而决定性的一次正是他顺口补上的一句「没有『上次查更新』
+      // 这个信息」—— 一条记录都没有，等于 `checkNativeUpdate()` 从来没跑完过。
+      // 那种「不存在的证据」正是转述最容易漏掉的那一种。
+      auto.report({
+        note: entry
+          ? `${entry.outcome}：${entry.steps.join(' → ') || '（没走到任何一步）'}`
+          : '一条记录都没有 —— checkNativeUpdate() 没跑完过',
+      });
     }
   };
 
@@ -167,6 +179,7 @@ export function VersionSection() {
         </>
       )}
       {checkNote && <Hint tone="warn">{checkNote}</Hint>}
+      {auto.note}
       {/* **无论平台、无论版本号问没问出来都画。** 它正是用来回答「这台设备上到底
           发生了什么」的，而一个会在出问题时自己消失的诊断等于没有。 */}
       <DeviceDiagnostics log={log} />
@@ -339,9 +352,10 @@ function DeviceDiagnostics({ log }: { log: CheckLogEntry | null }) {
  * 后面都快、个别哑。见 `src/platform/bridgeDiag.ts` 顶部。
  *
  * ── 为什么两个出口都要有 ──
- * 「发到服务器」省事，但它要求登录是好的；而诊断真正用得上的时候，坏的可能正是登录。
- * 所以「复制诊断」是一条完全不经过网络的平行路，剪贴板再被 WKWebView 拒掉，
+ * 跑完自检就自动上报（变更 88），省事，但它要求登录是好的；而诊断真正用得上的时候，
+ * 坏的可能正是登录。所以「复制诊断」是一条完全不经过网络的平行路，剪贴板再被 WKWebView 拒掉，
  * 还能退到「把文本摊开来自己选中」。**一个在出问题时会自己失效的诊断出口等于没有。**
+ * 旁边那个「发到服务器」也留着：自动那一次没发出去（比如当时还没登录）时，它是补发的按钮。
  */
 function BridgeSelfTest() {
   const [running, setRunning] = useState(false);
@@ -349,6 +363,7 @@ function BridgeSelfTest() {
   const [status, setStatus] = useState<string | null>(null);
   // 剪贴板被拒时把全文摊在这里让他自己选 —— 剪贴板的退路都是这一条（变更 84 前生词本补中译那里也有过）。
   const [rawText, setRawText] = useState<string | null>(null);
+  const auto = useAutoReport('selftest');
 
   const run = async (): Promise<MethodOutcome[]> => {
     setRunning(true);
@@ -362,6 +377,18 @@ function BridgeSelfTest() {
     }
   };
 
+  /** 变更 88：跑完就自己上去。旁边那个「发到服务器」留着，但它从此只是补发一次 ——
+   *  一份自检跑一两分钟，跑完还要记得再点一下才发得出去，实际上就是没发。 */
+  const runAndReport = async (): Promise<void> => {
+    const r = await run();
+    auto.report({
+      selfTest: r,
+      note: r.length
+        ? r.map((x) => `${x.method}=${x.outcome}(${x.ms}ms)`).join(' ')
+        : '网页版，没有桥可自检',
+    });
+  };
+
   // 发之前先确保真的有一份自检结果：一份没有自检的报告基本说明不了问题，
   // 而「我点了发送」到「服务器上那份没用」之间隔着一次出包，代价太大。
   const send = async (): Promise<void> => {
@@ -369,7 +396,7 @@ function BridgeSelfTest() {
     const selfTest = results ?? (await run());
     setStatus('正在发送…');
     try {
-      const report = await collectDeviceReport(selfTest);
+      const report = await collectDeviceReport(selfTest, 'manual');
       const { id } = await sendDeviceReport(report);
       setStatus(`已发送：${id}`);
     } catch (err) {
@@ -380,7 +407,7 @@ function BridgeSelfTest() {
   const copy = async (): Promise<void> => {
     setStatus('正在收集…');
     const selfTest = results ?? (await run());
-    const text = reportToText(await collectDeviceReport(selfTest));
+    const text = reportToText(await collectDeviceReport(selfTest, 'manual'));
     try {
       await navigator.clipboard.writeText(text);
       setStatus('已复制到剪贴板');
@@ -395,7 +422,7 @@ function BridgeSelfTest() {
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        <Button onClick={() => void run()} disabled={running}>
+        <Button onClick={() => void runAndReport()} disabled={running}>
           {running ? '自检中…' : '跑一次桥自检'}
         </Button>
         <Button onClick={() => void send()} disabled={running}>
@@ -422,6 +449,7 @@ function BridgeSelfTest() {
         </Hint>
       )}
       {status && <Hint>{status}</Hint>}
+      {auto.note}
       {rawText && (
         <textarea readOnly value={rawText} rows={10} className={`${field} w-full p-2 font-mono text-note`} />
       )}
