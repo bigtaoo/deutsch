@@ -94,9 +94,13 @@ describe('connectStudyClock', () => {
     connectStudyClock();
     await practiceAndFlush();
 
-    // 重读是异步的（IndexedDB），机器忙时一个 setTimeout(0) 等不到它 —— 等条件本身（2026-09-27 本机全量跑时抖过一次）
-    await vi.waitFor(() => expect(scheduleStudySync).toHaveBeenCalled());
-    expect(useStudyStore.getState().loaded).toBe(true);
+    // 重读是异步的（IndexedDB），机器忙时一个 setTimeout(0) 等不到它 —— 等条件本身
+    // （2026-09-27 本机全量跑时抖过一次）。但那一次等错了东西：`onFlushed` 是
+    // `void load(); scheduleStudySync();`，后一句是**同步**的，等它等于没等；异步的是 `load()`。
+    // 于是它在 CI 上又红了一次（2026-11-11，变更 86 那次推送，连带着 deploy 被跳过）。
+    // 改成等「重读真的完了」这个条件本身。
+    await vi.waitFor(() => expect(useStudyStore.getState().loaded).toBe(true));
+    expect(scheduleStudySync).toHaveBeenCalled();
     // 落库的是计时器，store 只是重读 —— 读到的秒数必须是真的写进去的那份。
     expect(useStudyStore.getState().stats.totalSeconds).toBeGreaterThan(0);
   });
