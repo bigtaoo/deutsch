@@ -39,6 +39,64 @@ function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString('zh-CN', { hour12: false });
 }
 
+/** 订阅一条 media query。jsdom 与非浏览器环境里 `matchMedia` 可能不存在，所以都要守一道。 */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+    return window.matchMedia(query).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, [query]);
+
+  return matches;
+}
+
+/**
+ * 外观（变更 86 / §12.24）。
+ *
+ * **这一节不是开关** —— 深浅一律跟系统走（§12.5：只重定义令牌，组件对主题无感）。
+ * 它存在的唯一理由是：下一次再收到「晚上刺眼」这类反馈时，要能当场分清是
+ * **深色压根没生效**，还是 **深色本身不够柔和**。两件事的修法完全不同，
+ * 而在手机上光看一眼分不出来（原生壳里 `prefers-color-scheme` 是不是真的跟随系统，
+ * 在这之前谁也没验过）。所以这里把判据摆出来：系统现在报什么、页面**真正算出来的**
+ * 底色与字色、以及「减弱动态效果」开没开。截一张图发过来就够判断。
+ */
+function AppearanceSection() {
+  const dark = useMediaQuery('(prefers-color-scheme: dark)');
+  const reduced = useMediaQuery('(prefers-reduced-motion: reduce)');
+  const [tokens, setTokens] = useState({ surface: '', ink: '' });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') return;
+    const style = getComputedStyle(document.documentElement);
+    const read = (name: string) => style.getPropertyValue(name).trim();
+    setTokens({ surface: read('--color-surface'), ink: read('--color-ink') });
+  }, [dark]);
+
+  return (
+    <Section title="外观">
+      <p className="text-ui text-muted">
+        现在是<span className="text-ink">{dark ? '深色' : '浅色'}</span>，跟系统走 —— 应用里不另设开关。
+      </p>
+      <p className="tnum text-note text-faint">
+        底色 {tokens.surface || '—'} · 字色 {tokens.ink || '—'} · 减弱动态效果
+        {reduced ? '开' : '关'}
+      </p>
+      <Hint>
+        觉得刺眼时先看上面这一行：底色还是浅的，说明系统外观没切过来（iOS 在「设置 ›
+        显示与亮度」）；已经是深的还刺眼，那就是配色本身要再往下调。
+      </Hint>
+    </Section>
+  );
+}
+
 function StorageSection() {
   const [persistence, setPersistence] = useState<StoragePersistenceStatus | null>(null);
   const [estimate, setEstimate] = useState<StorageEstimateResult | null>(null);
@@ -460,6 +518,7 @@ export function SettingsPage() {
       <ManualBackupSection />
       <RestoreSection />
       <DictSection />
+      <AppearanceSection />
       <StorageSection />
       <AlignBackendSection />
       <VersionSection />

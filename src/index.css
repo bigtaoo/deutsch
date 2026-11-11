@@ -23,30 +23,38 @@
 
   /* 中性六档。surface = 页面底，raised = 卡片与浮层，sunken = 输入框与进度槽。
      ink / muted / faint 三档文字：正文、次要说明、编号与单位。
-     line / line-strong：分隔线与输入框边框。 */
-  --color-surface: #fbfaf9;
-  --color-raised: #ffffff;
-  --color-sunken: #f1efec;
-  --color-line: #e5e2dc;
-  --color-line-strong: #cdc8c0;
-  --color-ink: #1a1918;
+     line / line-strong：分隔线与输入框边框。
+
+     ── 为什么这一档不是纯白配近黑（变更 86 / §12.24）──
+     最初这里是 raised `#ffffff` + ink `#1a1918`，正文对比度 **17.5:1**。
+     「能看清」从来不是问题，问题是另一头：一整屏纯白在暗环境里就是一块灯板，
+     而 17.5:1 远在舒适区（连续阅读一般取 7~12:1）之外，读久了眼睛要不停重新对焦。
+     现在卡片退到 `#fdfcfa`、页面底退到 `#f5f3f0`（纸，不是灯），正文 `#38352f`
+     配卡片是 **11.9:1** —— 仍然大幅超过 WCAG AAA 的 7:1，但不再是一块白板上的黑洞。
+     四个 `-soft` 底色同步降了一档亮度，否则它们会反过来变成页面上最亮的东西。 */
+  --color-surface: #f5f3f0;
+  --color-raised: #fdfcfa;
+  --color-sunken: #eae7e2;
+  --color-line: #ded9d2;
+  --color-line-strong: #c3bdb3;
+  --color-ink: #38352f;
   --color-muted: #6a655d;
-  --color-faint: #9b9589;
+  --color-faint: #8a8478;
 
   /* 强调色。跟应用图标底色（浅天蓝 #e0f2fe，scripts/generate-icons.mjs 的 TILE）
      同一个色相族，深下去做前景。它同时承担「信息性强调」—— 刻意不再单设 info 色：
      以前 sky 既是主按钮又是 info 横幅，两个含义共用一种颜色等于都没有。 */
   --color-accent: #0f6a92;
   --color-accent-ink: #ffffff;
-  --color-accent-soft: #e6f1f8;
+  --color-accent-soft: #dde9f2;
 
   /* 三档语义色。只有这三种，且**只在「拦路」那一档用底色**（§12.3）。 */
-  --color-ok: #2c7a52;
-  --color-ok-soft: #e8f3ec;
+  --color-ok: #2a7350;
+  --color-ok-soft: #e0ece4;
   --color-warn: #8a5a12;
-  --color-warn-soft: #fbf1e0;
+  --color-warn-soft: #f4e9d6;
   --color-danger: #a63a30;
-  --color-danger-soft: #fbeceb;
+  --color-danger-soft: #f4e3e1;
 
   /* ── 排版四级（§12.4）──
      在它之前，166 处字号里有 147 处是 text-sm / text-xs —— 德语正文（这个应用
@@ -70,27 +78,36 @@
 }
 
 /* 深色。晚上躺着练听力是 §2.1 写的主场景，而在这之前整个应用是 #fff 满屏。
-   只重定义令牌，不写任何 `dark:` 变体 —— 组件因此对主题无感。 */
+   只重定义令牌，不写任何 `dark:` 变体 —— 组件因此对主题无感。
+
+   ── 变更 86：深色也会刺眼，而且坏法跟浅色相反 ──
+   旧值是 surface `#121211` + ink `#eae7e1`，**15.2:1**。深色模式容易被当成
+   「已经护眼了」，但近纯白的字压在近纯黑的底上，暗环境里会沿着笔画发虚（halation）
+   —— 症状正是「看久了眼花」，而不是「看不清」。
+   两头各让一步：底从 `#121211` 提到 `#171716`，字从 `#eae7e1` 收到 `#cfcac2`，
+   落在 **11.0:1**。强调与三档语义色同样降了饱和与亮度 —— 深色下 `#55b3dd` 这种
+   亮蓝、`#ef8d82` 这种亮粉是整屏最晃眼的东西，而 danger 还要配着跟读时那颗
+   `animate-ping` 的录音点一闪一闪。 */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-surface: #121211;
-    --color-raised: #1b1b1a;
-    --color-sunken: #262524;
-    --color-line: #33322f;
+    --color-surface: #171716;
+    --color-raised: #201f1e;
+    --color-sunken: #2a2927;
+    --color-line: #383734;
     --color-line-strong: #4a4844;
-    --color-ink: #eae7e1;
+    --color-ink: #cfcac2;
     --color-muted: #a19b91;
-    --color-faint: #756f66;
+    --color-faint: #807a70;
 
-    --color-accent: #55b3dd;
+    --color-accent: #6fa8c4;
     --color-accent-ink: #0a1a22;
     --color-accent-soft: #14262f;
 
-    --color-ok: #6cc48d;
+    --color-ok: #68b386;
     --color-ok-soft: #16281d;
-    --color-warn: #dfae5f;
+    --color-warn: #c99f5e;
     --color-warn-soft: #2b2214;
-    --color-danger: #ef8d82;
+    --color-danger: #d98179;
     --color-danger-soft: #2e1917;
   }
 }
@@ -182,4 +199,28 @@ code {
   background-color: var(--color-sunken);
   padding: 0.05em 0.35em;
   font-size: 0.9em;
+}
+
+/* 系统开了「减弱动态效果」就别再动（iOS：设置 > 辅助功能 > 动态效果）。
+   跟读时屏幕上长期在动的只有两样：录音那颗 `animate-ping` 的红点、静默间隔那条
+   每帧重画的倒计时。两样都只是在说「现在处在哪一步」，静止也说得清 ——
+   关掉不丢任何信息，而在暗处它们是仅有的两处持续晃动。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 原生 checkbox 的勾选色。`color-scheme` 只负责让控件认得出深浅，不改勾的颜色 ——
+   深色下系统默认那抹亮蓝是整屏最亮的东西，而设置页上一排就是五六个。 */
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+progress {
+  accent-color: var(--color-accent);
 }
