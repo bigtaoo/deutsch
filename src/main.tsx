@@ -8,6 +8,7 @@ import { syncNow } from './sync/trigger';
 import { initAppShellUpdates } from './platform/pwa';
 import { isOAuthPopupReturn } from './sync/session';
 import { installConsoleTap } from './platform/consoleTap';
+import { readThemeChoice, watchSystemTheme } from './app/theme';
 
 // **第一件事**：把 console 抄一份留在内存里（变更 56）。越早越好 —— Capgo 热更插件的
 // 原生日志是 `evaluateJavaScript("console.info(…)")` 打进来的，那是这个项目唯一能看见
@@ -26,6 +27,11 @@ if (isOAuthPopupReturn()) {
 }
 
 function bootApp(): void {
+  // 主题（变更 90）已经由 index.html 里那段内联脚本在首次绘制前应用过了，这里只补一件事：
+  // 选的是「跟随系统」时，系统外观中途变了（iOS 的自动外观、日落）要跟着换。
+  // 手动选了某一档的人不受影响 —— 见 watchSystemTheme。
+  watchSystemTheme(readThemeChoice);
+
   // 注册 Service Worker，并让「服务器上有新壳」自动变成「这个页面刷新一次」。
   // 不这样接的话，deploy 之后刷新拿到的是旧壳（理由见 src/platform/pwa.ts 顶部）。
   initAppShellUpdates();

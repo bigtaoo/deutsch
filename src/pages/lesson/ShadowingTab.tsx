@@ -5,10 +5,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { audioPlayer } from '@/audio/player';
-import { useLessonAudio } from '@/audio/useLessonAudio';
+import { useAudioTime, useLessonAudio } from '@/audio/useLessonAudio';
 import { ShadowingMachine, type PlayRange, type ShadowingState } from '@/audio/shadowing';
 import { MicEcho, describeMicError, echoSupported } from '@/audio/echo';
 import { annotatedSentences, resolveRange } from '@/lesson/timing';
+import { activeTokenAt, buildKaraoke, type KaraokeLine } from '@/lesson/karaoke';
 import { displayNumbers } from '@/lesson/sentences';
 import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
@@ -87,6 +88,14 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
   // FR-19.4：跟读时的中文和通听共用一个开关 —— 「今天想不想看中文」不该在两页上各答一次。
   const translated = useMemo(() => hasTranslations(lesson.sentences), [lesson.sentences]);
+
+  // FR-6.9：原句播放时的逐词高亮，形状与通听同一套（§12.17）。
+  // 整课算一次就够 —— 它只依赖句子和音频时长，和「现在播到哪一句」无关。
+  const karaoke = useMemo(
+    () => buildKaraoke(lesson.sentences, lesson.audioDuration),
+    [lesson.sentences, lesson.audioDuration],
+  );
+  const anyWordTimes = useMemo(() => karaoke.some((l) => l.hasWords), [karaoke]);
 
   const queue = useMemo<PlayRange[]>(() => {
     return annotatedSentences(lesson.sentences)
@@ -233,8 +242,14 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
 
       {echoOn && micError && <Hint>{micError}</Hint>}
 
+      {/* 没有词级时间戳时明说一句 —— 否则「跟读里没有高亮」会被当成界面坏了来报。 */}
+      {queue.length > 0 && !anyWordTimes && (
+        <Hint>这一课只有句级时间戳，所以没有逐词高亮 —— 去课程页头部重跑一次「自动对齐」才会有词级时间。</Hint>
+      )}
+
       <CurrentSentenceCard
         lesson={lesson}
+        karaoke={karaoke}
         state={state}
         sentenceIndex={currentSentenceIndex}
         displayNumber={currentSentenceIndex !== null ? numbers.get(currentSentenceIndex) : undefined}
@@ -289,6 +304,7 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
 
 function CurrentSentenceCard({
   lesson,
+  karaoke,
   state,
   sentenceIndex,
   displayNumber,
@@ -296,6 +312,7 @@ function CurrentSentenceCard({
   onFinishTake,
 }: {
   lesson: Lesson;
+  karaoke: KaraokeLine[];
   state: ShadowingState;
   sentenceIndex: number | null;
   displayNumber: number | undefined;
@@ -303,6 +320,12 @@ function CurrentSentenceCard({
   onFinishTake: () => void;
 }) {
   const sentence = sentenceIndex !== null ? lesson.sentences[sentenceIndex] : undefined;
+  const line = sentence ? karaoke.find((l) => l.index === sentence.index) : undefined;
+  // **只有原句在响的时候才跟着走**（FR-6.9）：回放自己那一遍（echo）用的是另一个
+  // 音频元素，主播放器是停着的，时间停在上一句的末尾 —— 不关掉的话会有一个词
+  // 僵在那里亮着，看起来像卡住了。静默间隔（gap）那一遍也要整句都不亮：
+  // 那是该自己开口的时候，屏幕上没有「现在读到这里」这回事。
+  const live = state.phase === 'playing' || state.phase === 'reprise';
 
   return (
     <Card className="space-y-3 p-6">
@@ -317,10 +340,14 @@ function CurrentSentenceCard({
               第 {state.pass} 遍 · {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
             </span>
           </div>
-          <p className="text-de">
-            <SpeakerMark speaker={sentence.speaker} />
-            {sentence.text}
-          </p>
+          {line?.hasWords ? (
+            <KaraokeSentence line={line} speaker={sentence.speaker} live={live} />
+          ) : (
+            <p className="text-de">
+              <SpeakerMark speaker={sentence.speaker} />
+              {sentence.text}
+            </p>
+          )}
           {showTranslation && sentence.translation && (
             <p className="whitespace-pre-line text-ui text-muted">{sentence.translation}</p>
           )}
@@ -331,6 +358,44 @@ function CurrentSentenceCard({
 
       {state.recording ? <RecordingButton onFinish={onFinishTake} /> : <GapCountdown state={state} />}
     </Card>
+  );
+}
+
+/**
+ * FR-6.9：当前句的逐词高亮。
+ *
+ * 单独拆成一个组件，是因为它要逐帧重渲染（useAudioTime 每个 rAF 发一次）——
+ * 放进 CurrentSentenceCard 里的话，那张卡连同录音按钮、倒计时条每帧都要重算一遍。
+ *
+ * 配色照抄 §12.17：当前词是 warn **实底反白**，不是 warn-soft，也不许只靠字重区分
+ * （变更 58 的教训：iPhone 的 SF Pro 上一档字重几乎看不出来）。
+ * 这里不做点击跳转 —— 跟读是机器在推进队列，点一下跳走会把循环打乱。
+ */
+function KaraokeSentence({
+  line,
+  speaker,
+  live,
+}: {
+  line: KaraokeLine;
+  speaker: string | undefined;
+  live: boolean;
+}) {
+  const time = useAudioTime();
+  const active = live ? activeTokenAt(line, time) : null;
+
+  return (
+    <p className="text-de">
+      <SpeakerMark speaker={speaker} />
+      {line.tokens.map((token, i) => (
+        <span
+          key={token.start}
+          data-active={i === active ? '' : undefined}
+          className={i === active ? 'rounded-ctl bg-warn font-medium text-surface' : undefined}
+        >
+          {token.text}
+        </span>
+      ))}
+    </p>
   );
 }
 

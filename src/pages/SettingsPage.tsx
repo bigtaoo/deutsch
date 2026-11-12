@@ -29,6 +29,14 @@ import { remoteEmissionsAvailable } from '@/align/remoteEmissions';
 import { clearJournal, nextPlanStep, readHistory, type AlignRunRecord } from '@/align/journal';
 import { nativePlatform } from '@/platform/native';
 import { Banner, Button, Chip, Disclosure, FilePicker, Hint, Note, Section } from '@/components/ui';
+import {
+  readThemeChoice,
+  resolveTheme,
+  setThemeChoice,
+  THEME_CHOICES,
+  THEME_LABELS,
+  type ThemeChoice,
+} from '@/app/theme';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -60,39 +68,63 @@ function useMediaQuery(query: string): boolean {
 }
 
 /**
- * 外观（变更 86 / §12.24）。
+ * 外观（变更 90 / §12.25；诊断那一行来自变更 86 / §12.24）。
  *
- * **这一节不是开关** —— 深浅一律跟系统走（§12.5：只重定义令牌，组件对主题无感）。
- * 它存在的唯一理由是：下一次再收到「晚上刺眼」这类反馈时，要能当场分清是
- * **深色压根没生效**，还是 **深色本身不够柔和**。两件事的修法完全不同，
- * 而在手机上光看一眼分不出来（原生壳里 `prefers-color-scheme` 是不是真的跟随系统，
- * 在这之前谁也没验过）。所以这里把判据摆出来：系统现在报什么、页面**真正算出来的**
- * 底色与字色、以及「减弱动态效果」开没开。截一张图发过来就够判断。
+ * 四档：跟随系统 / 浅色 / 深色 / **夜间**。
+ * 2026-11-12 之前这里不是开关，只有一行诊断 —— 当时的说法是「深浅一律跟系统走」。
+ * 那条诊断立刻起了作用：反馈回来是「系统已经是深色，晚上还是刺眼」，
+ * 于是问题从「深色没生效」变成「深色这一档不够暗」。而深色又不能整体压下去，
+ * 白天在亮房间里用的是同一套值 —— 所以多出「夜间」这一档，并且必须由人来选。
+ *
+ * 选择存在本机（localStorage），**不进 Settings 因而不同步**：理由见 src/app/theme.ts。
+ * 诊断那一行留着：它这一次就值回票价了，而且现在还多了一个判据 —— 手动选了一档之后
+ * 底色还是浅的，说明 `data-theme` 没写上去（内联脚本被拦了之类）。
  */
 function AppearanceSection() {
-  const dark = useMediaQuery('(prefers-color-scheme: dark)');
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)');
   const reduced = useMediaQuery('(prefers-reduced-motion: reduce)');
+  const [choice, setChoice] = useState<ThemeChoice>(() => readThemeChoice());
   const [tokens, setTokens] = useState({ surface: '', ink: '' });
+  const resolved = resolveTheme(choice, systemDark);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') return;
     const style = getComputedStyle(document.documentElement);
     const read = (name: string) => style.getPropertyValue(name).trim();
     setTokens({ surface: read('--color-surface'), ink: read('--color-ink') });
-  }, [dark]);
+  }, [resolved]);
 
   return (
     <Section title="外观">
+      {/* 四个按钮平铺而不是下拉：一共就四档，而「换一档看看哪个舒服」这件事要能连点。
+          下拉每换一次都要点开、挑、关上三步，在床上单手操作尤其别扭。 */}
+      <div className="flex flex-wrap gap-2">
+        {THEME_CHOICES.map((value) => (
+          <Button
+            key={value}
+            variant={choice === value ? 'primary' : 'secondary'}
+            aria-pressed={choice === value}
+            onClick={() => {
+              setThemeChoice(value);
+              setChoice(value);
+            }}
+          >
+            {THEME_LABELS[value]}
+          </Button>
+        ))}
+      </div>
       <p className="text-ui text-muted">
-        现在是<span className="text-ink">{dark ? '深色' : '浅色'}</span>，跟系统走 —— 应用里不另设开关。
+        现在是<span className="text-ink">{THEME_LABELS[resolved]}</span>
+        {choice === 'system' && `（系统报${systemDark ? '深色' : '浅色'}）`}。
+        这个选择只存在这台设备上，不跟着账号同步 —— 桌面和手机常常要的是两个答案。
       </p>
       <p className="tnum text-note text-faint">
         底色 {tokens.surface || '—'} · 字色 {tokens.ink || '—'} · 减弱动态效果
         {reduced ? '开' : '关'}
       </p>
       <Hint>
-        觉得刺眼时先看上面这一行：底色还是浅的，说明系统外观没切过来（iOS 在「设置 ›
-        显示与亮度」）；已经是深的还刺眼，那就是配色本身要再往下调。
+        「夜间」比「深色」再暗一档，是给关了灯躺着练听力那个场景的：底色的绝对亮度只有
+        深色的三分之一，强调色和那颗录音红点也跟着收了。觉得字太淡就退回深色。
       </Hint>
     </Section>
   );

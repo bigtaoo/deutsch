@@ -77,50 +77,84 @@
   --radius-box: 0.75rem;
 }
 
-/* 深色。晚上躺着练听力是 §2.1 写的主场景，而在这之前整个应用是 #fff 满屏。
-   只重定义令牌，不写任何 `dark:` 变体 —— 组件因此对主题无感。
+/* ── 三套深浅由 `data-theme` 选，不由媒体查询选（变更 90 / §12.25）──
+   以前这里写的是 `@media (prefers-color-scheme: dark)`，也就是**只跟系统走、应用里
+   没有开关**。它的毛病在 2026-11-12 那次反馈里暴露得很清楚：「晚上依然刺眼」，而
+   系统外观已经是深色了 —— 也就是说深色这一档本身对「关灯躺着」还不够暗，
+   可又不能把深色整体压下去：白天在亮房间里用的也是同一套值。
+   所以改成三套值 + 一个四档开关（跟随系统 / 浅色 / 深色 / 夜间），
+   `src/app/theme.ts` 负责把「跟随系统」解析成 light|dark 写进 `data-theme`。
+   媒体查询因此整个退场：属性永远有值（index.html 里那段内联脚本在首次绘制前就写好了），
+   页面上只会命中下面三条规则中的一条。
 
-   ── 变更 86：深色也会刺眼，而且坏法跟浅色相反 ──
-   旧值是 surface `#121211` + ink `#eae7e1`，**15.2:1**。深色模式容易被当成
-   「已经护眼了」，但近纯白的字压在近纯黑的底上，暗环境里会沿着笔画发虚（halation）
-   —— 症状正是「看久了眼花」，而不是「看不清」。
-   两头各让一步：底从 `#121211` 提到 `#171716`，字从 `#eae7e1` 收到 `#cfcac2`，
-   落在 **11.0:1**。强调与三档语义色同样降了饱和与亮度 —— 深色下 `#55b3dd` 这种
-   亮蓝、`#ef8d82` 这种亮粉是整屏最晃眼的东西，而 danger 还要配着跟读时那颗
-   `animate-ping` 的录音点一闪一闪。 */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-surface: #171716;
-    --color-raised: #201f1e;
-    --color-sunken: #2a2927;
-    --color-line: #383734;
-    --color-line-strong: #4a4844;
-    --color-ink: #cfcac2;
-    --color-muted: #a19b91;
-    --color-faint: #807a70;
+   这个选择**只存在本机**（localStorage，不进 Settings 因而不同步）：
+   桌面在亮着灯的房间、手机在床上关着灯，是同一个人的两个不同答案。 */
 
-    --color-accent: #6fa8c4;
-    --color-accent-ink: #0a1a22;
-    --color-accent-soft: #14262f;
+/* 深色（变更 86）。旧值是 surface `#121211` + ink `#eae7e1`，**15.2:1** —— 深色模式
+   容易被当成「已经护眼了」，但近纯白的字压在近纯黑的底上，暗环境里会沿着笔画发虚
+   （halation），症状正是「看久了眼花」而不是「看不清」。两头各让一步落在 **11.0:1**。
+   强调与三档语义色同样降了饱和与亮度 —— 深色下 `#55b3dd` 这种亮蓝、`#ef8d82` 这种
+   亮粉是整屏最晃眼的东西，而 danger 还要配着跟读时那颗 `animate-ping` 的录音点一闪一闪。 */
+:root[data-theme='dark'] {
+  --color-surface: #171716;
+  --color-raised: #201f1e;
+  --color-sunken: #2a2927;
+  --color-line: #383734;
+  --color-line-strong: #4a4844;
+  --color-ink: #cfcac2;
+  --color-muted: #a19b91;
+  --color-faint: #807a70;
 
-    --color-ok: #68b386;
-    --color-ok-soft: #16281d;
-    --color-warn: #c99f5e;
-    --color-warn-soft: #2b2214;
-    --color-danger: #d98179;
-    --color-danger-soft: #2e1917;
-  }
+  --color-accent: #6fa8c4;
+  --color-accent-ink: #0a1a22;
+  --color-accent-soft: #14262f;
+
+  --color-ok: #68b386;
+  --color-ok-soft: #16281d;
+  --color-warn: #c99f5e;
+  --color-warn-soft: #2b2214;
+  --color-danger: #d98179;
+  --color-danger-soft: #2e1917;
+}
+
+/* 夜间（变更 90）。深色是「房间里有灯」，夜间是「关了灯、眼睛已经暗适应」。
+   这一档降的**不是对比度而是绝对亮度**：底从 `#171716`（相对亮度 0.85%）降到
+   `#0b0b0a`（0.33%，约三分之一），字从 `#cfcac2` 收到 `#aca79e`。
+   正文落在 7.3~8.2:1 —— 仍然达到 WCAG AAA 的 7:1，但比深色的 11:1 柔和一档。
+   为什么不干脆用纯黑 `#000`：OLED 上纯黑与任何一点亮色之间会出现硬边（smearing），
+   而且卡片和页面底就分不开了（§12.5 要求这两层可辨）。
+   强调与三档语义色再降一档：夜间屏幕上最晃眼的从来不是正文，是按钮和那颗录音红点。 */
+:root[data-theme='night'] {
+  --color-surface: #0b0b0a;
+  --color-raised: #121211;
+  --color-sunken: #1a1918;
+  --color-line: #262523;
+  --color-line-strong: #35332f;
+  --color-ink: #aca79e;
+  --color-muted: #847f76;
+  --color-faint: #69645c;
+
+  --color-accent: #538499;
+  --color-accent-ink: #050b0e;
+  --color-accent-soft: #0e1a21;
+
+  --color-ok: #519070;
+  --color-ok-soft: #0c150f;
+  --color-warn: #a07f49;
+  --color-warn-soft: #181309;
+  --color-danger: #b06b64;
+  --color-danger-soft: #190d0c;
 }
 
 /* 让浏览器自带的控件（checkbox、range、number 的步进器、select 的下拉）跟着换色。
-   不写这一条的话，深色模式下会得到一堆亮白的原生控件。 */
+   不写这一条的话，深色模式下会得到一堆亮白的原生控件。
+   跟令牌一样改认属性：媒体查询在「系统浅色 + 手动选了夜间」时会给出相反的答案。 */
 :root {
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-  }
+:root[data-theme='dark'],
+:root[data-theme='night'] {
+  color-scheme: dark;
 }
 
 /* 手机端适配（§2.1：手机是复习工位）。

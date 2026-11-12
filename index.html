@@ -5,12 +5,31 @@
     <!-- viewport-fit=cover + 下面的 safe-area padding：iPhone 上装到主屏幕后底部
          那条 home indicator 会盖住复习界面的评分按钮（FR-10.7 要求拇指可达） -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- 跟图标底色（scripts/generate-icons.mjs 的 TILE）一致。图标从深色改成浅色那次，
-         这里忘了改的话手机上是深色状态栏配浅蓝图标，两个调子。 -->
-    <meta name="theme-color" content="#e0f2fe" media="(prefers-color-scheme: light)" />
-    <!-- 深色下必须换一条：浅蓝状态栏压在 #121211 的页面上是两个调子（§12.5 有了深色令牌
-         之后才需要这一行）。值 = index.css 里深色的 --color-surface。 -->
-    <meta name="theme-color" content="#171716" media="(prefers-color-scheme: dark)" />
+    <!-- 浅色那条跟图标底色（scripts/generate-icons.mjs 的 TILE）一致；深色与夜间两条
+         等于 index.css 里各自的 --color-surface —— 浅蓝状态栏压在近黑的页面上是两个调子。
+         只留**一条** meta、由下面那段脚本改写 content：带 `media=` 的写法只认系统外观，
+         而现在深浅是手动可选的（§12.25），系统浅色 + 手动夜间时它会给出相反的答案。 -->
+    <meta id="theme-color" name="theme-color" content="#e0f2fe" />
+    <!-- ── 首次绘制前就把 data-theme 写好（变更 90 / §12.25）──
+         这段必须是**内联且同步**的：主题存在 localStorage 里，等 main.tsx 的模块图加载完
+         再去读，夜间用户每次冷启动都会先被闪一屏浅色——而这正是整件事要消灭的东西。
+         值与 src/app/theme.ts 的 resolveTheme() 同一套口径，theme.test.ts 守着两边一致。 -->
+    <script>
+      (function () {
+        try {
+          var pick = localStorage.getItem('theme') || 'system';
+          if (pick === 'system')
+            pick = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          if (pick !== 'light' && pick !== 'dark' && pick !== 'night') pick = 'light';
+          document.documentElement.setAttribute('data-theme', pick);
+          var meta = document.getElementById('theme-color');
+          if (meta) meta.content = { light: '#e0f2fe', dark: '#171716', night: '#0b0b0a' }[pick];
+        } catch (e) {
+          // localStorage 被禁（隐私模式、WKWebView 的某些配置）：留在浅色，应用照常能用。
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="努力学德语" />

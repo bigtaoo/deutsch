@@ -135,3 +135,53 @@ test('关掉「录音并回放」：不申请麦克风，和原来的跟读一�
     await page.evaluate(() => (window as unknown as { __micStreams: MediaStream[] }).__micStreams.length),
   ).toBe(0);
 });
+
+// FR-6.9 原句播放时的逐词高亮（变更 90）。和通听那条（listen.spec.ts）同一个理由：
+// 组件测试能断言 class 名，**断言不了这两个类最终算出来的颜色是不是同一个** ——
+// 变更 58 那次「当前词和当前行共用 bg-warn-soft」就是这么溜过去的。
+//
+// 这一课故意用默认的 10 秒一句、并且**关掉录音回放**：原句播放那一段要足够长，
+// 断言才跑得完；关掉录音是为了让「原句 → 间隔」这两档干净地轮到，
+// 而间隔那一档正是「该我开口的时候屏幕上不该有当前词」的判据。
+test('跟读原句时当前词反白：底色算出来跟卡片不是一个颜色；轮到自己开口就不亮了（FR-6.9）', async ({ page }) => {
+  await openApp(page);
+  await importLesson(page, { title: TITLE, text: MANUSCRIPT, audio: wavBytes(40) });
+  const lessonId = new URL(page.url()).hash.match(/#\/lesson\/([^/]+)\//)![1];
+  await importBackup(
+    page,
+    timedLessonBackup(lessonId, undefined, {
+      settings: { shadowingEcho: false, shadowingRepeat: 1 },
+    }),
+  );
+  await page.goto(`/#/lesson/${lessonId}/shadowing`);
+  await expect(page.getByRole('heading', { name: TITLE })).toBeVisible();
+
+  await page.getByRole('button', { name: '开始跟读' }).click();
+  await expect(page.locator('[data-active]')).toHaveCount(1);
+
+  // 一次 evaluate 里取完，避免两次取样之间高亮又走了一个词。
+  const seen = await page.evaluate(() => {
+    const word = document.querySelector('[data-active]');
+    const card = word?.closest('.bg-raised');
+    if (!word || !card) return null;
+    return {
+      text: word.textContent,
+      wordBg: getComputedStyle(word).backgroundColor,
+      cardBg: getComputedStyle(card).backgroundColor,
+      wordInk: getComputedStyle(word).color,
+      cardInk: getComputedStyle(card).color,
+    };
+  });
+
+  expect(seen).not.toBeNull();
+  expect(seen!.text?.trim().length).toBeGreaterThan(0);
+  // §12.17 的反白：实底 + 反过来的字色，两样都不能和卡片本身一样
+  expect(seen!.wordBg).not.toBe('rgba(0, 0, 0, 0)');
+  expect(seen!.wordBg).not.toBe(seen!.cardBg);
+  expect(seen!.wordInk).not.toBe(seen!.cardInk);
+
+  // 原句放完 → 轮到自己开口：整句一个词都不该亮着
+  // （不关掉的话会有一个词僵在那里，看起来像卡住了）
+  await expect(page.getByText(/现在跟读 —— 还有/)).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('[data-active]')).toHaveCount(0);
+});
