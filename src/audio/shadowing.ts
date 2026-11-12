@@ -6,6 +6,8 @@
 //
 //   PLAYING → GAP(录音，等 finishTake()) → ECHO(放自己那一遍) → (repeat--) → PLAYING | REPRISE → NEXT
 //
+// BREAK：自动进入下一句之前的那一口气（FR-6.10）。手动跳句不走这里 —— 按了键就该立刻响应。
+//
 // REPRISE：最后一遍放完自己之后，把原句再放一遍再进下一句 —— 系统读、我读、听自己、再听系统，
 // 刚听完自己马上对照原句，差别才听得出来。只在最后一遍加：还有下一遍时，下一遍的 PLAYING
 // 本来就是「再听系统」，再插一次就连着放两遍原句了。没录到/没回放的那一遍也不加。
@@ -44,7 +46,7 @@ export interface EchoRecorder {
   halt(): void;
 }
 
-export type ShadowingPhase = 'idle' | 'playing' | 'gap' | 'echo' | 'reprise';
+export type ShadowingPhase = 'idle' | 'playing' | 'gap' | 'echo' | 'reprise' | 'break';
 
 export interface ShadowingState {
   phase: ShadowingPhase;
@@ -79,6 +81,17 @@ export interface MachineDeps {
   setTimer?: (ms: number, cb: () => void) => () => void;
   echo?: EchoRecorder;
 }
+
+/**
+ * FR-6.10：自动换句之前停这么久。
+ *
+ * 为什么要有：上一句的最后一段和下一句的原句都是「系统在读」，零间隔地接上去，
+ * 耳朵分不出这是同一句的又一遍还是新的一句。一口气就够了。
+ *
+ * 为什么是写死的常量而不是设置项：`gapRatio` 管的是「留给你读的时间」，那是个真参数；
+ * 这一秒是换气，不是参数 —— 多一个旋钮的代价大于它能带来的区别。
+ */
+const SENTENCE_BREAK_MS = 1000;
 
 /** FR-6.8 录音保底上限：句长 × 5，但不少于 20 秒。 */
 const RECORD_CAP_RATIO = 5;
@@ -283,9 +296,33 @@ export class ShadowingMachine {
     else this.advance(position);
   }
 
+  /**
+   * FR-6.10：自动进入下一句，中间隔一口气。
+   *
+   * 这一秒里**位置已经是下一句了**，所以卡片上的句号与德语原文当场就换过去 ——
+   * 换句的信号不只是「停了一下」，而是「你看，下一句」，顺带给一秒看清要跟读的句子。
+   * `repeatsLeft` / `pass` 也按下一句的第一遍填好，免得这一秒里「第 0 遍」一闪而过。
+   */
   private advance(position: number): void {
     if (position + 1 >= this.queue.length) return this.stop();
-    this.playAt(position + 1);
+    const next = position + 1;
+    this.clearTimer();
+    this.finishCurrentTake = null;
+    this.echo?.halt();
+    const epoch = ++this.epoch;
+    const remaining = this.config.repeat <= 0 ? Infinity : this.config.repeat;
+    this.set({
+      phase: 'break',
+      position: next,
+      repeatsLeft: remaining,
+      gapStartedAt: this.now(),
+      gapMs: SENTENCE_BREAK_MS,
+      pass: 1,
+      recording: false,
+    });
+    this.cancelTimer = this.setTimer(SENTENCE_BREAK_MS, () => {
+      if (epoch === this.epoch) this.playAt(next);
+    });
   }
 
   private clearTimer(): void {

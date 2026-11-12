@@ -78,7 +78,14 @@ describe('ShadowingMachine', () => {
 
     player.finish();
     timers.fireLast();
-    expect(player.calls[2]).toEqual([10, 11]); // 进入下一句
+    // FR-6.10：两遍读完不是当场接上下一句，中间隔一口气。
+    // 这一秒里位置已经是下一句了（卡片上的句号与德语原文当场就换过去），但一个音都还没响。
+    expect(machine.getState()).toMatchObject({ phase: 'break', position: 1, pass: 1 });
+    expect(timers.lastDelay).toBe(1000);
+    expect(player.calls).toHaveLength(2);
+
+    timers.fireLast();
+    expect(player.calls[2]).toEqual([10, 11]); // 这才进下一句
     expect(machine.getState().position).toBe(1);
   });
 
@@ -222,6 +229,9 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     expect(echo.starts).toBe(1); // 再听那一遍不录
 
     player.finish();
+    // FR-6.10：再听放完也先停一口气，位置这时已经是下一句
+    expect(machine.getState()).toMatchObject({ phase: 'break', position: 1, pass: 1 });
+    timers.fireLast();
     expect(player.calls[2]).toEqual([10, 11]);
     expect(machine.getState()).toMatchObject({ phase: 'playing', position: 1, pass: 1 });
   });
@@ -294,6 +304,7 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     expect(player.calls).toEqual([[0, 2], [0, 2], [0, 2]]);
     expect(machine.getState().phase).toBe('reprise');
     player.finish();
+    timers.fireLast(); // FR-6.10 的那一口气
     expect(player.calls[3]).toEqual([10, 11]);
   });
 
@@ -306,6 +317,7 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     machine.finishTake();
     expect(machine.getState().phase).toBe('gap');
     timers.fireLast();
+    timers.fireLast(); // FR-6.10 的那一口气
     expect(player.calls[1]).toEqual([10, 11]);
     expect(echo.starts).toBe(0);
   });
@@ -318,6 +330,7 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     expect(machine.getState()).toMatchObject({ phase: 'gap', recording: false, gapMs: 2400 });
     expect(timers.lastDelay).toBe(2400);
     timers.fireLast();
+    timers.fireLast(); // FR-6.10 的那一口气
     expect(echo.played).toHaveLength(0);
     expect(player.calls[1]).toEqual([10, 11]);
   });
@@ -329,7 +342,8 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     machine.finishTake();
     await settle();
     expect(echo.played).toHaveLength(0);
-    expect(player.calls[1]).toEqual([10, 11]); // 没录到就没有再听，直接下一句
+    timers.fireLast(); // FR-6.10 的那一口气
+    expect(player.calls[1]).toEqual([10, 11]); // 没录到就没有再听，但照样隔一口气
   });
 
   it('点了「读完了」、录音还没交出来就跳句：迟到的录音不会被放出来', async () => {
@@ -372,5 +386,86 @@ describe('ShadowingMachine · FR-6.8 录音回放', () => {
     expect(machine.getState()).toMatchObject({ phase: 'playing', pass: 1, position: 0 });
     player.finish();
     expect(machine.getState().recording).toBe(true);
+  });
+});
+
+describe('ShadowingMachine · FR-6.10 换句之前的那一口气', () => {
+  /** 走到「这一句彻底读完了、下一句还没响」的那一刻。 */
+  function toBreak(): void {
+    machine.setQueue(QUEUE, { gapRatio: 1.2, repeat: 1 });
+    machine.start();
+    player.finish(); // 原句放完 → 静默间隔
+    timers.fireLast(); // 间隔到点 → 本该直接进下一句
+  }
+
+  it('停整整一秒，这一秒里一个音都不响', () => {
+    toBreak();
+    expect(machine.getState().phase).toBe('break');
+    expect(timers.lastDelay).toBe(1000);
+    expect(player.calls).toEqual([[0, 2]]);
+
+    timers.fireLast();
+    expect(machine.getState().phase).toBe('playing');
+    expect(player.calls[1]).toEqual([10, 11]);
+  });
+
+  it('这一秒里位置已经是下一句 —— 换句的信号不只是「停了一下」，而是「你看，下一句」', () => {
+    toBreak();
+    // pass / repeatsLeft 也按下一句的第一遍填好，免得这一秒里「第 0 遍」一闪而过。
+    expect(machine.getState()).toMatchObject({
+      phase: 'break',
+      position: 1,
+      pass: 1,
+      repeatsLeft: 1,
+      recording: false,
+      gapMs: 1000,
+    });
+  });
+
+  it('手动跳句不等这一秒 —— 按了键就该立刻响', () => {
+    machine.start();
+    machine.next();
+    expect(machine.getState()).toMatchObject({ phase: 'playing', position: 1 });
+    expect(player.calls[1]).toEqual([10, 11]);
+
+    machine.previous();
+    expect(machine.getState()).toMatchObject({ phase: 'playing', position: 0 });
+    expect(player.calls[2]).toEqual([0, 2]);
+  });
+
+  it('这一秒里按重播：立刻开始下一句，不再等', () => {
+    toBreak();
+    machine.replay();
+    expect(machine.getState()).toMatchObject({ phase: 'playing', position: 1, pass: 1 });
+    expect(player.calls[1]).toEqual([10, 11]);
+  });
+
+  it('这一秒里按停止：到点了也不许自己响起来', () => {
+    toBreak();
+    machine.stop();
+    expect(machine.getState().phase).toBe('idle');
+    timers.fireLast(); // 定时器已取消；就算漏网，epoch 也对不上
+    expect(player.calls).toHaveLength(1);
+    expect(machine.getState().phase).toBe('idle');
+  });
+
+  it('这一秒里跳句：旧的那一口气作废，不会再多放一句', () => {
+    toBreak();
+    machine.next(); // 从第 2 句跳到第 3 句
+    expect(machine.getState()).toMatchObject({ phase: 'playing', position: 2 });
+    timers.fireLast();
+    expect(player.calls).toEqual([
+      [0, 2],
+      [20, 24],
+    ]);
+  });
+
+  it('队尾不留这一口气 —— 后面没有下一句，停顿就只是发呆', () => {
+    machine.setQueue(QUEUE, { gapRatio: 1.2, repeat: 1 });
+    machine.start(2);
+    player.finish();
+    timers.fireLast();
+    expect(machine.getState().phase).toBe('idle');
+    expect(player.pauses).toBeGreaterThan(0);
   });
 });

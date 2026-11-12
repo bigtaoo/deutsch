@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { ShadowingTab } from './ShadowingTab';
 import { useLessonStore } from '@/state/useLessonStore';
+import { audioPlayer } from '@/audio/player';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { DEFAULT_SETTINGS } from '@/db/meta';
 import type { Lesson, Sentence } from '@/types/models';
@@ -226,5 +227,39 @@ describe('ShadowingTab — 不该高亮的那几档', () => {
   it('词级时间戳齐全时不摆那条提示（§12.3：一切正常就静默）', async () => {
     await startShadowing();
     expect(screen.queryByText(/只有句级时间戳/)).toBeNull();
+  });
+});
+
+describe('ShadowingTab — 换句之前的那一口气（FR-6.10）', () => {
+  it('这一秒里卡片已经是下一句，但一个音都没响、一个词都不亮', async () => {
+    vi.useFakeTimers();
+    try {
+      await startShadowing();
+      await act(async () => {
+        tick?.(4.5); // 第一句的最后一个词
+      });
+      expect(document.querySelectorAll('[data-active]')).toHaveLength(1);
+
+      await act(async () => {
+        onEnded?.(); // 原句放完 → 静默间隔
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(6000); // 间隔到点（5 秒的句子 × 1.2）→ 本该直接读下一句
+      });
+
+      // 卡片当场换成第二句：换句的信号不只是「停了一下」，而是「你看，下一句」。
+      expect(document.body.textContent).toContain('Was aber wenn die Beamten Hilfe brauchen');
+      // 但这一秒里主播放器一声没响，也不该有哪个词亮着。
+      expect(vi.mocked(audioPlayer.playRange)).toHaveBeenCalledTimes(1);
+      expect(document.querySelectorAll('[data-active]')).toHaveLength(0);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000); // 一口气过去了
+      });
+      expect(vi.mocked(audioPlayer.playRange)).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(audioPlayer.playRange).mock.calls[1]!.slice(0, 2)).toEqual([5, 10]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
