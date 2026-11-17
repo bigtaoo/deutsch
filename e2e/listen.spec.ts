@@ -91,7 +91,7 @@ test('没有时间戳的课不假装高亮，而是说清楚为什么（FR-5.2�
 
   await page.goto(`/#/lesson/${lessonId}/listen`);
   await page.getByRole('button', { name: '展开文本' }).click();
-  await expect(page.getByText('这一课还没有时间戳')).toBeVisible();
+  await expect(page.getByText('这一课还没对齐过')).toBeVisible();
 
   await page.getByRole('button', { name: '播放', exact: true }).click();
   // 播着也一个词都不亮 —— 伪同步是这一页明确不做的事

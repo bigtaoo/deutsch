@@ -196,7 +196,7 @@ describe('ListenTab — 点词与行号', () => {
 
     expect(audioPlayer.play).not.toHaveBeenCalled();
     // 而且这一课该明说为什么展开了也不会亮
-    expect(screen.getByText(/这一课还没有时间戳/)).toBeTruthy();
+    expect(screen.getByText(/这一课还没对齐过/)).toBeTruthy();
   });
 
   it('低置信句的行号带 ?，点一下把这一句标成「人耳确认过」（FR-15.19）', async () => {
@@ -247,7 +247,7 @@ describe('ListenTab — 三条提示的出现条件', () => {
       screen.getByText('展开文本').click();
     });
 
-    expect(screen.queryByText(/这一课还没有时间戳/)).toBeNull();
+    expect(screen.queryByText(/这一课还没对齐过/)).toBeNull();
     expect(screen.queryByText(/只有句级时间戳/)).toBeNull();
     expect(screen.queryByText(/对齐置信度偏低/)).toBeNull();
   });

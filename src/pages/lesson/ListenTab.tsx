@@ -264,9 +264,13 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
         )}
       </div>
 
+      {/*
+        措辞刻意不跟头部那行（「这一课还没有时间戳」）一字不差 —— 两处说同一句话正是
+        这次改动要消灭的冗余，而且 e2e 的 strict mode 会当场撞上（CI 真红过一次）。
+      */}
       {expanded && timedLines === 0 && (
         <Hint tone="warn">
-          这一课还没有时间戳，展开只是一份文本，不会有任何高亮。去页头的「⋯ → 对齐」里对一次。
+          展开只是一份文本，不会有任何高亮 —— 这一课还没对齐过。去「⋯ → 对齐」里对一次。
         </Hint>
       )}
       {/*
