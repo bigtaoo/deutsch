@@ -369,3 +369,90 @@ describe('ShadowingTab — 练到第几句留得住（FR-6.11）', () => {
     expect(screen.getByText('继续跟读（第 2 句）')).toBeInTheDocument();
   });
 });
+
+// —— 变更 94 / §12.27：手机上那一屏 ——
+//
+// 他的原话：「在手机上，跟读时的内容部分也要一直居中，现在很多时候我要自己操作」。
+// 这里验的是「什么时候该滚」这条策略；滚完之后真的落在屏幕中间，只有真浏览器说得准
+// （jsdom 的 getBoundingClientRect 恒为 0），那条判据在 e2e/shadowing.spec.ts 里。
+describe('ShadowingTab — 当前句一直在屏幕中间（变更 94 / §12.27）', () => {
+  let scrollSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    scrollSpy = vi.fn();
+    // jsdom 根本没有 scrollIntoView —— 不补上去的话 centerIfNeeded 会一路安静返回。
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      value: scrollSpy,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  /** rAF 里那一次测量：等它跑完。 */
+  async function nextFrame() {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+  }
+
+  it('开始跟读就把当前句拉到中间', async () => {
+    await startShadowing();
+    await nextFrame();
+    expect(scrollSpy).toHaveBeenCalledWith(expect.objectContaining({ block: 'center' }));
+  });
+
+  it('换一句再拉一次 —— 手机上下一句本来就落在屏幕外', async () => {
+    await startShadowing();
+    await nextFrame();
+    scrollSpy.mockClear();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+    });
+    await nextFrame();
+    expect(scrollSpy).toHaveBeenCalled();
+  });
+
+  it('没在跟读的时候一下都不滚 —— 那会儿人多半正自己翻着看别的句子', async () => {
+    render(<ShadowingTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {});
+    await nextFrame();
+    expect(scrollSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('ShadowingTab — 设置收进折叠块（变更 94 / §12.27）', () => {
+  it('默认收起：手机那一屏不该被开练之前调一次的东西占掉', async () => {
+    render(<ShadowingTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {});
+    // jsdom 不做 <details> 的布局隐藏（变更 56 的教训），断言只能看 open 属性。
+    const details = document.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details!.open).toBe(false);
+  });
+
+  it('摘要里摆着当前值 —— 不展开也知道现在是什么设置', async () => {
+    useSettingsStore.setState({
+      settings: { ...DEFAULT_SETTINGS, shadowingRepeat: 2, shadowingGapRatio: 1.5 },
+      loaded: true,
+    });
+    render(<ShadowingTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {});
+    const summary = document.querySelector('summary')!;
+    expect(summary.textContent).toContain('每句 2 遍');
+    expect(summary.textContent).toContain('×1.5');
+    expect(summary.textContent).toContain('练全部');
+  });
+
+  it('「手动推进」说人话，不说「每句 0 遍」', async () => {
+    useSettingsStore.setState({
+      settings: { ...DEFAULT_SETTINGS, shadowingRepeat: 0 },
+      loaded: true,
+    });
+    render(<ShadowingTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {});
+    const summary = document.querySelector('summary')!;
+    expect(summary.textContent).toContain('手动推进');
+    expect(summary.textContent).not.toContain('每句 0 遍');
+  });
+});

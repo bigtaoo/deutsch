@@ -124,6 +124,8 @@ test('麦克风被拒：说明原因，这一课照样按固定间隔跟读下�
 test('关掉「录音并回放」：不申请麦克风，和原来的跟读一模一样', async ({ page }) => {
   await trackMicStreams(page);
   await seedShadowingLesson(page);
+  // 设置收在折叠块里（§12.27）—— 开练之前调一次的东西不该占着手机那一屏。
+  await page.getByText(/练全部 · 每句/).click();
   // 这个勾选框受控于设置 store（异步落库后才变），`uncheck()` 会同步地查状态、偶尔判它没变。
   await page.getByLabel('录音并回放').click();
   await expect(page.getByLabel('录音并回放')).not.toBeChecked();
@@ -225,4 +227,41 @@ test('换了几句之后刷新页面：按钮是「继续跟读」，而且从�
   await page.getByRole('main').getByRole('button', { name: '停止', exact: true }).click();
   await page.getByRole('button', { name: '从头开始' }).click();
   await expect(page.getByText('第 1 句')).toBeVisible();
+});
+
+test('手机上换句之后当前句自己回到屏幕中间，不用人去滚（§12.27）', async ({ page }) => {
+  // 小屏 + 真布局 —— 这条只有真浏览器验得到：jsdom 里 getBoundingClientRect 恒为 0，
+  // 「滚完落在哪儿」在单测里根本没有答案。
+  await page.setViewportSize({ width: 390, height: 480 });
+  await seedShadowingLesson(page);
+
+  /** 卡片中心离「可视区（扣掉底部浮层）正中」差多少像素。 */
+  const offCenter = () =>
+    page.evaluate(() => {
+      const rect = document.querySelector('[data-testid="shadowing-card"]')!.getBoundingClientRect();
+      const inset = Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--bottom-inset'),
+      );
+      const usable = window.innerHeight - (Number.isFinite(inset) ? inset : 0);
+      return Math.round(Math.abs(rect.top + rect.height / 2 - usable / 2));
+    });
+
+  await page.getByRole('button', { name: '开始跟读' }).click();
+
+  // 滚到顶 —— 正是他说的那个处境：这一屏上半截全是标题和按钮，句子被挤到下面去了。
+  // 开练那一下本身会滚一次（平滑），所以这里**轮询到真的偏出去了**再往下走：
+  // 一次性断言会在那次滚动还没落定时随机红（并行跑满 worker 时真的红过）。
+  await expect
+    .poll(async () => {
+      await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      return offCenter();
+    })
+    // 这一步偏得够远，后面那条断言才有意义（不然用例是空的，去掉功能也绿）。
+    .toBeGreaterThan(120);
+
+  await page.keyboard.press('ArrowRight');
+
+  // 容差跟 keepCentered.ts 里那个 tolerance 同一个量级：要的是「在中间那一带」，
+  // 不是像素级对齐（平滑滚动本来就会停在附近）。
+  await expect.poll(offCenter, { timeout: 5000 }).toBeLessThanOrEqual(60);
 });

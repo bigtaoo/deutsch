@@ -17,7 +17,8 @@ import { hasTranslations } from '@/lesson/translation';
 import { useLessonStore } from '@/state/useLessonStore';
 import { useSettingsStore } from '@/state/useSettingsStore';
 import { PLAYBACK_RATES, RateSwitch } from '@/components/AudioBar';
-import { Banner, Button, Card, EmptyState, Hint, field } from '@/components/ui';
+import { Banner, Button, Card, Disclosure, EmptyState, Hint, field } from '@/components/ui';
+import { centerIfNeeded } from '@/components/keepCentered';
 import type { Lesson, LessonCache } from '@/types/models';
 
 export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
@@ -173,6 +174,29 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
     saveLocalShadowingAt(lesson.id, liveIndex);
   }, [liveIndex, lesson.id]);
 
+  // 跟读时让当前句一直待在屏幕中间（FR-6.12 / §12.27）。
+  //
+  // 只在**真的在跟读**时管（phase 不是 idle）—— 停着的时候人多半正在翻别的句子，
+  // 那会儿把他拽回来只会碍事。判据在 keepCentered.ts 里：偏了才滚，正好就不动。
+  const cardRef = useRef<HTMLDivElement>(null);
+  const running = state.phase !== 'idle';
+  useEffect(() => {
+    if (!running) return;
+    // 等这一帧画完再量 —— 卡片的高度跟着句子长短变，换句那一刻量的是上一句的尺寸。
+    const id = requestAnimationFrame(() => centerIfNeeded(cardRef.current));
+    return () => cancelAnimationFrame(id);
+  }, [running, currentSentenceIndex]);
+
+  // 折叠块的摘要：不展开也看得见现在是什么设置。
+  const settingsSummary = [
+    difficultOnly ? '只练困难句' : '练全部',
+    settings.shadowingRepeat === 0 ? '手动推进' : `每句 ${settings.shadowingRepeat} 遍`,
+    `间隔 ×${settings.shadowingGapRatio}`,
+    canEcho && settings.shadowingEcho ? '录音回放' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   // 记下来的那一句在当前队列里的位置（「只练困难句」会换掉整个队列，所以每次重新找）。
   const resumePosition = savedIndex === null ? -1 : queue.findIndex((r) => r.sentenceIndex === savedIndex);
   const canResume = resumePosition > 0;
@@ -243,6 +267,12 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
         </Banner>
       )}
 
+      {/*
+        这一排是**开练之前**调一次的东西（§12.27）：手机上它要占掉三四行，
+        把句子卡片直接推出一屏之外 —— 而跟读时手是腾不出来的。收进折叠块，
+        摘要里把当前值摆出来，不展开也知道现在是什么设置。
+      */}
+      <Disclosure summary={settingsSummary}>
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-ui">
           <input
@@ -285,6 +315,7 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
           </label>
         )}
       </div>
+      </Disclosure>
 
       {echoOn && micError && <Hint>{micError}</Hint>}
 
@@ -293,15 +324,17 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
         <Hint>这一课只有句级时间戳，所以没有逐词高亮 —— 去「⋯ → 对齐」里重跑一次才会有词级时间。</Hint>
       )}
 
-      <CurrentSentenceCard
-        lesson={lesson}
-        karaoke={karaoke}
-        state={state}
-        sentenceIndex={currentSentenceIndex}
-        displayNumber={currentSentenceIndex !== null ? numbers.get(currentSentenceIndex) : undefined}
-        showTranslation={translated && settings.showTranslation}
-        onFinishTake={() => machine.finishTake()}
-      />
+      <div ref={cardRef} data-testid="shadowing-card">
+        <CurrentSentenceCard
+          lesson={lesson}
+          karaoke={karaoke}
+          state={state}
+          sentenceIndex={currentSentenceIndex}
+          displayNumber={currentSentenceIndex !== null ? numbers.get(currentSentenceIndex) : undefined}
+          showTranslation={translated && settings.showTranslation}
+          onFinishTake={() => machine.finishTake()}
+        />
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         {state.phase === 'idle' ? (
