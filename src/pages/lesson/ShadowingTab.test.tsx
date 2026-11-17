@@ -121,9 +121,20 @@ const LESSON = lessonWith([
   ]),
 ]);
 
+// jsdom 在这套配置下不给 localStorage（opaque origin，见 align/journal.test.ts），自己给一个。
+// FR-6.11 的进度就记在这里面，**必须每个用例之间清掉**：不清的话上一个用例练到第 2 句，
+// 下一个用例打开就是「继续跟读」，`getByText('开始跟读')` 当场找不到。
+const localStore = new Map<string, string>();
+vi.stubGlobal('localStorage', {
+  getItem: (k: string) => localStore.get(k) ?? null,
+  setItem: (k: string, v: string) => void localStore.set(k, v),
+  removeItem: (k: string) => void localStore.delete(k),
+});
+
 beforeEach(() => {
   // 只清调用记录，不动实现（`resetAllMocks` 会把 playRange 变成返回 undefined 的空壳）。
   vi.clearAllMocks();
+  localStore.clear();
   tick = null;
   onEnded = null;
   useLessonStore.setState({ lessons: [LESSON], caches: { l1: { lessonId: 'l1', hasAudio: true, audioBytes: 1024, fetchedAt: 0 } } });
@@ -261,5 +272,100 @@ describe('ShadowingTab — 换句之前的那一口气（FR-6.10）', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// FR-6.11（变更 92）：练到第几句要留得住。
+//
+// 他报的原话：「学了一多半了，然后关闭 app 或者去看了一个信息，回来后跟读的进度没了，
+// 又要从头开始」。根子是切后台走的 `stop()` 把位置清成了 -1 —— 所以这里守的不是
+// 「存得对不对」（那在 lesson/shadowingProgress.test.ts），而是**界面上回得去**。
+describe('ShadowingTab — 练到第几句留得住（FR-6.11）', () => {
+  /** 切后台：和真机一样先把 document.hidden 改掉，再发事件。 */
+  async function goBackground() {
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    if (original) Object.defineProperty(document, 'hidden', original);
+  }
+
+  /** 开始跟读，再按 → 走到第 2 句。 */
+  async function startAndAdvance() {
+    await startShadowing();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+    });
+    expect(document.body.textContent).toContain('Was aber wenn die Beamten Hilfe brauchen');
+  }
+
+  it('切后台回来：停在第 2 句，按钮写「继续跟读」而不是「开始跟读」', async () => {
+    await startAndAdvance();
+    await goBackground();
+
+    expect(screen.getByText('继续跟读（第 2 句）')).toBeInTheDocument();
+    expect(screen.queryByText('开始跟读')).toBeNull();
+    // 卡片没被清空 —— 回来时看得见停在哪一句
+    expect(document.body.textContent).toContain('Was aber wenn die Beamten Hilfe brauchen');
+    expect(document.body.textContent).toContain('停在这一句');
+    // 停着的时候不报遍数：那时 pass 是 0，「第 0 遍」只会让人以为坏了
+    expect(document.body.textContent).not.toContain('第 0 遍');
+  });
+
+  it('点「继续跟读」从停住的那一句接着放，不是从第一句', async () => {
+    await startAndAdvance();
+    await goBackground();
+    vi.mocked(audioPlayer.playRange).mockClear();
+
+    await act(async () => {
+      screen.getByText('继续跟读（第 2 句）').click();
+    });
+    expect(vi.mocked(audioPlayer.playRange).mock.calls[0]!.slice(0, 2)).toEqual([5, 10]);
+  });
+
+  it('关掉再打开（组件重挂载）：进度从本机读回来', async () => {
+    await startAndAdvance();
+    await goBackground();
+    cleanup();
+
+    render(<ShadowingTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {});
+    expect(screen.getByText('继续跟读（第 2 句）')).toBeInTheDocument();
+  });
+
+  it('「从头开始」把记下的那一句清掉，下次打开又是「开始跟读」', async () => {
+    await startAndAdvance();
+    await goBackground();
+
+    await act(async () => {
+      screen.getByText('从头开始').click();
+    });
+    expect(vi.mocked(audioPlayer.playRange).mock.calls.at(-1)!.slice(0, 2)).toEqual([0, 5]);
+
+    await goBackground();
+    cleanup();
+    render(<ShadowingTab lesson={LESSON} cache={undefined} />);
+    await act(async () => {});
+    expect(screen.getByText('开始跟读')).toBeInTheDocument();
+  });
+
+  it('第一句上没有「从头开始」—— 那个按钮此刻没有任何意义', async () => {
+    await startShadowing();
+    await goBackground();
+    expect(screen.queryByText('从头开始')).toBeNull();
+    expect(screen.getByText('开始跟读')).toBeInTheDocument();
+  });
+
+  it('切后台会把进度写进 Lesson（跨设备那一份），而且写的是停住的那一句', async () => {
+    await startAndAdvance();
+    await goBackground();
+    expect(useLessonStore.getState().lessons[0]!.shadowingAt).toBe(1);
+  });
+
+  it('换了台设备（本机没记录）：按 Lesson 上同步回来的那一句接着练', async () => {
+    render(<ShadowingTab lesson={{ ...LESSON, shadowingAt: 1 }} cache={undefined} />);
+    await act(async () => {});
+    expect(screen.getByText('继续跟读（第 2 句）')).toBeInTheDocument();
   });
 });

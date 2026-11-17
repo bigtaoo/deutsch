@@ -185,3 +185,44 @@ test('跟读原句时当前词反白：底色算出来跟卡片不是一个颜�
   await expect(page.getByText(/现在跟读 —— 还有/)).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('[data-active]')).toHaveCount(0);
 });
+
+// FR-6.11 练到第几句留得住（变更 92）。
+//
+// 他报的是「练了一多半，关掉 app 或者去看一条消息，回来又从第一句开始」。
+// 这条只有真浏览器验得到：**刷新页面**这回事 jsdom 里压根没有，而本机那份进度
+// 正是靠 localStorage 跨过这一次重新加载的 —— 组件测试里重挂载一下组件，
+// 和真的把页面重新加载一遍是两件事。
+test('换了几句之后刷新页面：按钮是「继续跟读」，而且从那一句接着放（FR-6.11）', async ({ page }) => {
+  await openApp(page);
+  await importLesson(page, { title: TITLE, text: MANUSCRIPT, audio: wavBytes(40) });
+  const lessonId = new URL(page.url()).hash.match(/#\/lesson\/([^/]+)\//)![1];
+  await importBackup(
+    page,
+    timedLessonBackup(lessonId, undefined, {
+      settings: { shadowingEcho: false, shadowingRepeat: 1 },
+    }),
+  );
+  await page.goto(`/#/lesson/${lessonId}/shadowing`);
+  await expect(page.getByRole('heading', { name: TITLE })).toBeVisible();
+
+  await page.getByRole('button', { name: '开始跟读' }).click();
+  await expect(page.getByText('第 1 句')).toBeVisible();
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByText('第 3 句', { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole('heading', { name: TITLE })).toBeVisible();
+  await expect(page.getByRole('button', { name: '继续跟读（第 3 句）' })).toBeVisible();
+  // 卡片上就是停住的那一句，不是第一句
+  await expect(page.getByText('第 3 句', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: '继续跟读（第 3 句）' }).click();
+  await expect(page.getByText('第 1 遍')).toBeVisible();
+  await expect(page.getByText('第 3 句', { exact: true })).toBeVisible();
+
+  // 「从头开始」之后再刷新，就该回到「开始跟读」
+  await page.getByRole('main').getByRole('button', { name: '停止', exact: true }).click();
+  await page.getByRole('button', { name: '从头开始' }).click();
+  await expect(page.getByText('第 1 句')).toBeVisible();
+});

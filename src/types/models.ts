@@ -90,6 +90,18 @@ export interface Lesson {
    * 和译文同为标注层、同样不进 `ShareablePackage` —— 笔记里大概率抄着原句。
    */
   notes?: string;
+  /**
+   * FR-6.11：跟读练到第几句（`Sentence.index`）。变更 92。
+   *
+   * 在标注层是因为它要跨设备：桌面上练到一半、手机上接着练，这件事只有它跟着同步才成立。
+   * 体积是一个整数，没有「下载地址」可言，丢了只能从头再练一遍 —— 按 §2.3 变更 27 的标准，
+   * 这就是要备份的东西。
+   *
+   * **写入是节流的**：离开跟读页 / 切后台 / 点停止时才写一次，不是每换一句都写 ——
+   * 同步推的是整份文档，一课五十句就是五十次推送。每一句都记的那一份在本机
+   * （`src/lesson/shadowingProgress.ts`），读的时候本机优先。
+   */
+  shadowingAt?: number;
   createdAt: number;
   updatedAt: number; // 跨设备合并用（§2.4）
 }

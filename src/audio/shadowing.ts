@@ -140,10 +140,13 @@ export class ShadowingMachine {
     const currentSentence = this.current()?.sentenceIndex;
     this.queue = queue;
     this.config = config;
-    if (this.state.phase !== 'idle') {
+    // position >= 0 而不是 phase !== 'idle'：`pause()` 之后停在 idle 但位置还在（FR-6.11），
+    // 那个位置同样要跟着新队列挪，否则「只练困难句」一开一关，记住的那一句就指到别处去了。
+    if (this.state.position >= 0) {
       const position = queue.findIndex((r) => r.sentenceIndex === currentSentence);
-      if (position === -1) this.stop();
-      else this.state = { ...this.state, position };
+      if (position !== -1) this.state = { ...this.state, position };
+      else if (this.state.phase === 'idle') this.state = { ...this.state, position: -1 };
+      else this.stop();
     }
   }
 
@@ -163,6 +166,25 @@ export class ShadowingMachine {
     this.player.pause();
     this.echo?.halt();
     this.set(IDLE);
+  }
+
+  /**
+   * FR-6.11：停下来，但**记住练到哪一句**。切后台、点「停止」、离开页面走的都是这条。
+   *
+   * 和 `stop()` 的区别只有 position / pass / repeatsLeft 留不留 —— `IDLE` 的 position 是 -1，
+   * 从前切后台调 `stop()`，回来时位置已经没了，循环从第一句重来（变更 92 修的就是这个）。
+   * 音频、录音、定时器一样都要停，所以 epoch 照样自增：半途回来的 onEnded 一律作废。
+   *
+   * phase 回 `idle`：界面据此把按钮换回「继续跟读」，而不是让人以为还在播。
+   */
+  pause(): void {
+    if (this.state.phase === 'idle') return;
+    this.clearTimer();
+    this.finishCurrentTake = null;
+    this.epoch++;
+    this.player.pause();
+    this.echo?.halt();
+    this.set({ ...this.state, phase: 'idle', gapStartedAt: 0, gapMs: 0, recording: false });
   }
 
   /** FR-6.5：Space 重播当前句 —— 重播不消耗剩余次数，它是「再听一遍」不是「再来一轮」。 */

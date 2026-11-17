@@ -469,3 +469,63 @@ describe('ShadowingMachine · FR-6.10 换句之前的那一口气', () => {
     expect(player.pauses).toBeGreaterThan(0);
   });
 });
+
+// FR-6.11（变更 92）：切后台、点停止之后，位置不许丢。
+//
+// 这一条的真实症状是「练到一多半，看一眼消息回来又从第一句开始」—— 根子就在
+// 当时切后台走的是 `stop()`，而 `IDLE` 的 position 是 -1。
+describe('ShadowingMachine · FR-6.11 停下来要记得停在哪一句', () => {
+  it('pause() 保留位置，stop() 清掉位置', () => {
+    machine.start(1);
+    machine.pause();
+    expect(machine.getState().phase).toBe('idle');
+    expect(machine.getState().position).toBe(1);
+    expect(machine.current()?.sentenceIndex).toBe(3);
+
+    machine.stop();
+    expect(machine.getState().position).toBe(-1);
+    expect(machine.current()).toBeUndefined();
+  });
+
+  it('pause() 一样要停音频、停定时器 —— 只是位置留着', () => {
+    machine.start(1);
+    player.finish(); // 进入静默间隔，挂上一个定时器
+    expect(machine.getState().phase).toBe('gap');
+    machine.pause();
+    expect(player.pauses).toBeGreaterThan(0);
+    expect(timers.cancelledCount).toBeGreaterThan(0);
+    timers.fireLast(); // 漏网也不算数：epoch 对不上
+    expect(machine.getState().phase).toBe('idle');
+    expect(player.calls).toHaveLength(1);
+  });
+
+  it('从停住的那一句接着练：start(position) 从那里起，不从头起', () => {
+    machine.start(1);
+    machine.pause();
+    machine.start(machine.getState().position);
+    expect(machine.getState()).toMatchObject({ phase: 'playing', position: 1, pass: 1 });
+    expect(player.calls[player.calls.length - 1]).toEqual([10, 11]);
+  });
+
+  it('停着的时候换队列（只练困难句）：记住的那一句跟着挪，不指到别人身上', () => {
+    machine.start(2); // sentenceIndex 7
+    machine.pause();
+    machine.setQueue([{ sentenceIndex: 7, start: 20, end: 24 }], { gapRatio: 1.2, repeat: 2 });
+    expect(machine.getState().position).toBe(0);
+    expect(machine.current()?.sentenceIndex).toBe(7);
+  });
+
+  it('停着的时候记住的那一句被筛掉了：位置作废，而不是悄悄指向第一句', () => {
+    machine.start(2); // sentenceIndex 7
+    machine.pause();
+    machine.setQueue([{ sentenceIndex: 0, start: 0, end: 2 }], { gapRatio: 1.2, repeat: 2 });
+    expect(machine.getState().position).toBe(-1);
+    expect(machine.current()).toBeUndefined();
+  });
+
+  it('本来就是 idle 时 pause() 什么都不做（不会把 -1 的位置写成别的）', () => {
+    machine.pause();
+    expect(machine.getState().position).toBe(-1);
+    expect(player.pauses).toBe(0);
+  });
+});

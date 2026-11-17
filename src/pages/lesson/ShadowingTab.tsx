@@ -11,6 +11,7 @@ import { MicEcho, describeMicError, echoSupported } from '@/audio/echo';
 import { annotatedSentences, resolveRange } from '@/lesson/timing';
 import { activeTokenAt, buildKaraoke, type KaraokeLine } from '@/lesson/karaoke';
 import { displayNumbers } from '@/lesson/sentences';
+import { clearLocalShadowingAt, resumeShadowingAt, saveLocalShadowingAt } from '@/lesson/shadowingProgress';
 import { SpeakerMark } from '@/components/SpeakerPicker';
 import { hasTranslations } from '@/lesson/translation';
 import { useLessonStore } from '@/state/useLessonStore';
@@ -55,28 +56,53 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
   if (!machineRef.current) machineRef.current = new ShadowingMachine({ player: audioPlayer, echo });
   const machine = machineRef.current;
 
+  // FR-6.11：练到第几句。本机那份每换一句就写，`Lesson.shadowingAt` 只在停下来时写一次
+  // （理由见 lesson/shadowingProgress.ts）。
+  const [savedIndex, setSavedIndex] = useState<number | null>(() =>
+    resumeShadowingAt(lesson.id, lesson.shadowingAt),
+  );
+  const savedRef = useRef<number | null>(savedIndex);
+  savedRef.current = savedIndex;
+  // 每次渲染重新赋值，所以卸载时拿到的永远是最新的那份 lesson / savedIndex，不会读到闭包里的旧值。
+  const flushRef = useRef<() => void>(() => {});
+  flushRef.current = () => {
+    const at = savedRef.current;
+    if (at === null || at === lesson.shadowingAt) return;
+    void patchLesson(lesson.id, (current) => ({ ...current, shadowingAt: at }));
+  };
+
   const stopAll = () => {
-    machine.stop();
+    machine.pause(); // 不是 stop()：停下来也要记得停在哪一句
     echo.close();
     setMicOpen(false);
+    flushRef.current();
   };
 
   useEffect(() => machine.subscribe(setState), [machine]);
   useEffect(
     () => () => {
+      flushRef.current();
       machine.stop();
       echo.close();
     },
     [machine, echo],
   );
 
+  // iOS 上「关掉 app」不会走 React 的卸载，只有 pagehide。本机那份每句都写过了，
+  // 这里补的是同步那一份 —— 来不及落盘也不要紧，下次停下来还会写。
+  useEffect(() => {
+    const onHide = () => flushRef.current();
+    window.addEventListener('pagehide', onHide);
+    return () => window.removeEventListener('pagehide', onHide);
+  }, []);
+
   const echoOn = canEcho && settings.shadowingEcho;
 
-  const start = () => {
+  const start = (position: number) => {
     // 先起播再要麦克风：iOS 的第一次 play() 必须留在这次点击的同步段里，
     // 等权限弹窗回来手势就断了。麦克风打开之前的那几遍按普通间隔走（见下面 setQueue 的 `echo`），
     // 通常第一句还没放完它就开好了。
-    machine.start();
+    machine.start(position);
     if (!echoOn || echo.isOpen) return;
     setMicError(null);
     echo.open().then(
@@ -124,18 +150,38 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
   }, [echoOn, echo]);
 
   // §3.2：手机锁屏/切后台会打断循环。暂停并保留位置，不做后台播放。
+  // （从前这里调的是 `stop()`，位置当场清零 —— 「看一眼消息回来又从第一句开始」就是它，变更 92。）
   useEffect(() => {
     const onHidden = () => {
       if (!document.hidden) return;
-      machine.stop();
+      machine.pause();
       echo.close();
       setMicOpen(false);
+      flushRef.current();
     };
     document.addEventListener('visibilitychange', onHidden);
     return () => document.removeEventListener('visibilitychange', onHidden);
   }, [machine, echo]);
 
-  const currentSentenceIndex = machine.current()?.sentenceIndex ?? null;
+  // 机器里正在（或刚刚停在）哪一句；页面是新打开的就退回记下来的那一句。
+  const liveIndex = machine.current()?.sentenceIndex ?? null;
+  const currentSentenceIndex = liveIndex ?? savedIndex;
+
+  useEffect(() => {
+    if (liveIndex === null) return;
+    setSavedIndex(liveIndex);
+    saveLocalShadowingAt(lesson.id, liveIndex);
+  }, [liveIndex, lesson.id]);
+
+  // 记下来的那一句在当前队列里的位置（「只练困难句」会换掉整个队列，所以每次重新找）。
+  const resumePosition = savedIndex === null ? -1 : queue.findIndex((r) => r.sentenceIndex === savedIndex);
+  const canResume = resumePosition > 0;
+
+  const restart = () => {
+    clearLocalShadowingAt(lesson.id);
+    setSavedIndex(null);
+    start(0);
+  };
 
   const toggleDifficult = (index: number | null) => {
     if (index === null) return;
@@ -259,9 +305,24 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
 
       <div className="flex flex-wrap items-center gap-2">
         {state.phase === 'idle' ? (
-          <Button variant="primary" disabled={audio.status !== 'ready'} onClick={start}>
-            开始跟读
-          </Button>
+          <>
+            {/* FR-6.11：接着上次练。不自动续播 —— iOS 上没有手势就起不了播，
+                按钮上写明从第几句开始，比「打开就响」更容易看懂。 */}
+            <Button
+              variant="primary"
+              disabled={audio.status !== 'ready'}
+              onClick={() => start(canResume ? resumePosition : 0)}
+            >
+              {canResume
+                ? `继续跟读（第 ${savedIndex !== null ? (numbers.get(savedIndex) ?? '—') : '—'} 句）`
+                : '开始跟读'}
+            </Button>
+            {canResume && (
+              <Button disabled={audio.status !== 'ready'} onClick={restart}>
+                从头开始
+              </Button>
+            )}
+          </>
         ) : (
           <Button variant="primary" onClick={stopAll}>
             停止
@@ -336,9 +397,15 @@ function CurrentSentenceCard({
             {sentence.markedDifficult && (
               <span className="rounded-ctl bg-warn-soft px-2 py-0.5 text-note text-warn">困难</span>
             )}
-            <span className="text-note text-faint">
-              第 {state.pass} 遍 · {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
-            </span>
+            {/* 停着的时候不报遍数 —— 那时 pass 还是 0，「第 0 遍 · 还剩 0 遍」只会让人以为坏了。
+                换成一句话说清这张卡为什么已经有内容：它是上次停下的地方（FR-6.11）。 */}
+            {state.phase === 'idle' ? (
+              <span className="text-note text-faint">停在这一句</span>
+            ) : (
+              <span className="text-note text-faint">
+                第 {state.pass} 遍 · {state.repeatsLeft === Infinity ? '手动推进' : `还剩 ${state.repeatsLeft} 遍`}
+              </span>
+            )}
           </div>
           {line?.hasWords ? (
             <KaraokeSentence line={line} speaker={sentence.speaker} live={live} />
