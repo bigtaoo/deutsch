@@ -8,7 +8,7 @@
 // 所以这里的断言故意写成**两个类之间的关系**，而不是「等于某个类名」：
 // 当前词的底色不许是当前行的底色。换别的配色照样过，退回同色就红。
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { ListenTab } from './ListenTab';
 import { audioPlayer } from '@/audio/player';
@@ -272,5 +272,98 @@ describe('ListenTab — 三条提示的出现条件', () => {
     });
 
     expect(screen.getByText('不显示中文')).toBeTruthy();
+  });
+});
+
+// ── §12.26（变更 93）：练习页只留「现在这一下要用的东西」 ──
+
+/** 一课里混进几句低置信：中位数附近若干句 + 明显掉下来的一句。 */
+function lessonWithPending(): Lesson {
+  const conf = [-0.02, -0.03, -0.02, -1.4];
+  return lessonWith(
+    conf.map((c, i) => ({
+      ...sentence(i, `Satz ${i}`, i * 5, i * 5 + 5, []),
+      timingConfidence: c,
+    })),
+  );
+}
+
+describe('ListenTab — 二级入口与一次性提示（§12.26）', () => {
+  it('有低置信句时工具条上是一个小按钮，不是头部那一段黄字', async () => {
+    const lesson = lessonWithPending();
+    useLessonStore.setState({ lessons: [lesson] });
+    render(<ListenTab lesson={lesson} cache={undefined} />);
+
+    // 文本还折叠着，按钮就在了 —— 它本身就是「怎么办」的入口
+    expect(screen.getByText('1 句待核对')).toBeTruthy();
+  });
+
+  it('点「N 句待核对」会把文本展开 —— 一下就到现场', async () => {
+    const lesson = lessonWithPending();
+    useLessonStore.setState({ lessons: [lesson] });
+    render(<ListenTab lesson={lesson} cache={undefined} />);
+
+    await act(async () => {
+      screen.getByText('1 句待核对').click();
+    });
+    expect(screen.getByText('折叠文本')).toBeTruthy();
+    expect(screen.getByText(/行号带 \? 的 1 句对齐置信度偏低/)).toBeTruthy();
+  });
+
+  it('没有低置信句就连那个按钮都没有（一切正常就静默）', () => {
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    expect(screen.queryByText(/句待核对/)).toBeNull();
+  });
+
+  it('这一课没写过笔记时，底部一个笔记框都不画', () => {
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    expect(screen.queryByText(/^笔记 · /)).toBeNull();
+  });
+
+  it('写过笔记的课才在底部留一行可展开的「笔记 · N 行」', () => {
+    const lesson = { ...LESSON, notes: '两个听不出来的地方\nabsehen von' };
+    useLessonStore.setState({ lessons: [lesson] });
+    render(<ListenTab lesson={lesson} cache={undefined} />);
+    expect(screen.getByText('笔记 · 2 行')).toBeTruthy();
+  });
+});
+
+describe('ListenTab — 「先不看文本听一遍」只说一次', () => {
+  let store: Record<string, string>;
+
+  beforeEach(() => {
+    store = {};
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store[k] ?? null,
+      setItem: (k: string, v: string) => {
+        store[k] = v;
+      },
+      removeItem: (k: string) => delete store[k],
+    });
+  });
+
+  // 别把这个 stub 漏给后面的用例 —— 测试间的全局泄漏在这个仓库咬过两次。
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('第一次打开说一次，换一课再打开就不说了', () => {
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    expect(screen.getByText(/先不看文本听一遍/)).toBeTruthy();
+
+    cleanup();
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    expect(screen.queryByText(/先不看文本听一遍/)).toBeNull();
+  });
+
+  it('本机存不下（隐私模式）也不会变成每次都说 —— 读不到就当说过了', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('denied');
+      },
+      setItem: () => {
+        throw new Error('denied');
+      },
+    });
+    render(<ListenTab lesson={LESSON} cache={undefined} />);
+    expect(screen.queryByText(/先不看文本听一遍/)).toBeNull();
   });
 });

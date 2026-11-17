@@ -225,7 +225,7 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
       <EmptyState>
         {difficultOnly
           ? '还没有标记为困难的句子。跟读时按 D 标记跟不上的那几句。'
-          : '这一课还没有任何时间戳 —— 自动对齐还没跑过或没跑成。去课程页头部点一次「自动对齐」。'}
+          : '这一课还没有任何时间戳 —— 自动对齐还没跑过或没跑成。去「⋯ → 对齐」里对一次。'}
         <div className="mt-3">
           <Button onClick={() => setDifficultOnly(false)} disabled={!difficultOnly}>
             看全部已对齐句
@@ -290,7 +290,7 @@ export function ShadowingTab({ lesson }: { lesson: Lesson; cache: LessonCache | 
 
       {/* 没有词级时间戳时明说一句 —— 否则「跟读里没有高亮」会被当成界面坏了来报。 */}
       {queue.length > 0 && !anyWordTimes && (
-        <Hint>这一课只有句级时间戳，所以没有逐词高亮 —— 去课程页头部重跑一次「自动对齐」才会有词级时间。</Hint>
+        <Hint>这一课只有句级时间戳，所以没有逐词高亮 —— 去「⋯ → 对齐」里重跑一次才会有词级时间。</Hint>
       )}
 
       <CurrentSentenceCard

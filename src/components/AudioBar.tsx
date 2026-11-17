@@ -27,7 +27,9 @@ interface Props {
 }
 
 export function AudioBar({ audio, rate, onRateChange, children, loop = false }: Props) {
-  const time = useAudioTime();
+  // 时间码和进度条的最小可见单位是 0.1 秒，所以这里只要 10Hz —— 按帧订阅的话，
+  // 这一条（以及它底下那次 useBottomLayer 的实测）每秒要跑 60 遍（变更 93）。
+  const time = useAudioTime({ quantizeMs: 100 });
   const playing = useAudioPlaying();
   const [el, setEl] = useState<HTMLElement | null>(null);
   useBottomLayer('audio', el);

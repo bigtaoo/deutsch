@@ -10,6 +10,11 @@
 //
 // 逐词高亮时这个组件每帧都会重渲染（useAudioTime 走 rAF），所以每一行都是 memo 的：
 // 一帧里真正变的只有「上一行」和「当前行」两行。
+//
+// 而**文本折叠着的时候一帧都不订阅**（变更 93）：折叠时根本没有高亮可画，
+// 可这一页原来照样每秒重渲染 60 次 —— 连带播放条每帧量一次自己的高度、
+// 往 :root 上写一次 CSS 变量，整页样式跟着重算。实测「播放时每秒强制布局 60 次，
+// 文本折叠着也一样」，正是「学久了越来越卡」里能指出来的那一条。
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLessonAudio, useAudioPlaying, useAudioTime } from '@/audio/useLessonAudio';
@@ -31,16 +36,47 @@ import type { Lesson, LessonCache } from '@/types/models';
 // 手动滚动之后多久自动回到当前句。短到不用等，长到够看完上面那一两句。
 const RESUME_MS = 5000;
 
+/**
+ * 「先不看文本听一遍」那一句**只说一次**（§12.26，变更 93）。
+ *
+ * 它是一句劝告，不是状态：劝住了一次之后，它就只剩噪音 —— 而练习页上常驻的噪音
+ * 教会人的只有视而不见。记在本机 localStorage，不进设置、不同步：
+ * 换一台设备等于换一个还没被劝过的人。
+ */
+const HINT_KEY = 'deutsch.listenHintSeen';
+
+function hintSeen(): boolean {
+  try {
+    return localStorage.getItem(HINT_KEY) === '1';
+  } catch {
+    // 读不到（隐私模式、jsdom 的不透明源）：当作已经说过 —— 宁可少说一句。
+    return true;
+  }
+}
+
+function markHintSeen(): void {
+  try {
+    localStorage.setItem(HINT_KEY, '1');
+  } catch {
+    // 存不下：这次会话里照样只说一次（下面那个 state 是一次性的）
+  }
+}
+
 export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | undefined }) {
   const audio = useLessonAudio(lesson.id);
   useLoopPlayback(lesson, audio);
-  const time = useAudioTime();
   const [expanded, setExpanded] = useState(false);
+  // 折叠时不订阅：没有展开就没有高亮，播放位置这一页一个字都用不上。
+  const time = useAudioTime({ enabled: expanded });
   const [follow, setFollow] = useState(true);
   // 手动滚动只是**暂时**接管（往回看一眼上文），不是关掉跟随 —— 停手几秒就自己回到当前句。
   // 旧行为是滚一下就永久变成「不跟随」，而这件事每次展开文本时几乎必然发生一次：
   // 于是默认值写着 true，用户看到的却总是「不跟随」，文本从此一动不动。
   const [paused, setPaused] = useState(false);
+  // 「只说一次」：挂载时取一次本机标记，然后立刻把标记打上 —— 这一次会话里它还在，
+  // 下次打开任何一课的通听就不再出现。
+  const [showHint] = useState(() => !hintSeen());
+  useEffect(markHintSeen, []);
   const { settings, update } = useSettingsStore();
 
   const numbers = useMemo(() => displayNumbers(lesson.sentences), [lesson.sentences]);
@@ -64,8 +100,9 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
 
   const active = expanded ? activeAt(lines, time) : null;
   const activeLine = active?.line ?? null;
-  const timedLines = lines.filter((l) => l.range !== null).length;
-  const wordLines = lines.filter((l) => l.hasWords).length;
+  // 这两个数只跟这一课有关，跟播放位置无关 —— 不 memo 的话展开播放时每帧各扫一遍整课。
+  const timedLines = useMemo(() => lines.filter((l) => l.range !== null).length, [lines]);
+  const wordLines = useMemo(() => lines.filter((l) => l.hasWords).length, [lines]);
 
   const boxRef = useRef<HTMLOListElement>(null);
   const rows = useRef(new Map<number, HTMLLIElement>());
@@ -142,6 +179,17 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
   }, []);
   useEffect(() => () => void (resume.current && clearTimeout(resume.current)), []);
 
+  // 「N 句待核对」点下去要滚到的那一行（FR-15.19 的日常入口）。
+  const [jump, setJump] = useState<number | null>(null);
+  useEffect(() => {
+    if (jump === null || !expanded) return;
+    setJump(null);
+    const box = boxRef.current;
+    const row = rows.current.get(jump);
+    if (!box || !row) return;
+    box.scrollTo({ top: Math.max(0, row.offsetTop - 8), behavior: 'smooth' });
+  }, [jump, expanded]);
+
   const seek = useCallback((to: number) => {
     // 点了词就是要听它，所以直接播。这是一次用户手势，iOS 上也放得出来（§3.2）。
     void audioPlayer.play(to);
@@ -171,6 +219,25 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
         >
           {expanded ? '折叠文本' : '展开文本'}
         </Button>
+        {/*
+          §12.26：低置信句不再在课程页头部挂一段三行的黄字，而是这里一个可点的小字。
+          点下去展开文本并滚到第一条 —— 「怎么办」只剩一下。
+        */}
+        {flagged.pending.size > 0 && (
+          <Button
+            variant="ghost"
+            title="对齐置信度偏低的句子。点一下跳到第一条：听着起点对就点行号消掉它"
+            onClick={() => {
+              const first = Math.min(...flagged.pending);
+              restart();
+              setExpanded(true);
+              setJump(first);
+              pause();
+            }}
+          >
+            {flagged.pending.size} 句待核对
+          </Button>
+        )}
         {expanded ? (
           <>
             <Button
@@ -193,13 +260,13 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
             <Hint>点任意一个词从那里开始播。</Hint>
           </>
         ) : (
-          <Hint>先不看文本听一遍。文本默认折叠不是为了省地方，是为了逼自己先用耳朵。</Hint>
+          showHint && <Hint>先不看文本听一遍。文本默认折叠不是为了省地方，是为了逼自己先用耳朵。</Hint>
         )}
       </div>
 
       {expanded && timedLines === 0 && (
         <Hint tone="warn">
-          这一课还没有时间戳，展开只是一份文本，不会有任何高亮。去页头点「自动对齐」。
+          这一课还没有时间戳，展开只是一份文本，不会有任何高亮。去页头的「⋯ → 对齐」里对一次。
         </Hint>
       )}
       {/*
@@ -253,8 +320,11 @@ export function ListenTab({ lesson }: { lesson: Lesson; cache: LessonCache | und
           </ol>
         )}
 
-        {/* FR-20：笔记在通听页底部 —— 写和读是同一件事的两半，不该分到两个地方去。 */}
-        <LessonNotes lesson={lesson} />
+        {/*
+          FR-20：写过笔记的课，在通听页底部留一行可展开的「笔记」—— 读和写在同一处。
+          没写过就一个字都不占（§12.26）：主入口在页头的「⋯ → 笔记」里。
+        */}
+        {lesson.notes?.trim() && <LessonNotes lesson={lesson} />}
       </div>
 
       <AudioBar

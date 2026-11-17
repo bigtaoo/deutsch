@@ -83,7 +83,7 @@ export function SentencesTab({ lesson, cache }: Props) {
           onSet={(n, excluded) =>
             void apply(
               { sentences: setExcludedFirstN(lesson.sentences, n, excluded) },
-              `开头 ${n} 句已${excluded ? '排除' : '恢复'}。排除范围变了 —— 去页头点「重新对齐」把时间戳按新范围重算一遍。`,
+              `开头 ${n} 句已${excluded ? '排除' : '恢复'}。排除范围变了 —— 去「⋯ → 对齐」里重对一次，把时间戳按新范围重算一遍。`,
             )
           }
         />
@@ -91,7 +91,7 @@ export function SentencesTab({ lesson, cache }: Props) {
           onExclude={(n) =>
             void apply(
               { sentences: excludeLastN(lesson.sentences, n) },
-              `文末 ${n} 句已排除。排除范围变了 —— 去页头点「重新对齐」把时间戳按新范围重算一遍。`,
+              `文末 ${n} 句已排除。排除范围变了 —— 去「⋯ → 对齐」里重对一次，把时间戳按新范围重算一遍。`,
             )
           }
         />

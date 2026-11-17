@@ -28,6 +28,8 @@ export const LESSON_TABS = [
   'shadowing',
   'sentences',
   'translation',
+  'notes',
+  'align',
 ] as const;
 export type LessonTab = (typeof LESSON_TABS)[number];
 
@@ -47,6 +49,8 @@ export const LESSON_TAB_LABELS: Record<LessonTab, string> = {
   shadowing: '跟读',
   sentences: '切句',
   translation: '译文',
+  notes: '笔记',
+  align: '对齐',
 };
 
 function parse(hash: string): Route {

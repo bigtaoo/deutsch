@@ -60,9 +60,15 @@ export function useBottomLayer(layer: Layer, el: HTMLElement | null): void {
   // （连初次那一发都没有），于是「展开对齐条」之后 --bottom-inset 一直停在折叠时的值。
   // 那种环境是个特例，但它说明了一件普遍的事 —— RO 的投递时机不由我们决定，
   // 而页面底部留白错了就是内容被浮层压住。一次 offsetHeight 读取换掉这个依赖，很便宜。
+  //
+  // 量到的高度**没变就不发布**（变更 93）：`publish()` 会往 :root 上写两个 CSS 变量，
+  // 而根元素上的自定义属性一改，整棵树的样式都要重算一遍。播放条每秒重渲染若干次，
+  // 它的高度却是一整节课不变的 —— 白白重算整页，正是「学久了越来越拖」的一部分。
   useEffect(() => {
     if (!el) return;
-    heights.set(layer, el.offsetHeight);
+    const next = el.offsetHeight;
+    if (heights.get(layer) === next) return;
+    heights.set(layer, next);
     publish();
   });
 

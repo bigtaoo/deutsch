@@ -163,3 +163,26 @@ describe('useHasAudioBar', () => {
     view.unmount();
   });
 });
+
+describe('高度没变就不发布（变更 93）', () => {
+  it('重渲染若干次只发布一次 —— 判据：把变量抹掉之后它不会自己回来', () => {
+    const view = render(<Layer layer="audio" height={72} />);
+    view.rerender(<Layer layer="audio" height={72} />);
+    expect(cssVar('--base-bar-h')).toBe('72px');
+
+    // publish() 会往 :root 写这两个变量。抹掉它们，再渲染几帧：
+    // 高度没变 → 不该发布 → 变量仍是空的。去掉那个 early return 这一条就红。
+    document.documentElement.style.removeProperty('--base-bar-h');
+    document.documentElement.style.removeProperty('--bottom-inset');
+    view.rerender(<Layer layer="audio" height={72} />);
+    view.rerender(<Layer layer="audio" height={72} />);
+    view.rerender(<Layer layer="audio" height={72} />);
+    expect(cssVar('--base-bar-h')).toBe('');
+    expect(cssVar('--bottom-inset')).toBe('');
+
+    // 但高度真的变了照旧立刻发布 —— 省的只是无谓的那几次。
+    view.rerender(<Layer layer="audio" height={96} />);
+    expect(cssVar('--base-bar-h')).toBe('96px');
+    view.unmount();
+  });
+});

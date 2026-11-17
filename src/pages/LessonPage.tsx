@@ -27,7 +27,8 @@ import { useSettingsStore } from '@/state/useSettingsStore';
 import { scheduleDrillSync } from '@/sync/trigger';
 import { bindPickedAudio, isMultiTrack, listedAudioFiles, restoreServerAudio } from '@/lesson/bindAudio';
 import { SentencesTab } from './lesson/SentencesTab';
-import { AlignStatus } from './lesson/AlignStatus';
+import { AlignStatus, AlignPanel } from './lesson/AlignStatus';
+import { LessonNotes } from './lesson/LessonNotes';
 import { ListenTab } from './lesson/ListenTab';
 import { TranslationTab } from './lesson/TranslationTab';
 import { ShadowingTab } from './lesson/ShadowingTab';
@@ -78,9 +79,14 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
   if (!loaded) return <EmptyState>加载中…</EmptyState>;
   if (!lesson) return <EmptyState>找不到这一课。它可能已被删除。</EmptyState>;
 
-  // 「⋯」里的两页（切句 / 译文）都是一次性的准备工作：不占 tab 条，进去给一条明确的返回。
-  const aside = tab === 'sentences' || tab === 'translation';
+  // 「⋯」里那几页（切句 / 译文 / 笔记 / 对齐）都不是「今天要练的那一下」：
+  // 不占 tab 条，进去给一条明确的返回（§12.26）。
+  const aside =
+    tab === 'sentences' || tab === 'translation' || tab === 'notes' || tab === 'align';
   const coverage = translationCoverage(lesson.sentences);
+  const usable = lesson.sentences.filter((s) => !s.excluded);
+  const timedCount = usable.filter((s) => s.startTime !== undefined).length;
+  const noteLines = lesson.notes?.trim() ? lesson.notes.trim().split(/\n+/).length : 0;
 
   return (
     <div className="space-y-4">
@@ -122,6 +128,26 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
                 </span>
               </a>
               <a
+                href={href({ name: 'lesson', lessonId, tab: 'notes' })}
+                onClick={() => menuRef.current?.removeAttribute('open')}
+                className={`block px-4 py-3 text-ui hover:bg-sunken ${tab === 'notes' ? 'text-accent' : 'text-ink'}`}
+              >
+                笔记
+                <span className="block text-note text-faint">
+                  {noteLines > 0 ? `${noteLines} 行` : '这一课的要点，自己写'}
+                </span>
+              </a>
+              <a
+                href={href({ name: 'lesson', lessonId, tab: 'align' })}
+                onClick={() => menuRef.current?.removeAttribute('open')}
+                className={`block px-4 py-3 text-ui hover:bg-sunken ${tab === 'align' ? 'text-accent' : 'text-ink'}`}
+              >
+                对齐
+                <span className="block text-note text-faint">
+                  已对齐 {timedCount} / {usable.length} 句
+                </span>
+              </a>
+              <a
                 href={href({ name: 'cache' })}
                 onClick={() => menuRef.current?.removeAttribute('open')}
                 className="block px-4 py-3 text-ui text-ink hover:bg-sunken"
@@ -136,7 +162,10 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
           </details>
         </div>
 
-        {/* FR-6.4 的「已标注 N / M」在这里：它现在说的是自动对齐的覆盖率与可疑句数。 */}
+        {/*
+          §12.26：头部只在「这一课现在练不了」时说话 —— 没有时间戳、正在对齐、
+          这台设备跑不动。覆盖率与重对入口在「⋯ → 对齐」里，一切正常时这里一个字都没有。
+        */}
         <AlignStatus lesson={lesson} />
       </header>
 
@@ -148,13 +177,16 @@ export function LessonPage({ lessonId, tab }: { lessonId: string; tab: LessonTab
           <Note tone="accent" action={<a className="underline" href={href({ name: 'lesson', lessonId, tab: 'listen' })}>回到通听</a>}>
             {tab === 'sentences'
               ? '切句是一次性的准备工作 —— 改完就不用再来。'
-              : '译文贴一次就够 —— 之后它跟着这一课同步到别的设备。'}
+              : tab === 'translation'
+                ? '译文贴一次就够 —— 之后它跟着这一课同步到别的设备。'
+                : tab === 'notes'
+                  ? '笔记跟着这一课同步 —— 写过之后，通听页底部会留一行可展开的「笔记」。'
+                  : '对齐是一次性的准备工作 —— 对完这一课之后，这一页就不用再来了。'}
           </Note>
-          {tab === 'sentences' ? (
-            <SentencesTab lesson={lesson} cache={cache} />
-          ) : (
-            <TranslationTab lesson={lesson} cache={cache} />
-          )}
+          {tab === 'sentences' && <SentencesTab lesson={lesson} cache={cache} />}
+          {tab === 'translation' && <TranslationTab lesson={lesson} cache={cache} />}
+          {tab === 'notes' && <LessonNotes lesson={lesson} standalone />}
+          {tab === 'align' && <AlignPanel lesson={lesson} />}
         </>
       ) : (
         <>

@@ -7,6 +7,13 @@
 // 进度条不在这里：它常驻在应用底部（AlignBar），因为对齐要跑几分钟，
 // 而人在这几分钟里一定会切页面。这一块只负责「这一课现在是什么状态 + 重跑」。
 //
+// ── 两副面孔（§12.26，变更 93）──
+// 对齐是**准备工作**：一课对完一次，之后几十次打开都用不着它。所以它分成两处：
+//   · `AlignStatus`（课程页头部）—— 只在「这一课现在练不了」时说话：没有时间戳、
+//     正在对齐、这台设备跑不动。一切正常时**一个字都不画**，连容器都不渲染。
+//   · `AlignPanel`（「⋯ → 对齐」那一页）—— 覆盖率、重对、送服务器、低置信句说明，
+//     全在这里。要找它的人知道去哪儿找，不找它的人不用每次打开一课都读一遍。
+//
 // ── 这一块的散文搬走了（SPEC §12.3）──
 // 它以前会连着挂三到四条整宽横幅，每条三到五行，内容是 jetsam、UIBackgroundModes、
 // 亮屏时长这些取舍论证 —— 而它们出现在课程页头部，也就是每次点开一课都读一遍。
@@ -18,57 +25,97 @@ import { useAlignStore } from '@/state/useAlignStore';
 import { Banner, Button, Disclosure, Note } from '@/components/ui';
 import type { Lesson } from '@/types/models';
 
-export function AlignStatus({ lesson }: { lesson: Lesson }) {
+/** 这一课的对齐处境，两副面孔共用。 */
+function useAlignFacts(lesson: Lesson) {
   const { current, queue, blocked, phone, remote, enqueue } = useAlignStore();
-
   const hasAudio = lesson.audioDuration !== undefined;
   const usable = lesson.sentences.filter((s) => !s.excluded);
   const timed = usable.filter((s) => s.startTime !== undefined);
-  const pending = reviewQueue(lesson.sentences);
   const busy = current?.lessonId === lesson.id;
   const queued = queue.some((t) => t.lessonId === lesson.id);
-  const idle = hasAudio && !busy && !queued;
-  const untimed = timed.length === 0;
+  return {
+    phone,
+    remote,
+    blocked,
+    enqueue,
+    hasAudio,
+    usable,
+    timed,
+    pending: reviewQueue(lesson.sentences),
+    busy,
+    queued,
+    idle: hasAudio && !busy && !queued,
+    untimed: timed.length === 0,
+  };
+}
+
+/** 重对 / 送服务器那一两个键。两副面孔共用，但头部只在「还没有时间戳」时才摆出来。 */
+function AlignActions({ lesson }: { lesson: Lesson }) {
+  const { phone, remote, enqueue, untimed, idle } = useAlignFacts(lesson);
+  if (!idle) return null;
+  if (phone) {
+    return remote ? (
+      <Button
+        variant={untimed ? 'primary' : 'ghost'}
+        onClick={() => enqueue(lesson.id, { manual: true, backend: 'remote' })}
+      >
+        {untimed ? '用服务器对齐（约几分钟）' : '用服务器重对'}
+      </Button>
+    ) : null;
+  }
+  return (
+    <>
+      <Button
+        variant={untimed ? 'primary' : 'ghost'}
+        onClick={() => enqueue(lesson.id, { manual: true, backend: 'local' })}
+      >
+        {untimed ? '自动对齐' : '重新对齐'}
+      </Button>
+      {/*
+        桌面上服务器那条是 ghost：本机几十秒、服务器几分钟，日常没有理由绕出去。
+        它留着是为了「验一下服务器算得对不对」，以及本机跑不动时的退路。
+      */}
+      {remote && (
+        <Button variant="ghost" onClick={() => enqueue(lesson.id, { manual: true, backend: 'remote' })}>
+          送到服务器算
+        </Button>
+      )}
+    </>
+  );
+}
+
+/**
+ * 课程页头部那一档：**只在练不了的时候说话**（§12.26）。
+ *
+ * 对齐好了、没在跑、这台设备也没被判死 —— 返回 null，头部就只剩标题和两个 tab。
+ */
+export function AlignStatus({ lesson }: { lesson: Lesson }) {
+  const { remote, blocked, hasAudio, busy, queued, idle, untimed } = useAlignFacts(lesson);
+  const stuck = blocked && !remote && hasAudio;
+
+  // 一切正常：静默。覆盖率和重对都在「⋯ → 对齐」里。
+  if (!busy && !queued && !untimed && !stuck) return null;
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="tnum text-note text-muted">
-          已对齐 {timed.length} / {usable.length} 句
-          {pending.length > 0 && ` · ${pending.length} 句置信度偏低`}
-        </span>
         {busy && <span className="text-note text-accent">正在对齐 —— 进度在页面底部</span>}
         {queued && <span className="text-note text-accent">排队中</span>}
         {!hasAudio && <span className="text-note text-faint">这一课还没有音频</span>}
-        {idle && !phone && (
-          <>
-            <Button
-              variant={untimed ? 'primary' : 'ghost'}
-              onClick={() => enqueue(lesson.id, { manual: true, backend: 'local' })}
-            >
-              {untimed ? '自动对齐' : '重新对齐'}
-            </Button>
-            {/*
-              桌面上服务器那条是 ghost：本机几十秒、服务器几分钟，日常没有理由绕出去。
-              它留着是为了「验一下服务器算得对不对」，以及本机跑不动时的退路。
-            */}
-            {remote && (
-              <Button variant="ghost" onClick={() => enqueue(lesson.id, { manual: true, backend: 'remote' })}>
-                送到服务器算
-              </Button>
-            )}
-          </>
-        )}
-        {idle && phone && remote && (
-          <Button
-            variant={untimed ? 'primary' : 'ghost'}
-            onClick={() => enqueue(lesson.id, { manual: true, backend: 'remote' })}
-          >
-            {untimed ? '用服务器对齐（约几分钟）' : '用服务器重对'}
-          </Button>
-        )}
+        {untimed && idle && hasAudio && <span className="text-note text-warn">这一课还没有时间戳</span>}
+        {untimed && <AlignActions lesson={lesson} />}
       </div>
+      <AlignNotes lesson={lesson} />
+    </div>
+  );
+}
 
+/** 「为什么是这样」那几句。头部和「对齐」页共用 —— 出现条件一样，措辞只写一遍。 */
+function AlignNotes({ lesson }: { lesson: Lesson }) {
+  const { phone, remote, blocked, hasAudio, idle, untimed } = useAlignFacts(lesson);
+
+  return (
+    <>
       {/*
         手机上「还没有时间戳」是个**正常状态**，不是故障 —— 主路径是桌面算完同步过来。
         这一句必须说出来，否则用户看到的是「导入完了什么也没发生」，
@@ -77,7 +124,7 @@ export function AlignStatus({ lesson }: { lesson: Lesson }) {
       */}
       {phone && !remote && idle && untimed && (
         <Note tone="warn">
-          这一课还没有时间戳。<strong>手机上不自己算对齐</strong> —— 登录同步之后由服务器算，
+          <strong>手机上不自己算对齐</strong> —— 登录同步之后由服务器算，
           或者在桌面上对一次，句级与词级时间戳都会跟着同步回来。
           <Disclosure summary="为什么手机上不自己算">
             <p>
@@ -94,7 +141,7 @@ export function AlignStatus({ lesson }: { lesson: Lesson }) {
 
       {phone && remote && idle && untimed && (
         <Note tone="accent">
-          这一课还没有时间戳。点上面那个按钮送到服务器算 —— 上传音频（6~10MB）之后
+          点那个按钮送到服务器算 —— 上传音频（6~10MB）之后
           手机可以锁屏、可以退出 App，回来再看结果。文稿不上传。
         </Note>
       )}
@@ -108,16 +155,39 @@ export function AlignStatus({ lesson }: { lesson: Lesson }) {
           </p>
         </Banner>
       )}
+    </>
+  );
+}
+
+/** 「⋯ → 对齐」那一页：覆盖率、重对、低置信句怎么核。找它的人才会来这里。 */
+export function AlignPanel({ lesson }: { lesson: Lesson }) {
+  const { usable, timed, pending, busy, queued, hasAudio } = useAlignFacts(lesson);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="tnum text-ui text-muted">
+          已对齐 {timed.length} / {usable.length} 句
+          {pending.length > 0 && ` · ${pending.length} 句置信度偏低`}
+        </span>
+        {busy && <span className="text-note text-accent">正在对齐 —— 进度在页面底部</span>}
+        {queued && <span className="text-note text-accent">排队中</span>}
+        {!hasAudio && <span className="text-note text-faint">这一课还没有音频</span>}
+        <AlignActions lesson={lesson} />
+      </div>
+
+      <AlignNotes lesson={lesson} />
 
       {/*
-        FR-15.19：这条提示现在**能被消掉** —— 报的是「还没核对的低置信句」，
-        在通听里逐句确认完就回到静默（§12.3）。以前它是永久的：低置信句大多其实是对的，
-        而一条听完也不会消失的提示，教会人的只有忽略它。
+        FR-15.19：这条说明在这里，不在头部（§12.26）。低置信句大多其实是对的，
+        而一条每次打开课程都读一遍的提示，教会人的只有忽略它。
+        通听的工具条上那个「N 句待核对」才是日常的入口。
       */}
       {timed.length > 0 && pending.length > 0 && (
         <Note tone="warn">
           {pending.length} 句的置信度明显低于本课水平（多半是采访同期声、台标音乐、播音员交替或数字）。
-          在「通听」里展开文本，点带 ? 的行号听一下：起点对就点一下行号消掉它，不对就重新对齐一次。
+          在「通听」里点工具条上的「{pending.length} 句待核对」，逐句听起点：对就点一下行号消掉它，
+          不对就在这里重新对齐一次。
         </Note>
       )}
     </div>

@@ -155,7 +155,15 @@ test('单个文件的课在课程页上绑回同一份音频：提示时间戳�
   // 把 shouldRealign 改回恒为 true，这一条会红）。等一会儿再看，是因为这是一个「不该发生」的断言
   await page.waitForTimeout(1500);
   await expect(page.getByLabel(/^对齐中/)).toHaveCount(0);
-  await expect(page.getByText('已对齐 2 / 2 句')).toBeVisible();
+  // 覆盖率搬进了「⋯ → 对齐」那一页（§12.26，变更 93）——
+  // 头部在一切正常时一个字都不画，所以这一条得进去看。
+  await page.goto('/#/lesson/single-1/align');
+  // 这句话有两处：「⋯」菜单里那一行副标题，和这一页本体。取后一个。
+  await expect(page.getByText('已对齐 2 / 2 句').last()).toBeVisible();
+  // 而头部确实一个状态字都没有了（§12.26）——「重新对齐」只在这一页上
+  await expect(page.getByRole('button', { name: '重新对齐' })).toBeVisible();
+  await page.goto('/#/lesson/single-1/listen');
+  await expect(page.getByRole('button', { name: '重新对齐' })).toHaveCount(0);
 });
 
 test('拼过的课在课程页上少选一轨：不绑，把缺的文件名报出来', async ({ page }) => {

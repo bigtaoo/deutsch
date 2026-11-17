@@ -55,10 +55,34 @@ export function useLessonAudio(lessonId: string): LessonAudioState {
   return state;
 }
 
-/** 订阅播放位置。rAF 频率下 React 每帧 setState 是可以接受的：一个页面只有一个订阅者在跑。 */
-export function useAudioTime(): number {
+/**
+ * 订阅播放位置。
+ *
+ * 默认每帧发一次（逐词高亮要的就是这个频率）。但「每帧 setState」会把订阅者
+ * 整棵子树每秒重渲染 60 次，而需要这个频率的只有逐词高亮那一处 ——
+ * 变更 93 实测过：播放时每秒强制同步布局 60 次，文本**折叠**着也一样，
+ * 因为通听页无条件订阅、而它底下挂着播放条和一整列句子。
+ *
+ * 两个闸门：
+ * - `enabled: false` —— 这一刻根本用不到播放位置（文本折叠时的通听页）：不订阅。
+ * - `quantizeMs` —— 把时间量化到这个粒度再 setState。落在同一格里的值相等，
+ *   React 自己 bail out，不重渲染。时间码只要 0.1 秒一档，那就是 10Hz 而不是 60Hz。
+ */
+export function useAudioTime({
+  enabled = true,
+  quantizeMs = 0,
+}: { enabled?: boolean; quantizeMs?: number } = {}): number {
   const [time, setTime] = useState(0);
-  useEffect(() => audioPlayer.subscribe(setTime), []);
+  useEffect(() => {
+    if (!enabled) return;
+    if (quantizeMs <= 0) return audioPlayer.subscribe(setTime);
+    const step = quantizeMs / 1000;
+    return audioPlayer.subscribe((t) => {
+      const q = Math.floor(t / step) * step;
+      // 返回 prev 就是「没变」：React 认出同一个值，这一帧不重渲染。
+      setTime((prev) => (Math.abs(prev - q) < step / 2 ? prev : q));
+    });
+  }, [enabled, quantizeMs]);
   return time;
 }
 
